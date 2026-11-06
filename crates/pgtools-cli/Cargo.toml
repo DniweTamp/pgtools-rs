@@ -1,0 +1,19 @@
+[package]
+name = "pgtools-cli"
+description = "Unified CLI and multicall drop-in replacement for all 29 bayonetta_tools (pgtools) command-line utilities"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[[bin]]
+name = "pgtools"
+path = "src/main.rs"
+
+[dependencies]
+pgtools-core = { path = "../pgtools-core" }
+clap.workspace = true
+anyhow.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+serde_yaml.workspace = true
+image.workspace = true

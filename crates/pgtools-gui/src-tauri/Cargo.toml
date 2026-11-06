@@ -1,0 +1,21 @@
+[package]
+name = "pgtools-gui"
+description = "Tauri v2 desktop application for PlatinumGames modding (Unified XT1-Studio-themed 3-pane Asset Browser, File Browser, 010-style Structure Editor, Texture Viewport, and Inspector)"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[build-dependencies]
+tauri-build = { version = "2.0", features = [] }
+
+[dependencies]
+pgtools-core = { path = "../../pgtools-core" }
+tauri = { version = "2.1", features = [] }
+serde.workspace = true
+serde_json.workspace = true
+serde_yaml.workspace = true
+crc32fast.workspace = true
+image.workspace = true
+base64.workspace = true
+anyhow.workspace = true
+rfd.workspace = true

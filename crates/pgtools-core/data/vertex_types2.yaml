@@ -1,0 +1,164 @@
+---
+? - 1799356447 #6b40001f
+  - 1
+  - 1
+: - - - :position
+      - :position_t
+    - - :mapping
+      - :mapping_t
+    - - :normal
+      - :normal_t
+    - - :tangents
+      - :tangents_t
+    - - :bone_infos
+      - :bone_infos_t
+  - - - :color
+      - :color_t
+? - 1262485519 #4b40000f
+  - 1
+  - 1
+: - - - :position
+      - :position_t
+    - - :mapping
+      - :mapping_t
+    - - :normal
+      - :normal_t
+    - - :tangents
+      - :tangents_t
+    - - :color
+      - :color_t
+? - 1799356447 #6b40001f
+  - 2
+  - 1
+: - - - :position
+      - :position_t
+    - - :mapping
+      - :mapping_t
+    - - :normal
+      - :normal_t
+    - - :tangents
+      - :tangents_t
+    - - :bone_infos
+      - :bone_infos_t
+  - - - :color
+      - :color_t
+    - - :mapping2
+      - :mapping_t
+? - 1262485519 #4b40000f
+  - 2
+  - 1
+: - - - :position
+      - :position_t
+    - - :mapping
+      - :mapping_t
+    - - :normal
+      - :normal_t
+    - - :tangents
+      - :tangents_t
+    - - :color
+      - :color_t
+    - - :mapping2
+      - :mapping_t
+? - 1262485535 #4b40001f
+  - 2
+  - 1
+: - - - :position
+      - :position_t
+    - - :mapping
+      - :mapping_t
+    - - :normal
+      - :normal_t
+    - - :tangents
+      - :tangents_t
+    - - :bone_infos
+      - :bone_infos_t
+  - - - :color
+      - :color_t
+    - - :mapping2
+      - :mapping_t
+? - 1799356445 #6b40001d
+  - 1
+  - 0
+: - - - :position
+      - :position_t
+    - - :mapping
+      - :mapping_t
+    - - :normal
+      - :normal_t
+    - - :tangents
+      - :tangents_t
+    - - :bone_infos
+      - :bone_infos_t
+? - 1262485533 #4b40001d
+  - 1
+  - 0
+: - - - :position
+      - :position_t
+    - - :mapping
+      - :mapping_t
+    - - :normal
+      - :normal_t
+    - - :tangents
+      - :tangents_t
+    - - :bone_infos
+      - :bone_infos_t
+? - 1262485535 #4b40001f
+  - 1
+  - 1
+: - - - :position
+      - :position_t
+    - - :mapping
+      - :mapping_t
+    - - :normal
+      - :normal_t
+    - - :tangents
+      - :tangents_t
+    - - :bone_infos
+      - :bone_infos_t
+  - - - :color
+      - :color_t
+? - 1262485533 #4b40001d
+  - 2
+  - 0
+: - - - :position
+      - :position_t
+    - - :mapping
+      - :mapping_t
+    - - :normal
+      - :normal_t
+    - - :tangents
+      - :tangents_t
+    - - :bone_infos
+      - :bone_infos_t
+  - - - :color
+      - :color_t
+    - - :mapping2
+      - :mapping_t
+? - 1262485517 #4b40000d
+  - 1
+  - 0
+: - - - :position
+      - :position_t
+    - - :mapping
+      - :mapping_t
+    - - :normal
+      - :normal_t
+    - - :tangents
+      - :tangents_t
+? - 1799356445 #6b40001d
+  - 2
+  - 0
+: - - - :position
+      - :position_t
+    - - :mapping
+      - :mapping_t
+    - - :normal
+      - :normal_t
+    - - :tangents
+      - :tangents_t
+    - - :bone_infos
+      - :bone_infos_t
+  - - - :color
+      - :color_t
+    - - :mapping2
+      - :mapping_t
