@@ -226,6 +226,9 @@ pub(crate) fn atomic_write_pair(
         .unwrap_or(0);
     let tmp1 = parent1.join(format!(".{fname1}.pgtmp.{pid}.{now_ns}"));
     let tmp2 = parent2.join(format!(".{fname2}.pgtmp.{pid}.{now_ns}"));
+    // Backup of dest1 so we can roll back if the second rename fails after dest1 is replaced.
+    let bak1 = parent1.join(format!(".{fname1}.pgbak.{pid}.{now_ns}"));
+
     if let Err(e) = fs::write(&tmp1, bytes1) {
         let _ = fs::remove_file(&tmp1);
         return Err(format!("Failed to write temporary file '{}': {e}", tmp1.display()));
@@ -235,15 +238,39 @@ pub(crate) fn atomic_write_pair(
         let _ = fs::remove_file(&tmp2);
         return Err(format!("Failed to write temporary file '{}': {e}", tmp2.display()));
     }
+
+    let had_dest1 = dest1.exists();
+    if had_dest1 {
+        if let Err(e) = fs::rename(dest1, &bak1) {
+            let _ = fs::remove_file(&tmp1);
+            let _ = fs::remove_file(&tmp2);
+            return Err(format!(
+                "Failed to stage backup for '{}': {e}",
+                dest1.display()
+            ));
+        }
+    }
+
     if let Err(e) = fs::rename(&tmp1, dest1) {
         let _ = fs::remove_file(&tmp1);
         let _ = fs::remove_file(&tmp2);
+        if had_dest1 {
+            let _ = fs::rename(&bak1, dest1);
+        }
         return Err(format!("Failed to commit saved file '{}': {e}", dest1.display()));
     }
+
     if let Err(e) = fs::rename(&tmp2, dest2) {
         let _ = fs::remove_file(&tmp2);
+        // Roll back dest1 to its previous contents when possible.
+        let _ = fs::remove_file(dest1);
+        if had_dest1 {
+            let _ = fs::rename(&bak1, dest1);
+        }
         return Err(format!("Failed to commit paired file '{}': {e}", dest2.display()));
     }
+
+    let _ = fs::remove_file(&bak1);
     Ok(())
 }
 
@@ -267,7 +294,9 @@ pub(crate) fn record_mutation_with_key(
     coalesce_key: Option<String>,
 ) {
     const MAX_UNDO_ENTRIES: usize = 20;
-    const MAX_UNDO_BYTES: usize = 512 * 1024 * 1024;
+    // Cap retained undo history so large archive edits do not pin multi-GB RSS.
+    // Counts both before and after snapshot sizes per entry.
+    const MAX_UNDO_BYTES: usize = 256 * 1024 * 1024;
     const COALESCE_WINDOW_MS: u128 = 1500;
 
     let now_ms = SystemTime::now()
@@ -317,7 +346,7 @@ pub(crate) fn record_mutation_with_key(
                 let total_bytes: usize = sess
                     .undo_stack
                     .iter()
-                    .map(|e| e.before.byte_size())
+                    .map(|e| e.before.byte_size().saturating_add(e.after.byte_size()))
                     .sum();
                 if total_bytes > MAX_UNDO_BYTES {
                     sess.undo_stack.remove(0);
@@ -420,13 +449,24 @@ pub fn save_document(
     output_path: Option<String>,
     state: State<'_, AppState>,
 ) -> Result<DocumentOutline, String> {
-    let mut sess = lock_session(&state);
-    let dest = output_path
-        .map(PathBuf::from)
-        .or_else(|| sess.doc_path.clone())
-        .ok_or("No active document path")?;
-    let snap = sess.current.as_ref().ok_or("No active document loaded")?.clone();
+    // Snapshot under the lock, then drop it for the duration of disk I/O so other
+    // commands (preview, list, undo) are not blocked on large document saves.
+    let (dest, snap, expected_revision) = {
+        let sess = lock_session(&state);
+        let dest = output_path
+            .map(PathBuf::from)
+            .or_else(|| sess.doc_path.clone())
+            .ok_or("No active document path")?;
+        let snap = sess
+            .current
+            .as_ref()
+            .ok_or("No active document loaded")?
+            .clone();
+        (dest, snap, sess.current_revision)
+    };
 
+    let mut paired_wtp: Option<PathBuf> = None;
+    let mut paired_dtt: Option<PathBuf> = None;
     match &snap {
         DocSnapshot::SingleFile(bytes) => {
             atomic_write_file(&dest, bytes)?;
@@ -434,18 +474,38 @@ pub fn save_document(
         DocSnapshot::SplitWtaWtp { wta, wtp } => {
             let wtp_dest = dest.with_extension("wtp");
             atomic_write_pair(&dest, wta, &wtp_dest, wtp)?;
-            sess.wtp_path = Some(wtp_dest);
+            paired_wtp = Some(wtp_dest);
         }
         DocSnapshot::PairedDatDtt { dat, dtt } => {
             let dtt_dest = dest.with_extension("dtt");
             atomic_write_pair(&dest, dat, &dtt_dest, dtt)?;
-            sess.dtt_path = Some(dtt_dest);
+            paired_dtt = Some(dtt_dest);
         }
     }
 
-    sess.doc_path = Some(dest);
-    sess.saved_revision = sess.current_revision;
-    sess.dirty = false;
+    let mut sess = lock_session(&state);
+    // Only mark clean if the in-memory revision is still the one we saved.
+    if sess.current_revision == expected_revision {
+        sess.doc_path = Some(dest);
+        if let Some(p) = paired_wtp {
+            sess.wtp_path = Some(p);
+        }
+        if let Some(p) = paired_dtt {
+            sess.dtt_path = Some(p);
+        }
+        sess.saved_revision = expected_revision;
+        sess.dirty = false;
+    } else {
+        // Concurrent mutation while we wrote — leave dirty; paths still updated to dest.
+        sess.doc_path = Some(dest);
+        if let Some(p) = paired_wtp {
+            sess.wtp_path = Some(p);
+        }
+        if let Some(p) = paired_dtt {
+            sess.dtt_path = Some(p);
+        }
+        sess.dirty = true;
+    }
     build_outline_from_session(&sess)
 }
 

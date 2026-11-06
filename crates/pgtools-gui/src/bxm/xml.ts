@@ -57,12 +57,23 @@ export function parseXmlToBxmNode(xmlStr: string): BxmXmlNode | null {
   }
 }
 
+/** Restrict element/attribute names to a safe XML Name production subset. */
+export function safeXmlName(name: string, fallback = "Node"): string {
+  const t = (name ?? "").trim();
+  if (/^[A-Za-z_][\w.-]*$/.test(t)) return t;
+  return fallback;
+}
+
 export function serializeBxmNodeToXml(node: BxmXmlNode, indent = 0): string {
   const pad = "  ".repeat(indent);
-  const tag = (node.name || "Node").trim() || "Node";
+  const tag = safeXmlName(node.name || "Node", "Node");
   const attrs = [...(node.attributes || [])]
     .filter(([k]) => k && k.trim().length > 0)
-    .map(([k, v]) => ` ${k.trim()}="${escapeXmlAttr(v ?? "")}"`)
+    .map(([k, v]) => {
+      const key = safeXmlName(k.trim(), "");
+      if (!key) return "";
+      return ` ${key}="${escapeXmlAttr(v ?? "")}"`;
+    })
     .join("");
   const children = node.children || [];
   const val = node.value !== null && node.value !== undefined ? String(node.value) : "";

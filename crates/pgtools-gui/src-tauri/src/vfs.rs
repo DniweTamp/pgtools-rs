@@ -1358,6 +1358,48 @@ pub(crate) fn build_outline_from_session(sess: &StudioSession) -> Result<Documen
     })
 }
 
+/// Validate a user-supplied filesystem path used for export/import.
+/// Requires a non-empty absolute path without `..` components; for writes the
+/// parent directory must already exist.
+fn validate_user_fs_path(path_str: &str, for_write: bool) -> Result<PathBuf, String> {
+    let trimmed = path_str.trim();
+    if trimmed.is_empty() {
+        return Err("Empty filesystem path".into());
+    }
+    let p = PathBuf::from(trimmed);
+    if !p.is_absolute() {
+        return Err(format!(
+            "Path must be absolute: '{}'",
+            p.display()
+        ));
+    }
+    for comp in p.components() {
+        if matches!(comp, std::path::Component::ParentDir) {
+            return Err(format!(
+                "Path must not contain '..': '{}'",
+                p.display()
+            ));
+        }
+    }
+    if for_write {
+        let parent = p.parent().ok_or_else(|| {
+            format!("Cannot write to filesystem root path '{}'", p.display())
+        })?;
+        if !parent.exists() {
+            return Err(format!(
+                "Parent directory does not exist: '{}'",
+                parent.display()
+            ));
+        }
+    } else if !p.is_file() {
+        return Err(format!(
+            "Path is not an existing file: '{}'",
+            p.display()
+        ));
+    }
+    Ok(p)
+}
+
 #[tauri::command]
 pub fn mutate_container_node(
     node_id: String,
@@ -1374,19 +1416,21 @@ pub fn mutate_container_node(
 
     match action.as_str() {
         "export_bxm_xml" => {
+            let out = validate_user_fs_path(&target_path, true)?;
             let (_, sub_bytes, _, _) = resolve_subblob(&snap, &node_id, oodle_opt)?;
             let bxm = BxmFile::from_bytes(&sub_bytes).map_err(|e| e.to_string())?;
-            fs::write(&target_path, bxm.to_xml_string()).map_err(|e| e.to_string())?;
+            fs::write(&out, bxm.to_xml_string()).map_err(|e| e.to_string())?;
             build_outline_from_session(&sess)
         }
         "import_bxm_xml" => {
+            let src = validate_user_fs_path(&target_path, false)?;
             let (container_parts, _) = split_container_and_leaf(&node_id);
             let container_id = container_parts.join("/");
             let (_, sub_bytes, _, _) = resolve_subblob(&snap, &container_id, oodle_opt)?;
             let (orig_tag, orig_flags) = BxmFile::from_bytes(&sub_bytes)
                 .map(|b| (b.tag, b.flags))
                 .unwrap_or_else(|_| ("BXM".to_string(), 0));
-            let xml_str = fs::read_to_string(&target_path).map_err(|e| e.to_string())?;
+            let xml_str = fs::read_to_string(&src).map_err(|e| e.to_string())?;
             let mut bxm = BxmFile::from_xml_str(&xml_str, &orig_tag).map_err(|e| e.to_string())?;
             bxm.flags = orig_flags;
             let new_bytes = bxm.to_bytes(Endian::Big);

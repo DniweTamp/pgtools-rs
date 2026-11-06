@@ -265,26 +265,40 @@ pub fn pick_folder_dialog(title: Option<String>) -> Result<Option<String>, Strin
 
 #[tauri::command]
 pub fn reveal_in_explorer(path: String) -> Result<(), String> {
-    let p = PathBuf::from(&path);
+    let trimmed = path.trim();
+    if trimmed.is_empty() {
+        return Err("Empty path".into());
+    }
+    let raw = PathBuf::from(trimmed);
+    // Require a real, existing path and use the canonical form for the OS helper.
+    let p = fs::canonicalize(&raw).map_err(|e| {
+        format!(
+            "Cannot reveal '{}': path does not exist or is inaccessible ({e})",
+            raw.display()
+        )
+    })?;
+    let display = clean_win_verbatim_path(p.to_string_lossy().into_owned());
     #[cfg(target_os = "windows")]
     {
+        // Single argv element: "/select,<canonical-path>"
         Command::new("explorer")
-            .args(["/select,", &p.to_string_lossy()])
+            .arg(format!("/select,{display}"))
             .spawn()
             .map_err(|e| format!("Failed to open Explorer: {e}"))?;
     }
     #[cfg(target_os = "macos")]
     {
         Command::new("open")
-            .args(["-R", "--", &p.to_string_lossy()])
+            .args(["-R", "--", &display])
             .spawn()
             .map_err(|e| format!("Failed to reveal in Finder: {e}"))?;
     }
     #[cfg(target_os = "linux")]
     {
         let target = p.parent().unwrap_or(&p);
+        let target_s = clean_win_verbatim_path(target.to_string_lossy().into_owned());
         Command::new("xdg-open")
-            .args(["--", &target.to_string_lossy()])
+            .args(["--", &target_s])
             .spawn()
             .map_err(|e| format!("Failed to open file manager: {e}"))?;
     }
@@ -819,11 +833,43 @@ pub fn fs_batch_operation(
         "delete" => {
             let mut count = 0usize;
             for sp in &source_paths {
-                let src_p = Path::new(sp);
-                if src_p.is_dir() {
-                    fs::remove_dir_all(src_p).map_err(|e| e.to_string())?;
-                } else if src_p.exists() {
-                    fs::remove_file(src_p).map_err(|e| e.to_string())?;
+                let trimmed = sp.trim();
+                if trimmed.is_empty() {
+                    return Err("Empty path in delete request".into());
+                }
+                let src_p = Path::new(trimmed);
+                // Reject relative / traversal-shaped paths; require an existing absolute path.
+                if !src_p.is_absolute() {
+                    return Err(format!(
+                        "Refusing to delete relative path '{}'; provide an absolute path",
+                        src_p.display()
+                    ));
+                }
+                for comp in src_p.components() {
+                    if matches!(comp, std::path::Component::ParentDir) {
+                        return Err(format!(
+                            "Refusing to delete path containing '..': '{}'",
+                            src_p.display()
+                        ));
+                    }
+                }
+                let canon = fs::canonicalize(src_p).map_err(|e| {
+                    format!(
+                        "Cannot delete '{}': path does not exist or is inaccessible ({e})",
+                        src_p.display()
+                    )
+                })?;
+                // Refuse deleting drive roots / filesystem roots.
+                if canon.parent().is_none() {
+                    return Err(format!(
+                        "Refusing to delete filesystem root '{}'",
+                        canon.display()
+                    ));
+                }
+                if canon.is_dir() {
+                    fs::remove_dir_all(&canon).map_err(|e| e.to_string())?;
+                } else {
+                    fs::remove_file(&canon).map_err(|e| e.to_string())?;
                 }
                 count += 1;
             }

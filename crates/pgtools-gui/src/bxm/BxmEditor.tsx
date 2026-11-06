@@ -1,7 +1,7 @@
 import React from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { BxmXmlNode, ContextMenuState, MenuItemSpec, PointerDragState } from "../types";
-import { getBxmNodeByPath } from "./xml";
+import { getBxmNodeByPath, safeXmlName } from "./xml";
 import { IconChevronDown, IconCode } from "../components/Icons";
 
 export interface BxmCenterViewProps {
@@ -228,6 +228,17 @@ export const BxmCenterView: React.FC<BxmCenterViewProps> = ({
                 updateBxmDraftTree(copy);
               }
             }}
+            onBlur={(e) => {
+              if (!bxmTreeDraft) return;
+              const sanitized = safeXmlName(e.target.value, "Node");
+              if (sanitized === e.target.value) return;
+              const copy = structuredClone(bxmTreeDraft);
+              const target = getBxmNodeByPath(copy, pathStr);
+              if (target) {
+                target.name = sanitized;
+                updateBxmDraftTree(copy);
+              }
+            }}
           />
           <span className="mono" style={{ color: "var(--brush-muted)" }}>&gt;</span>
 
@@ -421,6 +432,16 @@ export const BxmCenterView: React.FC<BxmCenterViewProps> = ({
                       const parent = getBxmNodeByPath(copy, currentContainerPath);
                       if (parent && parent.children[ri]) {
                         parent.children[ri].name = e.target.value;
+                        updateBxmDraftTree(copy);
+                      }
+                    }}
+                    onBlur={(e) => {
+                      const sanitized = safeXmlName(e.target.value, "Node");
+                      if (sanitized === e.target.value) return;
+                      const copy = structuredClone(bxmTreeDraft);
+                      const parent = getBxmNodeByPath(copy, currentContainerPath);
+                      if (parent && parent.children[ri]) {
+                        parent.children[ri].name = sanitized;
                         updateBxmDraftTree(copy);
                       }
                     }}
@@ -704,6 +725,17 @@ export const BxmInspectorView: React.FC<BxmInspectorViewProps> = ({
                               const t = getBxmNodeByPath(copy, selectedBxmPath);
                               if (t) {
                                 t.name = e.target.value;
+                                updateBxmDraftTree(copy);
+                              }
+                            }}
+                            onBlur={(e) => {
+                              if (!bxmTreeDraft) return;
+                              const sanitized = safeXmlName(e.target.value, "Node");
+                              if (sanitized === e.target.value) return;
+                              const copy = structuredClone(bxmTreeDraft);
+                              const t = getBxmNodeByPath(copy, selectedBxmPath);
+                              if (t) {
+                                t.name = sanitized;
                                 updateBxmDraftTree(copy);
                               }
                             }}
