@@ -2,7 +2,6 @@ import React, { useCallback, useEffect, useMemo, useRef, useState } from "react"
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import {
-  AssetTreeNode,
   BxmXmlNode,
   ContextMenuState,
   DecodedWmbMaterial,
@@ -10,6 +9,7 @@ import {
   FileSortCol,
   FsEntry,
   MaterialClipboardState,
+  NodeInspectPayload,
   PointerDragState,
   StudioSettings,
   TexModalState,
@@ -19,36 +19,17 @@ import {
   WmbSectionView,
 } from "./types";
 import {
-  compileGlobFilter,
-  formatBytes,
   isVirtualSubNode,
   parseReorderableNode,
 } from "./utils/format";
 import {
   bxmTreeToXmlDocument,
-  detectBxmTabular,
   getBxmNodeByPath,
-  parseXmlToBxmNode,
 } from "./bxm/xml";
-import { BxmCenterView, BxmInspectorView } from "./bxm/BxmEditor";
-import {
-  TextureCenterView,
-  TextureImportModal,
-  TextureInspectorView,
-} from "./editors/TextureEditor";
-import { ClothInspectorView, StructCenterView } from "./editors/StructEditors";
-import {
-  WmbInspectorView,
-  WmbStructuredCenterView,
-} from "./editors/WmbStructuredEditor";
+import { TextureImportModal } from "./editors/TextureEditor";
 import { createMenuBuilders } from "./menus/contextMenus";
 import {
   IconCheck,
-  IconChevronDown,
-  IconCode,
-  IconCube,
-  IconFolder,
-  IconImage,
   IconRedo,
   IconRefresh,
   IconSunMoon,
@@ -60,50 +41,91 @@ import {
   createDemoModel,
   LegacyActionKind,
 } from "./wmb-studio/contract";
+import { useStudioSettings } from "./hooks/useStudioSettings";
+import { useResizableTableColumns } from "./hooks/useResizableTableColumns";
+import { useFileBrowser } from "./hooks/useFileBrowser";
+import { useDocumentSession } from "./hooks/useDocumentSession";
+import { useEditorDrafts } from "./hooks/useEditorDrafts";
+import { useMeshUi } from "./hooks/useMeshUi";
+import { FileBrowserPanel } from "./panels/FileBrowserPanel";
+import { AssetBrowserPanel } from "./panels/AssetBrowserPanel";
+import { DocumentEditors } from "./panels/DocumentEditors";
 
 export default function App() {
-  const [settingsLoaded, setSettingsLoaded] = useState<boolean>(false);
-  const [theme, setTheme] = useState<ThemeMode>("dark");
+  const settings = useStudioSettings();
+  const {
+    settingsLoaded,
+    theme,
+    leftWidth,
+    rightWidth,
+    assetRatio,
+    oodleDllPath,
+    nvttDllPath,
+    coreDatB1,
+    coreDatB2,
+    coreDatB3,
+    wmbHierarchyRatio,
+    wmbWireframe,
+    wmbNormalsView,
+    wmbSkeletonOverlay,
+    wmbGridVisible,
+    recentFiles,
+    hideUnsupported,
+    fileSortCol,
+    fileSortAsc,
+    setTheme,
+    setLeftWidth,
+    setRightWidth,
+    setAssetRatio,
+    setOodleDllPath,
+    setNvttDllPath,
+    setCoreDatB1,
+    setCoreDatB2,
+    setCoreDatB3,
+    setWmbHierarchyRatio,
+    setWmbWireframe,
+    setWmbNormalsView,
+    setWmbSkeletonOverlay,
+    setWmbGridVisible,
+    setRecentFiles,
+    setHideUnsupported,
+    setFileSortCol,
+    setFileSortAsc,
+    buildStudioSettingsPayload,
+    applyLoadedSettings,
+    markLoaded,
+  } = settings;
 
-  // Resizable pane dimensions (persisted in StudioSettings)
-  const [leftWidth, setLeftWidth] = useState<number>(310);
-  const [rightWidth, setRightWidth] = useState<number>(380);
-  const [assetRatio, setAssetRatio] = useState<number>(0.5);
   const [draggingSplit, setDraggingSplit] = useState<"left" | "right" | "left-row" | null>(null);
   const leftColRef = useRef<HTMLDivElement | null>(null);
   const assetBrowserCardRef = useRef<HTMLDivElement | null>(null);
 
-  // External DLL paths (persisted in StudioSettings)
-  const [oodleDllPath, setOodleDllPath] = useState<string>("");
-  const [nvttDllPath, setNvttDllPath] = useState<string>("");
-  const [coreDatB1, setCoreDatB1] = useState<string>("");
-  const [coreDatB2, setCoreDatB2] = useState<string>("");
-  const [coreDatB3, setCoreDatB3] = useState<string>("");
-  const [wmbHierarchyRatio, setWmbHierarchyRatio] = useState<number>(0.48);
-  const [wmbWireframe, setWmbWireframe] = useState<boolean>(false);
-  const [wmbNormalsView, setWmbNormalsView] = useState<boolean>(false);
-  const [wmbSkeletonOverlay, setWmbSkeletonOverlay] = useState<boolean>(false);
-  const [wmbGridVisible, setWmbGridVisible] = useState<boolean>(true);
   const [wmbDocGeneration, setWmbDocGeneration] = useState<number>(0);
   const [coreDatModalOpen, setCoreDatModalOpen] = useState<boolean>(false);
 
-  // Bottom-Left File Browser state
-  const [currentDir, setCurrentDir] = useState<string>("");
-  const currentDirRef = useRef<string>("");
-  currentDirRef.current = currentDir;
+  const [statusLeft, setStatusLeft] = useState<string>("Ready");
   const inspectSeqRef = useRef<number>(0);
-  const [dirInput, setDirInput] = useState<string>("");
-  const [fsEntries, setFsEntries] = useState<FsEntry[]>([]);
-  const [fileGlobFilter, setFileGlobFilter] = useState<string>("");
-  const [hideUnsupported, setHideUnsupported] = useState<boolean>(true);
-  const [fileSortCol, setFileSortCol] = useState<FileSortCol>("name");
-  const [fileSortAsc, setFileSortAsc] = useState<boolean>(true);
-  const [selectedFilePath, setSelectedFilePath] = useState<string | null>(null);
-  const [selectedFilePaths, setSelectedFilePaths] = useState<string[]>([]);
-  const [fsClipboard, setFsClipboard] = useState<{ mode: "copy" | "cut"; paths: string[] } | null>(
-    null
-  );
-  const [recentFiles, setRecentFiles] = useState<string[]>([]);
+
+  const fb = useFileBrowser({
+    hideUnsupported,
+    fileSortCol,
+    fileSortAsc,
+    setFileSortCol,
+    setFileSortAsc,
+    onStatus: setStatusLeft,
+  });
+  const {
+    currentDir,
+    currentDirRef,
+    selectedFilePath,
+    setSelectedFilePath,
+    selectedFilePaths,
+    setSelectedFilePaths,
+    fsClipboard,
+    setFsClipboard,
+    filteredFiles,
+    loadDirectory,
+  } = fb;
 
   // Texture Replacement & Compression Modal Dialog state
   const [texModalState, setTexModalState] = useState<{
@@ -118,27 +140,34 @@ export default function App() {
   } | null>(null);
 
   // PKZ Bulk Compression & WMB Mesh->Batch->LOD Tree state
-  const [pkzBulkCodec, setPkzBulkCodec] = useState<string>("ZStandard");
-  const [expandedMeshGroups, setExpandedMeshGroups] = useState<Record<string, boolean>>({});
-  const [expandedBatchLods, setExpandedBatchLods] = useState<Record<string, boolean>>({});
-  const [draggedBatchInfo, setDraggedBatchInfo] = useState<{
-    isWmb3: boolean;
-    batchIdx: number;
-    fromMeshIdx: number;
-  } | null>(null);
-  const [dragOverMeshIdx, setDragOverMeshIdx] = useState<number | null>(null);
+  const meshUi = useMeshUi();
+  const {
+    expandedMeshGroups,
+    setExpandedMeshGroups,
+    expandedBatchLods,
+    setExpandedBatchLods,
+    draggedBatchInfo,
+    setDraggedBatchInfo,
+    dragOverMeshIdx,
+    setDragOverMeshIdx,
+    pkzBulkCodec,
+    setPkzBulkCodec,
+  } = meshUi;
 
-  // Top-Left Asset Browser & Document state
-  const [outline, setOutline] = useState<DocumentOutline | null>(null);
-  const outlineRef = useRef<DocumentOutline | null>(null);
-  outlineRef.current = outline;
-
-  function confirmDiscardIfDirty(actionLabel = "open another document"): boolean {
-    if (!outlineRef.current?.dirty) return true;
-    return window.confirm(
-      `You have unsaved changes in "${outlineRef.current.file_name}".\n\nDiscard unsaved changes and ${actionLabel}?`
-    );
-  }
+  const docSession = useDocumentSession();
+  const {
+    outline,
+    expandedNodes,
+    selectedNodeId,
+    assetSearch,
+    outlineRef,
+    setOutline,
+    setExpandedNodes,
+    setSelectedNodeId,
+    setAssetSearch,
+    confirmDiscardIfDirty,
+    expandForOpen,
+  } = docSession;
 
   useEffect(() => {
     const onBeforeUnload = (e: BeforeUnloadEvent) => {
@@ -149,86 +178,96 @@ export default function App() {
     };
     window.addEventListener("beforeunload", onBeforeUnload);
     return () => window.removeEventListener("beforeunload", onBeforeUnload);
-  }, []);
-  const [expandedNodes, setExpandedNodes] = useState<Record<string, boolean>>({
-    root: true,
-    "root:dat": true,
-    "root:dtt": true,
-  });
-  const [selectedNodeId, setSelectedNodeId] = useState<string>("root");
-  const [assetSearch, setAssetSearch] = useState<string>("");
+  }, [outlineRef]);
 
   // Pointer-based Drag-and-Drop (reordering + drag-out to Explorer) & External File Drop
   const [pointerDrag, setPointerDrag] = useState<PointerDragState | null>(null);
   const [externalDragHover, setExternalDragHover] = useState<boolean>(false);
 
-  // Active Node View & Toolbar Controls
-  const [nodePayload, setNodePayload] = useState<any>(null);
-  const [mipIndex, setMipIndex] = useState<number>(0);
-  const [channelMode, setChannelMode] = useState<string>("RGBA");
-  const [opaquePreview, setOpaquePreview] = useState<boolean>(false);
-
-  // Custom Texture Encoding Options (XT1 Studio parity)
-  const [texEncodeFormat, setTexEncodeFormat] = useState<string>("Auto");
-  const [texGenerateMips, setTexGenerateMips] = useState<boolean>(true);
-  const [texSolidify, setTexSolidify] = useState<boolean>(true);
-  const [texMakeOpaque, setTexMakeOpaque] = useState<boolean>(false);
-
-  // 2D Viewport Pan & Zoom
-  const [zoom, setZoom] = useState<number>(1.0);
-  const [pan, setPan] = useState<{ x: number; y: number }>({ x: 0, y: 0 });
-  const [isPanning, setIsPanning] = useState<boolean>(false);
+  const [nodePayload, setNodePayload] = useState<NodeInspectPayload | null>(null);
   const panStartRef = useRef<{ x: number; y: number }>({ x: 0, y: 0 });
-  const [centerTab, setCenterTab] = useState<string>("primary");
+  const [materialClipboard, setMaterialClipboard] =
+    useState<MaterialClipboardState | null>(null);
 
-  // Inspector collapsible cards state
-  const [openCards, setOpenCards] = useState<Record<string, boolean>>({
-    hash: true,
-    flags: true,
-    encoding: true,
-    advanced: false,
-    wmb_props: true,
-    wmb_params: true,
-    bxm_node: true,
-    cloth_header: true,
-    dll_config: true,
-  });
+  const drafts = useEditorDrafts();
+  const {
+    hashDraft,
+    setHashDraft,
+    flagsDraft,
+    setFlagsDraft,
+    mipIndex,
+    setMipIndex,
+    channelMode,
+    setChannelMode,
+    opaquePreview,
+    setOpaquePreview,
+    texEncodeFormat,
+    setTexEncodeFormat,
+    texGenerateMips,
+    setTexGenerateMips,
+    texSolidify,
+    setTexSolidify,
+    texMakeOpaque,
+    setTexMakeOpaque,
+    zoom,
+    setZoom,
+    pan,
+    setPan,
+    isPanning,
+    setIsPanning,
+    wmbMatDraft,
+    setWmbMatDraft,
+    wmb3MatDraft,
+    setWmb3MatDraft,
+    wmbRawMode,
+    setWmbRawMode,
+    wmbB2Override,
+    setWmbB2Override,
+    wmbHeaderFlagsDraft,
+    setWmbHeaderFlagsDraft,
+    wmbBboxDraft,
+    setWmbBboxDraft,
+    bxmTreeDraft,
+    setBxmTreeDraft,
+    bxmXmlDraft,
+    setBxmXmlDraft,
+    selectedBxmPath,
+    setSelectedBxmPath,
+    bxmViewMode,
+    setBxmViewMode,
+    bxmExpandedPaths,
+    setBxmExpandedPaths,
+    updateBxmDraftTree,
+    switchBxmViewMode: switchBxmViewModeInner,
+    estDraft,
+    setEstDraft,
+    csvHeadersDraft,
+    setCsvHeadersDraft,
+    csvRowsDraft,
+    setCsvRowsDraft,
+    structDraft,
+    setStructDraft,
+    selectedMotTrackIdx,
+    setSelectedMotTrackIdx,
+    centerTab,
+    setCenterTab,
+    openCards,
+    setOpenCards,
+    toggleCard,
+    hydrateFromInspect,
+  } = drafts;
 
-  // Editable Inspector & Center Structure Drafts
-  const [hashDraft, setHashDraft] = useState<string>("");
-  const [flagsDraft, setFlagsDraft] = useState<string>("");
-  const [wmbMatDraft, setWmbMatDraft] = useState<DecodedWmbMaterial | null>(null);
-  const [wmb3MatDraft, setWmb3MatDraft] = useState<Wmb3Material | null>(null);
-  const [wmbRawMode, setWmbRawMode] = useState<boolean>(false);
-  const [wmbB2Override, setWmbB2Override] = useState<boolean | null>(null);
-  const [materialClipboard, setMaterialClipboard] = useState<{
-    game: "b1" | "b2" | "b3";
-    payload: any;
-  } | null>(null);
-
-  const [wmbHeaderFlagsDraft, setWmbHeaderFlagsDraft] = useState<string>("");
-  const [wmbBboxDraft, setWmbBboxDraft] = useState<number[]>([0, 0, 0, 0, 0, 0]);
-
-  // BXM Interactive Tree + Table + Raw XML state
-  const [bxmTreeDraft, setBxmTreeDraft] = useState<BxmXmlNode | null>(null);
-  const [bxmXmlDraft, setBxmXmlDraft] = useState<string>("");
-  const [selectedBxmPath, setSelectedBxmPath] = useState<string>("0");
-  const [bxmViewMode, setBxmViewMode] = useState<"tree" | "table" | "xml">("tree");
-  const [bxmExpandedPaths, setBxmExpandedPaths] = useState<Record<string, boolean>>({ "0": true });
-
-  const [estDraft, setEstDraft] = useState<any>(null);
-  const [csvHeadersDraft, setCsvHeadersDraft] = useState<string[]>([]);
-  const [csvRowsDraft, setCsvRowsDraft] = useState<string[][]>([]);
-  const [structDraft, setStructDraft] = useState<any>(null);
-  const [selectedMotTrackIdx, setSelectedMotTrackIdx] = useState<number>(0);
+  function switchBxmViewMode(nextMode: "tree" | "table" | "xml") {
+    const err = switchBxmViewModeInner(nextMode);
+    if (err) setStatusLeft(err);
+  }
 
   // Menus & Status
   const [activeTopMenu, setActiveTopMenu] = useState<"file" | "tools" | "help" | null>(null);
   const [contextMenu, setContextMenu] = useState<ContextMenuState | null>(null);
   const [hoverSubmenuIdx, setHoverSubmenuIdx] = useState<number | null>(null);
-  const [statusLeft, setStatusLeft] = useState<string>("Ready");
 
-  // 1. Suppress generic browser right-click context menu globally
+  // Suppress generic browser right-click context menu globally
   useEffect(() => {
     const suppressNativeContextMenu = (e: MouseEvent) => {
       e.preventDefault();
@@ -237,62 +276,7 @@ export default function App() {
     return () => window.removeEventListener("contextmenu", suppressNativeContextMenu);
   }, []);
 
-  // Helper to measure and auto-fit a single column or all columns of a table
-  const autoFitColumn = (table: HTMLTableElement, th: HTMLTableCellElement, colIdx: number) => {
-    const thInp = th.querySelector("input") as HTMLInputElement | null;
-    const headerText = thInp ? thInp.value || "" : (th.textContent || "").trim();
-    let maxW = Math.max(34, headerText.length * 7.2 + 16);
-    const rows = table.querySelectorAll("tbody tr");
-    const limit = Math.min(rows.length, 250);
-    for (let i = 0; i < limit; i++) {
-      const cell = rows[i].children[colIdx] as HTMLElement | undefined;
-      if (!cell) continue;
-      const inputs = cell.querySelectorAll("input, select");
-      if (inputs.length > 1) {
-        let multiW = 12;
-        inputs.forEach((el) => {
-          const inpEl = el as HTMLInputElement;
-          if (inpEl.type === "color" || inpEl.type === "checkbox") {
-            multiW += 30;
-          } else if (inpEl.type === "range") {
-            multiW += 80;
-          } else {
-            const vLen = (inpEl.value || "").length;
-            multiW += Math.max(46, vLen * 7.2 + 16);
-          }
-        });
-        if (multiW > maxW) maxW = Math.min(440, multiW);
-      } else if (inputs.length === 1) {
-        const inp = inputs[0] as HTMLInputElement;
-        const valStr = inp.value || inp.placeholder || "";
-        const w = Math.max(36, valStr.length * 7.3 + 20);
-        if (w > maxW) maxW = Math.min(380, w);
-      } else {
-        const txt = (cell.textContent || "").trim();
-        const w = Math.max(34, txt.length * 7.0 + 16);
-        if (w > maxW) maxW = Math.min(380, w);
-      }
-    }
-    const finalW = Math.round(maxW);
-    th.style.width = `${finalW}px`;
-    th.style.minWidth = `${finalW}px`;
-    th.style.maxWidth = "";
-  };
-
-  // Auto-fit all visible struct-tables whenever a file/section/table view is first opened or switched
-  useEffect(() => {
-    const timer = window.requestAnimationFrame(() => {
-      const tables = document.querySelectorAll("table.struct-table");
-      tables.forEach((tbl) => {
-        const tableEl = tbl as HTMLTableElement;
-        const ths = tableEl.querySelectorAll("thead tr th");
-        ths.forEach((thEl, idx) => {
-          autoFitColumn(tableEl, thEl as HTMLTableCellElement, idx);
-        });
-      });
-    });
-    return () => window.cancelAnimationFrame(timer);
-  }, [
+  useResizableTableColumns([
     nodePayload?.node_id,
     nodePayload?.view_type,
     nodePayload?.wmb?.section,
@@ -300,83 +284,6 @@ export default function App() {
     selectedBxmPath,
     centerTab,
   ]);
-
-  // 1B. Universal Resizable Table Columns (drag right 8px edge of any <th> or double-click to auto-fit)
-  useEffect(() => {
-    let activeTh: HTMLTableCellElement | null = null;
-    let startX = 0;
-    let startWidth = 0;
-
-    const onMouseMove = (e: MouseEvent) => {
-      if (activeTh) {
-        const nextW = Math.max(28, startWidth + (e.clientX - startX));
-        activeTh.style.width = `${nextW}px`;
-        activeTh.style.minWidth = `${nextW}px`;
-        activeTh.style.maxWidth = `${nextW}px`;
-        document.body.style.cursor = "col-resize";
-        return;
-      }
-      const target = e.target as HTMLElement | null;
-      const th = target?.closest("table.struct-table th, table.file-table th") as HTMLTableCellElement | null;
-      if (th) {
-        const r = th.getBoundingClientRect();
-        if (r.right - e.clientX <= 8) {
-          th.style.cursor = "col-resize";
-        } else {
-          th.style.cursor = "";
-        }
-      }
-    };
-
-    const onMouseDown = (e: MouseEvent) => {
-      if (e.button !== 0) return;
-      const target = e.target as HTMLElement | null;
-      const th = target?.closest("table.struct-table th, table.file-table th") as HTMLTableCellElement | null;
-      if (!th) return;
-      const r = th.getBoundingClientRect();
-      if (r.right - e.clientX <= 8) {
-        e.preventDefault();
-        e.stopPropagation();
-        activeTh = th;
-        startX = e.clientX;
-        startWidth = r.width;
-      }
-    };
-
-    const onDoubleClick = (e: MouseEvent) => {
-      const target = e.target as HTMLElement | null;
-      const th = target?.closest("table.struct-table th, table.file-table th") as HTMLTableCellElement | null;
-      if (!th) return;
-      const r = th.getBoundingClientRect();
-      if (r.right - e.clientX <= 10) {
-        e.preventDefault();
-        e.stopPropagation();
-        const tr = th.parentElement;
-        const table = th.closest("table") as HTMLTableElement | null;
-        if (!tr || !table) return;
-        const colIdx = Array.from(tr.children).indexOf(th);
-        autoFitColumn(table, th, colIdx);
-      }
-    };
-
-    const onMouseUp = () => {
-      if (activeTh) {
-        activeTh = null;
-        document.body.style.cursor = "";
-      }
-    };
-
-    window.addEventListener("mousemove", onMouseMove, true);
-    window.addEventListener("mousedown", onMouseDown, true);
-    window.addEventListener("dblclick", onDoubleClick, true);
-    window.addEventListener("mouseup", onMouseUp, true);
-    return () => {
-      window.removeEventListener("mousemove", onMouseMove, true);
-      window.removeEventListener("mousedown", onMouseDown, true);
-      window.removeEventListener("dblclick", onDoubleClick, true);
-      window.removeEventListener("mouseup", onMouseUp, true);
-    };
-  }, []);
 
   // 2. Listen for external OS file drops (`tauri://drag-drop`) anywhere on the window
   const openDocRef = useRef<(p: string) => Promise<void>>(async () => {});
@@ -417,94 +324,22 @@ export default function App() {
     (async () => {
       try {
         const s = await invoke<StudioSettings>("get_studio_settings");
-        const loadedTheme: ThemeMode = s.theme?.toLowerCase() === "light" ? "light" : "dark";
-        setTheme(loadedTheme);
-        document.documentElement.setAttribute("data-theme", loadedTheme);
-        setRecentFiles(s.recent_files ?? []);
-        setHideUnsupported(s.hide_unsupported ?? true);
-        if (["name", "type", "modified", "size"].includes(s.file_sort_col)) {
-          setFileSortCol(s.file_sort_col as FileSortCol);
-        }
-        setFileSortAsc(s.file_sort_asc ?? true);
-        if (s.left_width >= 200 && s.left_width <= 650) setLeftWidth(s.left_width);
-        if (s.right_width >= 260 && s.right_width <= 700) setRightWidth(s.right_width);
-        if (s.asset_ratio >= 0.18 && s.asset_ratio <= 0.82) setAssetRatio(s.asset_ratio);
-        setOodleDllPath(s.oodle_dll_path ?? "");
-        setNvttDllPath(s.nvtt_dll_path ?? "");
-        setCoreDatB1(s.core_dat_b1 ?? "");
-        setCoreDatB2(s.core_dat_b2 ?? "");
-        setCoreDatB3(s.core_dat_b3 ?? "");
-        if (typeof s.wmb_hierarchy_ratio === "number" && s.wmb_hierarchy_ratio >= 0.15 && s.wmb_hierarchy_ratio <= 0.85) {
-          setWmbHierarchyRatio(s.wmb_hierarchy_ratio);
-        }
-        if (typeof s.wmb_wireframe === "boolean") setWmbWireframe(s.wmb_wireframe);
-        if (typeof s.wmb_normals_view === "boolean") setWmbNormalsView(s.wmb_normals_view);
-        if (typeof s.wmb_skeleton_overlay === "boolean") setWmbSkeletonOverlay(s.wmb_skeleton_overlay);
-        if (typeof s.wmb_grid_visible === "boolean") setWmbGridVisible(s.wmb_grid_visible);
-        setSettingsLoaded(true);
+        applyLoadedSettings(s);
+        markLoaded();
         await loadDirectory(s.last_dir || undefined);
       } catch {
-        setSettingsLoaded(true);
+        markLoaded();
         await loadDirectory();
       }
     })();
-  }, []);
+    // loadDirectory is stable enough for mount-only; omit from deps intentionally
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [applyLoadedSettings, markLoaded]);
 
-  // Sync theme attribute on document root
-  useEffect(() => {
-    document.documentElement.setAttribute("data-theme", theme);
-  }, [theme]);
-
-  const buildStudioSettingsPayload = useCallback(
-    (overrides?: Partial<StudioSettings>): StudioSettings => ({
-      theme: theme === "light" ? "Light" : "Dark",
-      recent_files: recentFiles,
-      last_dir: currentDir,
-      hide_unsupported: hideUnsupported,
-      file_sort_col: fileSortCol,
-      file_sort_asc: fileSortAsc,
-      left_width: Math.round(leftWidth),
-      right_width: Math.round(rightWidth),
-      asset_ratio: assetRatio,
-      oodle_dll_path: oodleDllPath,
-      nvtt_dll_path: nvttDllPath,
-      core_dat_b1: coreDatB1,
-      core_dat_b2: coreDatB2,
-      core_dat_b3: coreDatB3,
-      wmb_hierarchy_ratio: wmbHierarchyRatio,
-      wmb_wireframe: wmbWireframe,
-      wmb_normals_view: wmbNormalsView,
-      wmb_skeleton_overlay: wmbSkeletonOverlay,
-      wmb_grid_visible: wmbGridVisible,
-      ...overrides,
-    }),
-    [
-      theme,
-      recentFiles,
-      currentDir,
-      hideUnsupported,
-      fileSortCol,
-      fileSortAsc,
-      leftWidth,
-      rightWidth,
-      assetRatio,
-      oodleDllPath,
-      nvttDllPath,
-      coreDatB1,
-      coreDatB2,
-      coreDatB3,
-      wmbHierarchyRatio,
-      wmbWireframe,
-      wmbNormalsView,
-      wmbSkeletonOverlay,
-      wmbGridVisible,
-    ]
-  );
-
-  // Persist StudioSettings whenever preferences change (debounced to avoid IPC spam during splitter drag — B-15)
+  // Persist StudioSettings whenever preferences change (debounced)
   useEffect(() => {
     if (!settingsLoaded) return;
-    const payload = buildStudioSettingsPayload();
+    const payload = buildStudioSettingsPayload(currentDir);
     const timer = window.setTimeout(() => {
       invoke("save_studio_settings", { settings: payload }).catch(() => {});
     }, 250);
@@ -512,9 +347,9 @@ export default function App() {
   }, [
     buildStudioSettingsPayload,
     settingsLoaded,
+    currentDir,
     theme,
     recentFiles,
-    currentDir,
     hideUnsupported,
     fileSortCol,
     fileSortAsc,
@@ -777,67 +612,31 @@ export default function App() {
     }
   }
 
-  async function loadDirectory(target?: string) {
-    try {
-      const [resolved, list] = await invoke<[string, FsEntry[]]>("list_directory", {
-        dirPath: target ?? null,
-      });
-      setCurrentDir(resolved);
-      setDirInput(resolved);
-      setFsEntries(list);
-    } catch (err) {
-      setStatusLeft(`Directory error: ${String(err)}`);
-    }
-  }
-
   async function openDocumentByPath(path: string, skipDirtyPrompt = false) {
     if (!skipDirtyPrompt && !confirmDiscardIfDirty(`open "${path.split(/[\\/]/).pop() || path}"`)) {
       return;
     }
     try {
       setStatusLeft(`Loading ${path}...`);
-      const doc = await invoke<DocumentOutline>("open_document", { path });
-      setOutline(doc);
+      const opened = await invoke<DocumentOutline>("open_document", { path });
+      setOutline(opened);
       setSelectedFilePath(path);
       setWmbB2Override(null);
       refreshRecents();
 
-      const nextExpanded: Record<string, boolean> = {
-        root: true,
-        "root:dat": true,
-        "root:dtt": true,
-      };
-      let defaultTargetId = doc.tree[0]?.id ?? "root";
-      for (const rootNode of doc.tree) {
-        nextExpanded[rootNode.id] = true;
-        if (rootNode.format_badge === "WMB" || rootNode.format_badge === "WMB3") {
-          defaultTargetId = rootNode.id;
-          break;
-        }
-        const wmbChild = rootNode.children.find(
-          (c) => (c.format_badge === "WMB" || c.format_badge === "WMB3") && !isVirtualSubNode(c.id)
-        );
-        if (wmbChild) {
-          defaultTargetId = wmbChild.id;
-          break;
-        }
-        if (rootNode.children.length > 0) {
-          const firstChild = rootNode.children[0];
-          nextExpanded[firstChild.id] = true;
-          if (firstChild.children.length > 0) {
-            defaultTargetId = firstChild.children[0].id;
-            break;
-          } else {
-            defaultTargetId = firstChild.id;
-            break;
-          }
-        }
-      }
+      const { nextExpanded, defaultTargetId } = expandForOpen(opened);
       setWmbDocGeneration((g) => g + 1);
       setExpandedNodes(nextExpanded);
       setMipIndex(0);
-      await selectAndInspectNode(defaultTargetId, 0, channelMode, opaquePreview, null, doc.file_name);
-      setStatusLeft(`Loaded ${doc.file_name}`);
+      await selectAndInspectNode(
+        defaultTargetId,
+        0,
+        channelMode,
+        opaquePreview,
+        null,
+        opened.file_name
+      );
+      setStatusLeft(`Loaded ${opened.file_name}`);
     } catch (err) {
       setStatusLeft(`Failed to open: ${String(err)}`);
     }
@@ -855,7 +654,7 @@ export default function App() {
     const reqSeq = ++inspectSeqRef.current;
     setSelectedNodeId(nodeId);
     try {
-      const res = await invoke<any>("inspect_asset_node", {
+      const res = await invoke<NodeInspectPayload>("inspect_asset_node", {
         nodeId,
         mipIndex: mip,
         channel,
@@ -864,58 +663,7 @@ export default function App() {
       });
       if (reqSeq !== inspectSeqRef.current) return;
       setNodePayload(res);
-      if (res.view_type === "TEXTURE" && res.texture) {
-        const t: TextureNodeView = res.texture;
-        setHashDraft(t.texture_id_hex);
-        setFlagsDraft(t.flags_hex);
-      } else if (res.view_type === "WMB" && res.wmb) {
-        const w: WmbSectionView = res.wmb;
-        if (w.material_decoded) {
-          const norm: DecodedWmbMaterial = {
-            ...w.material_decoded,
-            fields: Array.isArray(w.material_decoded.fields) ? w.material_decoded.fields : [],
-            raw_dwords: Array.isArray(w.material_decoded.raw_dwords)
-              ? w.material_decoded.raw_dwords
-              : [],
-          };
-          setWmbMatDraft(norm);
-        } else {
-          setWmbMatDraft(null);
-        }
-        if (w.wmb3_material) {
-          setWmb3MatDraft(structuredClone(w.wmb3_material));
-        } else {
-          setWmb3MatDraft(null);
-        }
-        if (w.section === "header" && w.data) {
-          const vf = w.data.vertex_flags;
-          if (typeof vf === "number") {
-            setWmbHeaderFlagsDraft(`0x${(vf >>> 0).toString(16).toUpperCase().padStart(8, "0")}`);
-          }
-          if (Array.isArray(w.data.bounding_box) && w.data.bounding_box.length === 6) {
-            setWmbBboxDraft([...w.data.bounding_box]);
-          }
-        }
-      } else if (res.view_type === "BXM") {
-        const clonedRoot: BxmXmlNode | null = res.root ? structuredClone(res.root) : null;
-        setBxmTreeDraft(clonedRoot);
-        setBxmXmlDraft(res.xml ?? bxmTreeToXmlDocument(clonedRoot));
-        setSelectedBxmPath("0");
-        setBxmExpandedPaths({ "0": true, "0.0": true, "0.1": true });
-        if (detectBxmTabular(clonedRoot)) {
-          setBxmViewMode("table");
-        } else {
-          setBxmViewMode("tree");
-        }
-      } else if (res.view_type === "EST" && res.est) {
-        setEstDraft(structuredClone(res.est));
-      } else if (res.view_type === "CSV") {
-        setCsvHeadersDraft(Array.isArray(res.headers) ? [...res.headers] : []);
-        setCsvRowsDraft(Array.isArray(res.rows) ? structuredClone(res.rows) : []);
-      } else if (res.view_type === "RAW_STRUCT") {
-        setStructDraft(structuredClone(res.data));
-        setSelectedMotTrackIdx(0);
-      }
+      hydrateFromInspect(res);
       if (docLabel) {
         setStatusLeft(`Loaded ${docLabel}`);
       }
@@ -924,25 +672,6 @@ export default function App() {
         setStatusLeft(`Inspect error: ${String(err)}`);
       }
     }
-  }
-
-  function updateBxmDraftTree(nextRoot: BxmXmlNode) {
-    setBxmTreeDraft(nextRoot);
-    setBxmXmlDraft(bxmTreeToXmlDocument(nextRoot));
-  }
-
-  function switchBxmViewMode(nextMode: "tree" | "table" | "xml") {
-    if (bxmViewMode === "xml" && nextMode !== "xml") {
-      const parsed = parseXmlToBxmNode(bxmXmlDraft);
-      if (!parsed) {
-        setStatusLeft("XML parse error: fix malformed XML syntax before switching to Tree/Table view");
-        return;
-      }
-      setBxmTreeDraft(parsed);
-    } else if (bxmViewMode !== "xml" && nextMode === "xml" && bxmTreeDraft) {
-      setBxmXmlDraft(bxmTreeToXmlDocument(bxmTreeDraft));
-    }
-    setBxmViewMode(nextMode);
   }
 
   async function commitBxmDraft(customXml?: string) {
@@ -970,7 +699,7 @@ export default function App() {
     setMipIndex(newMip);
     setChannelMode(newChannel);
     setOpaquePreview(newOpaque);
-    if (nodePayload?.view_type === "TEXTURE") {
+    if (nodePayload?.view_type === "TEXTURE" && nodePayload.texture) {
       await selectAndInspectNode(nodePayload.texture.node_id, newMip, newChannel, newOpaque);
     }
   }
@@ -1097,7 +826,7 @@ export default function App() {
     if (picked) {
       setOodleDllPath(picked);
       await invoke("save_studio_settings", {
-        settings: buildStudioSettingsPayload({ oodle_dll_path: picked }),
+        settings: buildStudioSettingsPayload(currentDir, { oodle_dll_path: picked }),
       }).catch(() => {});
       setStatusLeft(`Configured Oodle DLL: ${picked}`);
       if (outline) {
@@ -1114,7 +843,7 @@ export default function App() {
     if (picked) {
       setNvttDllPath(picked);
       await invoke("save_studio_settings", {
-        settings: buildStudioSettingsPayload({ nvtt_dll_path: picked }),
+        settings: buildStudioSettingsPayload(currentDir, { nvtt_dll_path: picked }),
       }).catch(() => {});
       setStatusLeft(`Configured NVTT DLL: ${picked}`);
     }
@@ -1365,147 +1094,10 @@ export default function App() {
     }
   }
 
-  const filteredFiles = useMemo(() => {
-    const regex = compileGlobFilter(fileGlobFilter);
-    const list = fsEntries.filter((e) => {
-      if (hideUnsupported && !e.is_dir && !e.is_supported) return false;
-      if (!regex) return true;
-      return regex.test(e.name);
-    });
-    list.sort((a, b) => {
-      if (a.is_dir !== b.is_dir) return a.is_dir ? -1 : 1;
-      let cmp = 0;
-      if (fileSortCol === "name") {
-        cmp = a.name.localeCompare(b.name, undefined, { numeric: true, sensitivity: "base" });
-      } else if (fileSortCol === "type") {
-        cmp =
-          a.extension.localeCompare(b.extension, undefined, { sensitivity: "base" }) ||
-          a.name.localeCompare(b.name, undefined, { numeric: true, sensitivity: "base" });
-      } else if (fileSortCol === "modified") {
-        cmp = a.modified_epoch_ms - b.modified_epoch_ms;
-      } else {
-        cmp = a.size - b.size;
-      }
-      return fileSortAsc ? cmp : -cmp;
-    });
-    return list;
-  }, [fsEntries, fileGlobFilter, hideUnsupported, fileSortCol, fileSortAsc]);
-
-  function toggleCard(key: string) {
-    setOpenCards((prev) => ({ ...prev, [key]: !prev[key] }));
-  }
-
-  function toggleSort(col: FileSortCol) {
-    if (fileSortCol === col) {
-      setFileSortAsc(!fileSortAsc);
-    } else {
-      setFileSortCol(col);
-      setFileSortAsc(true);
-    }
-  }
-
-  // Recursive Asset Tree Renderer with Pointer-Based Drag Reordering + Drag-Out to Explorer
-  function renderTreeNodes(nodes: AssetTreeNode[]) {
-    const filterLow = assetSearch.trim().toLowerCase();
-    return nodes.map((node) => {
-      const hasChildren = node.children && node.children.length > 0;
-      const isExpanded = !!expandedNodes[node.id];
-      const isSelected = selectedNodeId === node.id;
-      const canDragNode = node.id !== "root" && !isVirtualSubNode(node.id);
-      const isDragOverBefore =
-        pointerDrag?.active &&
-        pointerDrag.kind === "asset" &&
-        pointerDrag.overId === node.id &&
-        pointerDrag.insertPos === "before";
-      const isDragOverAfter =
-        pointerDrag?.active &&
-        pointerDrag.kind === "asset" &&
-        pointerDrag.overId === node.id &&
-        pointerDrag.insertPos === "after";
-
-      const matchesFilter = (n: AssetTreeNode): boolean => {
-        if (!filterLow) return true;
-        if (
-          n.label.toLowerCase().includes(filterLow) ||
-          n.format_badge.toLowerCase().includes(filterLow)
-        ) {
-          return true;
-        }
-        return n.children?.some(matchesFilter) ?? false;
-      };
-      if (!matchesFilter(node)) return null;
-
-      return (
-        <div key={node.id}>
-          <div
-            data-asset-node-id={node.id}
-            className={`tree-row ${isSelected ? "selected" : ""} ${
-              isDragOverBefore ? "drag-insert-before" : ""
-            } ${isDragOverAfter ? "drag-insert-after" : ""}`}
-            onPointerDown={(e) => {
-              if (e.button !== 0 || !canDragNode) return;
-              setPointerDrag({
-                kind: "asset",
-                sourceId: node.id,
-                label: node.label,
-                startX: e.clientX,
-                startY: e.clientY,
-                curX: e.clientX,
-                curY: e.clientY,
-                active: false,
-                overId: null,
-                insertPos: null,
-                dragOutTriggered: false,
-              });
-            }}
-            onClick={() => {
-              if (hasChildren && !expandedNodes[node.id]) {
-                setExpandedNodes((p) => ({ ...p, [node.id]: true }));
-              }
-              selectAndInspectNode(node.id);
-            }}
-            onContextMenu={(e) => {
-              e.preventDefault();
-              e.stopPropagation();
-              selectAndInspectNode(node.id);
-              setHoverSubmenuIdx(null);
-              const items = buildAssetNodeContextMenu(node.id, node.kind);
-              if (items.length > 0) {
-                setContextMenu({
-                  x: Math.min(e.clientX, window.innerWidth - 260),
-                  y: Math.min(e.clientY, window.innerHeight - 340),
-                  items,
-                });
-              }
-            }}
-          >
-            <span
-              className={`tree-arrow ${isExpanded ? "expanded" : ""}`}
-              style={{ visibility: hasChildren ? "visible" : "hidden" }}
-              onClick={(e) => {
-                e.stopPropagation();
-                setExpandedNodes((p) => ({ ...p, [node.id]: !p[node.id] }));
-              }}
-            >
-              <svg width="6" height="9" viewBox="0 0 6 10" fill="none" stroke="currentColor" strokeWidth="1.5">
-                <path d="M1 1L5 5L1 9" strokeLinecap="round" strokeLinejoin="round" />
-              </svg>
-            </span>
-            <span className="tree-badge">{node.format_badge}</span>
-            <span style={{ overflow: "hidden", textOverflow: "ellipsis" }}>{node.label}</span>
-          </div>
-          {hasChildren && (isExpanded || !!filterLow) && (
-            <div className="tree-children">{renderTreeNodes(node.children)}</div>
-          )}
-        </div>
-      );
-    });
-  }
-
   const activeTexture: TextureNodeView | null =
-    nodePayload?.view_type === "TEXTURE" ? nodePayload.texture : null;
+    nodePayload?.view_type === "TEXTURE" ? (nodePayload.texture ?? null) : null;
   const activeWmb: WmbSectionView | null =
-    nodePayload?.view_type === "WMB" ? nodePayload.wmb : null;
+    nodePayload?.view_type === "WMB" ? (nodePayload.wmb ?? null) : null;
 
   const { buildAssetNodeContextMenu, buildFileBrowserContextMenu } = createMenuBuilders(
     {
@@ -1899,33 +1491,46 @@ export default function App() {
       <div className="studio-main">
         {/* LEFT COLUMN: Stacked Asset Browser + Resizable File Browser */}
         <div className="left-column" ref={leftColRef} style={{ width: leftWidth }}>
-          {/* Top-Left: Asset Browser */}
-          <div
-            ref={assetBrowserCardRef}
-            className="studio-card"
-            style={{ flex: `${assetRatio} 1 0%`, minHeight: 110 }}
-          >
-            <div className="pane-header">
-              <span className="pane-title">Asset Browser</span>
-              <input
-                type="text"
-                className="field-box"
-                style={{ width: 135, height: 24, fontSize: 11.5 }}
-                placeholder="Filter nodes..."
-                value={assetSearch}
-                onChange={(e) => setAssetSearch(e.target.value)}
-              />
-            </div>
-            <div className="tree-scroll">
-              {outline ? (
-                renderTreeNodes(outline.tree)
-              ) : (
-                <div style={{ padding: "18px 10px", color: "var(--brush-muted)", textAlign: "center" }}>
-                  Select a file in the File Browser below, drag &amp; drop a file onto the window, or press Ctrl+O.
-                </div>
-              )}
-            </div>
-          </div>
+          <AssetBrowserPanel
+            cardRef={assetBrowserCardRef}
+            outline={outline}
+            expandedNodes={expandedNodes}
+            selectedNodeId={selectedNodeId}
+            assetSearch={assetSearch}
+            pointerDrag={pointerDrag}
+            assetRatio={assetRatio}
+            onSearchChange={setAssetSearch}
+            onToggleExpand={(nodeId) =>
+              setExpandedNodes((p) => ({ ...p, [nodeId]: !p[nodeId] }))
+            }
+            onSelectNode={(nodeId) => void selectAndInspectNode(nodeId)}
+            onContextMenu={(e, nodeId, kind) => {
+              setHoverSubmenuIdx(null);
+              const items = buildAssetNodeContextMenu(nodeId, kind);
+              if (items.length > 0) {
+                setContextMenu({
+                  x: Math.min(e.clientX, window.innerWidth - 260),
+                  y: Math.min(e.clientY, window.innerHeight - 340),
+                  items,
+                });
+              }
+            }}
+            onPointerDownNode={(e, node) => {
+              setPointerDrag({
+                kind: "asset",
+                sourceId: node.id,
+                label: node.label,
+                startX: e.clientX,
+                startY: e.clientY,
+                curX: e.clientX,
+                curY: e.clientY,
+                active: false,
+                overId: null,
+                insertPos: null,
+                dragOutTriggered: false,
+              });
+            }}
+          />
 
           {/* Horizontal Splitter between Asset Browser and File Browser */}
           <div
@@ -1940,166 +1545,25 @@ export default function App() {
             <div className="splitter-h-grip" />
           </div>
 
-          {/* Bottom-Left: File Browser with Sort by Type & Hide Unsupported Toggle */}
-          <div className="studio-card" style={{ flex: `${1 - assetRatio} 1 0%`, minHeight: 110 }}>
-            <div className="pane-header">
-              <span className="pane-title">File Browser</span>
-              <div style={{ display: "flex", gap: 4, alignItems: "center" }}>
-                <button
-                  className={`pill-button ${hideUnsupported ? "accent" : ""}`}
-                  style={{ height: 24, padding: "0 8px", fontSize: 11 }}
-                  onClick={() => setHideUnsupported(!hideUnsupported)}
-                  title="Hide unsupported file extensions (On by default)"
-                >
-                  Supported Only
-                </button>
-                <button
-                  className="pill-button"
-                  style={{ height: 24, padding: "0 8px", fontSize: 11.5 }}
-                  onClick={() => {
-                    if (!currentDir) return;
-                    const up = currentDir.replace(/[\\/][^\\/]+$/, "");
-                    if (up && up !== currentDir) loadDirectory(up);
-                  }}
-                  title="Parent Directory"
-                >
-                  ↑ Up
-                </button>
-                <button
-                  className="pill-button"
-                  style={{ height: 24, padding: "0 8px", fontSize: 11.5 }}
-                  onClick={handleMenuOpenFolder}
-                  title="Browse Folder..."
-                >
-                  <IconFolder />
-                </button>
-              </div>
-            </div>
-
-            <div className="file-browser-controls">
-              <div className="file-folder-bar">
-                <input
-                  type="text"
-                  className="field-box mono"
-                  style={{ flex: 1, height: 25, fontSize: 11 }}
-                  value={dirInput}
-                  onChange={(e) => setDirInput(e.target.value)}
-                  onKeyDown={(e) => {
-                    if (e.key === "Enter") loadDirectory(dirInput);
-                  }}
-                  placeholder="Folder path..."
-                />
-              </div>
-              <input
-                type="text"
-                className="field-box mono"
-                style={{ width: "100%", height: 25, fontSize: 11.5 }}
-                value={fileGlobFilter}
-                onChange={(e) => setFileGlobFilter(e.target.value)}
-                placeholder="Glob filter (e.g. *.dat, pl00*.wmb, *.pkz)..."
-              />
-            </div>
-
-            <div className="file-table-wrap">
-              <table className="file-table">
-                <thead>
-                  <tr>
-                    <th style={{ width: "42%" }} onClick={() => toggleSort("name")}>
-                      Name {fileSortCol === "name" ? (fileSortAsc ? "▲" : "▼") : ""}
-                    </th>
-                    <th style={{ width: "16%" }} onClick={() => toggleSort("type")}>
-                      Type {fileSortCol === "type" ? (fileSortAsc ? "▲" : "▼") : ""}
-                    </th>
-                    <th style={{ width: "22%" }} onClick={() => toggleSort("modified")}>
-                      Modified {fileSortCol === "modified" ? (fileSortAsc ? "▲" : "▼") : ""}
-                    </th>
-                    <th style={{ width: "20%", textAlign: "right" }} onClick={() => toggleSort("size")}>
-                      Size {fileSortCol === "size" ? (fileSortAsc ? "▲" : "▼") : ""}
-                    </th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {filteredFiles.map((entry, idx) => {
-                    const isSelected =
-                      selectedFilePath === entry.path || selectedFilePaths.includes(entry.path);
-                    return (
-                      <tr
-                        key={entry.path}
-                        className={`file-row ${isSelected ? "selected" : ""}`}
-                        title={entry.path}
-                        onClick={(e) => {
-                          if (e.ctrlKey || e.metaKey) {
-                            setSelectedFilePaths((prev) =>
-                              prev.includes(entry.path)
-                                ? prev.filter((p) => p !== entry.path)
-                                : [...prev, entry.path]
-                            );
-                            setSelectedFilePath(entry.path);
-                            return;
-                          }
-                          if (e.shiftKey && selectedFilePath) {
-                            const anchorIdx = filteredFiles.findIndex(
-                              (f) => f.path === selectedFilePath
-                            );
-                            if (anchorIdx !== -1) {
-                              const lo = Math.min(anchorIdx, idx);
-                              const hi = Math.max(anchorIdx, idx);
-                              setSelectedFilePaths(filteredFiles.slice(lo, hi + 1).map((f) => f.path));
-                              return;
-                            }
-                          }
-                          setSelectedFilePaths([entry.path]);
-                          setSelectedFilePath(entry.path);
-                        }}
-                        onDoubleClick={() => {
-                          if (entry.is_dir) {
-                            void loadDirectory(entry.path);
-                          } else {
-                            void openDocumentByPath(entry.path);
-                          }
-                        }}
-                        onContextMenu={(e) => {
-                          e.preventDefault();
-                          e.stopPropagation();
-                          if (!selectedFilePaths.includes(entry.path)) {
-                            setSelectedFilePaths([entry.path]);
-                          }
-                          setSelectedFilePath(entry.path);
-                          setHoverSubmenuIdx(null);
-                          setContextMenu({
-                            x: Math.min(e.clientX, window.innerWidth - 250),
-                            y: Math.min(e.clientY, window.innerHeight - 360),
-                            items: buildFileBrowserContextMenu(entry),
-                          });
-                        }}
-                      >
-                        <td>
-                          {entry.is_dir ? "📁 " : ""}
-                          {entry.name}
-                        </td>
-                        <td
-                          className="mono"
-                          style={{ color: isSelected ? "var(--brush-text)" : "var(--brush-muted)" }}
-                        >
-                          {entry.is_dir ? "DIR" : entry.extension ? `.${entry.extension}` : "—"}
-                        </td>
-                        <td style={{ color: isSelected ? "var(--brush-text)" : "var(--brush-muted)" }}>
-                          {entry.modified_str}
-                        </td>
-                        <td
-                          style={{
-                            textAlign: "right",
-                            color: isSelected ? "var(--brush-text)" : "var(--brush-muted)",
-                          }}
-                        >
-                          {entry.is_dir ? "" : formatBytes(entry.size)}
-                        </td>
-                      </tr>
-                    );
-                  })}
-                </tbody>
-              </table>
-            </div>
+          <div style={{ flex: `${1 - assetRatio} 1 0%`, minHeight: 110, display: "flex", flexDirection: "column" }}>
+            <FileBrowserPanel
+              fb={fb}
+              hideUnsupported={hideUnsupported}
+              setHideUnsupported={setHideUnsupported}
+              fileSortCol={fileSortCol}
+              fileSortAsc={fileSortAsc}
+              onOpenFolder={handleMenuOpenFolder}
+              onOpenFile={(path) => void openDocumentByPath(path)}
+              onContextMenu={(e, entry) => {
+                setHoverSubmenuIdx(null);
+                setContextMenu({
+                  x: Math.min(e.clientX, window.innerWidth - 250),
+                  y: Math.min(e.clientY, window.innerHeight - 360),
+                  items: buildFileBrowserContextMenu(entry),
+                });
+              }}
+              setContextMenu={setContextMenu}
+            />
           </div>
         </div>
 
@@ -2162,324 +1626,56 @@ export default function App() {
           />
         ) : (
         <>
-        {/* CENTER COLUMN: Contextual Viewport / Structured Table Editor */}
-        <div className="center-column">
-          <div className="studio-card viewer-card">
-            <div className="underline-tabbar">
-              {activeTexture ? (
-                <>
-                  <button
-                    className={`underline-tab ${centerTab === "primary" ? "active" : ""}`}
-                    onClick={() => setCenterTab("primary")}
-                  >
-                    <IconImage size={12} />
-                    <span>2D</span>
-                  </button>
-                  <button
-                    className={`underline-tab ${centerTab === "secondary" ? "active" : ""}`}
-                    onClick={() => setCenterTab("secondary")}
-                  >
-                    <IconCube size={12} />
-                    <span>Header &amp; Surface Layout</span>
-                  </button>
-                </>
-              ) : nodePayload?.view_type === "BXM" ? (
-                <>
-                  <button
-                    className={`underline-tab ${bxmViewMode === "tree" ? "active" : ""}`}
-                    onClick={() => switchBxmViewMode("tree")}
-                  >
-                    <IconCode size={12} />
-                    <span>Interactive Tree</span>
-                  </button>
-                  <button
-                    className={`underline-tab ${bxmViewMode === "table" ? "active" : ""}`}
-                    onClick={() => switchBxmViewMode("table")}
-                  >
-                    <IconCube size={12} />
-                    <span>Table View</span>
-                  </button>
-                  <button
-                    className={`underline-tab ${bxmViewMode === "xml" ? "active" : ""}`}
-                    onClick={() => switchBxmViewMode("xml")}
-                  >
-                    <IconCode size={12} />
-                    <span>Raw XML</span>
-                  </button>
-                </>
-              ) : (
-                <>
-                  <button
-                    className={`underline-tab ${centerTab === "primary" ? "active" : ""}`}
-                    onClick={() => setCenterTab("primary")}
-                  >
-                    <IconCube size={12} />
-                    <span>Structured Editor</span>
-                  </button>
-                  <button
-                    className={`underline-tab ${centerTab === "secondary" ? "active" : ""}`}
-                    onClick={() => setCenterTab("secondary")}
-                  >
-                    <IconCode size={12} />
-                    <span>Hex / Raw Inspector</span>
-                  </button>
-                </>
-              )}
-            </div>
-
-            {/* Center Body */}
-            {activeTexture ? (
-              <TextureCenterView
-                activeTexture={activeTexture}
-                centerTab={centerTab}
-                zoom={zoom}
-                setZoom={setZoom}
-                pan={pan}
-                setPan={setPan}
-                isPanning={isPanning}
-                setIsPanning={setIsPanning}
-                panStartRef={panStartRef}
-                handleResetView={handleResetView}
-                buildAssetNodeContextMenu={buildAssetNodeContextMenu}
-                setContextMenu={setContextMenu}
-                setHoverSubmenuIdx={setHoverSubmenuIdx}
-              />
-            ) : activeWmb && centerTab === "primary" ? (
-              <div
-                className="struct-table-container"
-                onContextMenu={(e) => {
-                  e.preventDefault();
-                  e.stopPropagation();
-                  setHoverSubmenuIdx(null);
-                  const items = buildAssetNodeContextMenu(
-                    activeWmb.node_id,
-                    activeWmb.is_wmb3 ? "WMB3" : "WMB"
-                  );
-                  if (items.length > 0) {
-                    setContextMenu({
-                      x: Math.min(e.clientX, window.innerWidth - 250),
-                      y: Math.min(e.clientY, window.innerHeight - 260),
-                      items,
-                    });
-                  }
-                }}
-              >
-                <WmbStructuredCenterView
-                  wmb={activeWmb}
-                  wmbMatDraft={wmbMatDraft}
-                  setWmbMatDraft={setWmbMatDraft}
-                  wmb3MatDraft={wmb3MatDraft}
-                  setWmb3MatDraft={setWmb3MatDraft}
-                  wmbRawMode={wmbRawMode}
-                  setWmbRawMode={setWmbRawMode}
-                  wmbB2Override={wmbB2Override}
-                  setWmbB2Override={setWmbB2Override}
-                  materialClipboard={materialClipboard}
-                  setMaterialClipboard={setMaterialClipboard}
-                  wmbHeaderFlagsDraft={wmbHeaderFlagsDraft}
-                  setWmbHeaderFlagsDraft={setWmbHeaderFlagsDraft}
-                  wmbBboxDraft={wmbBboxDraft}
-                  setWmbBboxDraft={setWmbBboxDraft}
-                  expandedMeshGroups={expandedMeshGroups}
-                  setExpandedMeshGroups={setExpandedMeshGroups}
-                  expandedBatchLods={expandedBatchLods}
-                  setExpandedBatchLods={setExpandedBatchLods}
-                  draggedBatchInfo={draggedBatchInfo}
-                  setDraggedBatchInfo={setDraggedBatchInfo}
-                  dragOverMeshIdx={dragOverMeshIdx}
-                  setDragOverMeshIdx={setDragOverMeshIdx}
-                  selectAndInspectNode={selectAndInspectNode}
-                  runWmbMutation={runWmbMutation}
-                  handleCrossGameMaterialConvert={handleCrossGameMaterialConvert}
-                  setStatusLeft={setStatusLeft}
-                />
-              </div>
-            ) : nodePayload?.view_type === "BXM" ? (
-              <BxmCenterView
-                nodePayload={nodePayload}
-                bxmViewMode={bxmViewMode}
-                bxmTreeDraft={bxmTreeDraft}
-                bxmXmlDraft={bxmXmlDraft}
-                setBxmXmlDraft={setBxmXmlDraft}
-                selectedBxmPath={selectedBxmPath}
-                setSelectedBxmPath={setSelectedBxmPath}
-                bxmExpandedPaths={bxmExpandedPaths}
-                setBxmExpandedPaths={setBxmExpandedPaths}
-                pointerDrag={pointerDrag}
-                setPointerDrag={setPointerDrag}
-                updateBxmDraftTree={updateBxmDraftTree}
-                commitBxmDraft={commitBxmDraft}
-                runContainerMutation={runContainerMutation}
-                setContextMenu={setContextMenu}
-                setHoverSubmenuIdx={setHoverSubmenuIdx}
-                setStatusLeft={setStatusLeft}
-              />
-            ) : (
-              <StructCenterView
-                nodePayload={nodePayload}
-                setNodePayload={setNodePayload}
-                centerTab={centerTab}
-                csvHeadersDraft={csvHeadersDraft}
-                setCsvHeadersDraft={setCsvHeadersDraft}
-                csvRowsDraft={csvRowsDraft}
-                setCsvRowsDraft={setCsvRowsDraft}
-                estDraft={estDraft}
-                setEstDraft={setEstDraft}
-                structDraft={structDraft}
-                setStructDraft={setStructDraft}
-                selectedMotTrackIdx={selectedMotTrackIdx}
-                setSelectedMotTrackIdx={setSelectedMotTrackIdx}
-                pkzBulkCodec={pkzBulkCodec}
-                setPkzBulkCodec={setPkzBulkCodec}
-                runStructMutation={runStructMutation}
-                runClothMutation={runClothMutation}
-                runContainerMutation={runContainerMutation}
-                selectAndInspectNode={selectAndInspectNode}
-                handlePickOodleDll={handlePickOodleDll}
-                loadDirectory={loadDirectory}
-                currentDirRef={currentDirRef}
-                buildAssetNodeContextMenu={buildAssetNodeContextMenu}
-                setContextMenu={setContextMenu}
-                setHoverSubmenuIdx={setHoverSubmenuIdx}
-                setStatusLeft={setStatusLeft}
-              />
-            )}
-          </div>
-        </div>
-
-        <div
-          className={`splitter-v ${draggingSplit === "right" ? "dragging" : ""}`}
-          onMouseDown={(e) => {
-            e.preventDefault();
-            setDraggingSplit("right");
+        <DocumentEditors
+          selection={{
+            nodePayload,
+            setNodePayload,
+            activeTexture,
+            activeWmb,
+            outline,
           }}
-          onDoubleClick={() => setRightWidth(380)}
-          title="Drag to resize, double-click to reset"
-        >
-          <div className="splitter-v-grip" />
-        </div>
-
-        <div className="right-column" style={{ width: rightWidth }}>
-          {activeTexture ? (
-            <TextureInspectorView
-              activeTexture={activeTexture}
-              openCards={openCards}
-              toggleCard={toggleCard}
-              hashDraft={hashDraft}
-              setHashDraft={setHashDraft}
-              flagsDraft={flagsDraft}
-              setFlagsDraft={setFlagsDraft}
-              texEncodeFormat={texEncodeFormat}
-              setTexEncodeFormat={setTexEncodeFormat}
-              texGenerateMips={texGenerateMips}
-              setTexGenerateMips={setTexGenerateMips}
-              texSolidify={texSolidify}
-              setTexSolidify={setTexSolidify}
-              texMakeOpaque={texMakeOpaque}
-              setTexMakeOpaque={setTexMakeOpaque}
-              runTextureMutation={runTextureMutation}
-              promptAndRunTextureImport={promptAndRunTextureImport}
-              handleTextureExport={handleTextureExport}
-            />
-          ) : activeWmb ? (
-            <WmbInspectorView
-              activeWmb={activeWmb}
-              openCards={openCards}
-              toggleCard={toggleCard}
-              wmbB2Override={wmbB2Override}
-              wmbMatDraft={wmbMatDraft}
-              setWmbMatDraft={setWmbMatDraft}
-              runWmbMutation={runWmbMutation}
-            />
-          ) : nodePayload?.view_type === "BXM" ? (
-            <BxmInspectorView
-              nodePayload={nodePayload}
-              bxmTreeDraft={bxmTreeDraft}
-              selectedBxmPath={selectedBxmPath}
-              openCards={openCards}
-              toggleCard={toggleCard}
-              updateBxmDraftTree={updateBxmDraftTree}
-              commitBxmDraft={commitBxmDraft}
-            />
-          ) : nodePayload?.view_type === "CLOTH" ? (
-            <ClothInspectorView
-              nodePayload={nodePayload}
-              setNodePayload={setNodePayload}
-              openCards={openCards}
-              toggleCard={toggleCard}
-              runClothMutation={runClothMutation}
-            />
-          ) : (
-            <div>
-              <div className="inspector-header">
-                <div className="inspector-icon-box">
-                  <IconCube size={20} />
-                </div>
-                <div>
-                  <div className="inspector-title">
-                    {nodePayload?.title ?? "No asset selected"}
-                  </div>
-                  <div className="inspector-subtitle">
-                    {nodePayload?.spec_line ??
-                      (outline
-                        ? `${outline.root_format} · ${outline.endian}`
-                        : "Open a container from the File Browser and pick an item from the Asset Browser.")}
-                  </div>
-                </div>
-              </div>
-
-              <div className="inspector-card">
-                <button className="card-header-toggle" onClick={() => toggleCard("dll_config")}>
-                  <span className="card-header-left">
-                    <span style={{ color: "var(--brush-muted)" }}>⚙</span>
-                    <span>External Libraries (Oodle &amp; NVTT)</span>
-                  </span>
-                  <IconChevronDown collapsed={!openCards.dll_config} />
-                </button>
-                {openCards.dll_config && (
-                  <div className="card-body">
-                    <div className="inspector-row">
-                      <span className="inspector-row-label">Oodle DLL</span>
-                      <div style={{ display: "flex", gap: 6, flex: 1 }}>
-                        <input
-                          type="text"
-                          className="field-box mono"
-                          style={{ flex: 1, minWidth: 0, fontSize: 11 }}
-                          value={oodleDllPath}
-                          placeholder="oo2core_*_win64.dll (or pure-Rust ooz fallback)"
-                          onChange={(e) => setOodleDllPath(e.target.value)}
-                        />
-                        <button className="pill-button" onClick={handlePickOodleDll}>
-                          Browse
-                        </button>
-                      </div>
-                    </div>
-                    <div className="inspector-row">
-                      <span className="inspector-row-label">NVTT DLL</span>
-                      <div style={{ display: "flex", gap: 6, flex: 1 }}>
-                        <input
-                          type="text"
-                          className="field-box mono"
-                          style={{ flex: 1, minWidth: 0, fontSize: 11 }}
-                          value={nvttDllPath}
-                          placeholder="nvtt30205.dll (or pure-Rust BCn/ASTC fallback)"
-                          onChange={(e) => setNvttDllPath(e.target.value)}
-                        />
-                        <button className="pill-button" onClick={handlePickNvttDll}>
-                          Browse
-                        </button>
-                      </div>
-                    </div>
-                    <div style={{ color: "var(--brush-muted)", fontSize: 11, marginTop: 4 }}>
-                      Includes built-in pure-Rust Oodle Kraken (<span className="mono">ooz</span>) fallback
-                      decompressor when <span className="mono">oo2core_*_win64.dll</span> is not present.
-                    </div>
-                  </div>
-                )}
-              </div>
-            </div>
-          )}
-        </div>
+          drafts={drafts}
+          meshUi={meshUi}
+          layout={{
+            rightWidth,
+            draggingSplit,
+            setDraggingSplit,
+            setRightWidth,
+            panStartRef,
+          }}
+          dll={{
+            oodleDllPath,
+            setOodleDllPath,
+            nvttDllPath,
+            setNvttDllPath,
+            handlePickOodleDll,
+            handlePickNvttDll,
+          }}
+          actions={{
+            selectAndInspectNode,
+            runWmbMutation,
+            runTextureMutation,
+            runStructMutation,
+            runClothMutation,
+            runContainerMutation,
+            handleCrossGameMaterialConvert,
+            promptAndRunTextureImport,
+            handleTextureExport,
+            handleResetView,
+            commitBxmDraft,
+            loadDirectory,
+            currentDirRef,
+            buildAssetNodeContextMenu,
+            setContextMenu,
+            setHoverSubmenuIdx,
+            setStatusLeft,
+            switchBxmViewMode,
+          }}
+          materialClipboard={materialClipboard}
+          setMaterialClipboard={setMaterialClipboard}
+          pointerDrag={pointerDrag}
+          setPointerDrag={setPointerDrag}
+        />
         </>
         )}
       </div>

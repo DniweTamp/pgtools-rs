@@ -260,3 +260,34 @@ export interface MaterialClipboardState {
   game: "b1" | "b2" | "b3";
   payload: any;
 }
+
+/** Result of inspect_asset_node — discriminated by view_type. */
+export type NodeViewType =
+  | "TEXTURE"
+  | "WMB"
+  | "BXM"
+  | "EST"
+  | "CSV"
+  | "RAW_STRUCT"
+  | "CLOTH"
+  | "EMPTY"
+  | string;
+
+export interface NodeInspectPayload {
+  node_id: string;
+  view_type: NodeViewType;
+  title?: string;
+  tag?: string;
+  texture?: TextureNodeView;
+  wmb?: WmbSectionView;
+  /** BXM-specific tree payload when view_type === "BXM" */
+  bxm?: BxmXmlNode;
+  est?: any;
+  csv?: { headers: string[]; rows: string[][] };
+  data?: any;
+  [key: string]: any;
+}
+
+
+/** Opaque structured-editor records (WMB meshes/batches/bones) until fully typed. */
+export type WmbLooseRecord = Record<string, unknown>;

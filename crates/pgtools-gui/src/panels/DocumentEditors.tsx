@@ -1,0 +1,545 @@
+import React from "react";
+import {
+  ContextMenuState,
+  DocumentOutline,
+  MaterialClipboardState,
+  MenuItemSpec,
+  NodeInspectPayload,
+  PointerDragState,
+  TextureNodeView,
+  WmbSectionView,
+} from "../types";
+import { BxmCenterView, BxmInspectorView } from "../bxm/BxmEditor";
+import {
+  TextureCenterView,
+  TextureInspectorView,
+} from "../editors/TextureEditor";
+import { ClothInspectorView, StructCenterView } from "../editors/StructEditors";
+import {
+  WmbInspectorView,
+  WmbStructuredCenterView,
+} from "../editors/WmbStructuredEditor";
+import {
+  IconChevronDown,
+  IconCode,
+  IconCube,
+  IconImage,
+} from "../components/Icons";
+import { EditorDraftsApi } from "../hooks/useEditorDrafts";
+import { MeshUiApi } from "../hooks/useMeshUi";
+
+export interface DocumentSelection {
+  nodePayload: NodeInspectPayload | null;
+  setNodePayload: React.Dispatch<React.SetStateAction<NodeInspectPayload | null>>;
+  activeTexture: TextureNodeView | null;
+  activeWmb: WmbSectionView | null;
+  outline: DocumentOutline | null;
+}
+
+export interface DocumentLayout {
+  rightWidth: number;
+  draggingSplit: "left" | "right" | "left-row" | null;
+  setDraggingSplit: (v: "left" | "right" | "left-row" | null) => void;
+  setRightWidth: (n: number) => void;
+  panStartRef: React.MutableRefObject<{ x: number; y: number }>;
+}
+
+export interface DocumentDllSettings {
+  oodleDllPath: string;
+  setOodleDllPath: (s: string) => void;
+  nvttDllPath: string;
+  setNvttDllPath: (s: string) => void;
+  handlePickOodleDll: () => Promise<void>;
+  handlePickNvttDll: () => Promise<void>;
+}
+
+export interface DocumentActions {
+  selectAndInspectNode: (...args: any[]) => Promise<void>;
+  runWmbMutation: (nodeId: string, operation: string, payload?: any) => Promise<void>;
+  runTextureMutation: (nodeId: string, action: string, payload?: any) => Promise<void>;
+  runStructMutation: (nodeId: string, structKind: string, updatedData: any) => Promise<void>;
+  runClothMutation: (
+    nodeId: string,
+    operation: string,
+    preset?: string,
+    updatedJson?: any
+  ) => Promise<void>;
+  runContainerMutation: (
+    nodeId: string,
+    action: string,
+    targetPath?: string,
+    payload?: any
+  ) => Promise<void>;
+  handleCrossGameMaterialConvert: (
+    wmb: WmbSectionView,
+    dstGame: "b1" | "b2" | "b3"
+  ) => Promise<void>;
+  promptAndRunTextureImport: (
+    nodeId: string,
+    action: "replace_file" | "add_texture"
+  ) => Promise<void>;
+  handleTextureExport: (
+    nodeId: string,
+    scope: "single" | "bank",
+    format: "png" | "dds" | "raw"
+  ) => Promise<void>;
+  handleResetView: () => void;
+  commitBxmDraft: (customXml?: string) => Promise<void>;
+  loadDirectory: (target?: string) => Promise<void>;
+  currentDirRef: React.MutableRefObject<string>;
+  buildAssetNodeContextMenu: (nodeId: string, kind: string) => MenuItemSpec[];
+  setContextMenu: React.Dispatch<React.SetStateAction<ContextMenuState | null>>;
+  setHoverSubmenuIdx: React.Dispatch<React.SetStateAction<number | null>>;
+  setStatusLeft: (msg: string) => void;
+  switchBxmViewMode: (m: "tree" | "table" | "xml") => void;
+}
+
+export interface DocumentEditorsProps {
+  selection: DocumentSelection;
+  drafts: EditorDraftsApi;
+  meshUi: MeshUiApi;
+  layout: DocumentLayout;
+  dll: DocumentDllSettings;
+  actions: DocumentActions;
+  materialClipboard: MaterialClipboardState | null;
+  setMaterialClipboard: React.Dispatch<React.SetStateAction<MaterialClipboardState | null>>;
+  pointerDrag: PointerDragState | null;
+  setPointerDrag: React.Dispatch<React.SetStateAction<PointerDragState | null>>;
+}
+
+/**
+ * Center viewport + right inspector, switched by the active node payload.
+ * Props are grouped so App does not pass dozens of individual fields.
+ */
+export function DocumentEditors({
+  selection,
+  drafts,
+  meshUi,
+  layout,
+  dll,
+  actions,
+  materialClipboard,
+  setMaterialClipboard,
+  pointerDrag,
+  setPointerDrag,
+}: DocumentEditorsProps) {
+  const {
+    nodePayload,
+    setNodePayload,
+    activeTexture,
+    activeWmb,
+    outline,
+  } = selection;
+
+  const {
+    centerTab,
+    setCenterTab,
+    bxmViewMode,
+    zoom,
+    setZoom,
+    pan,
+    setPan,
+    isPanning,
+    setIsPanning,
+    hashDraft,
+    setHashDraft,
+    flagsDraft,
+    setFlagsDraft,
+    texEncodeFormat,
+    setTexEncodeFormat,
+    texGenerateMips,
+    setTexGenerateMips,
+    texSolidify,
+    setTexSolidify,
+    texMakeOpaque,
+    setTexMakeOpaque,
+    wmbMatDraft,
+    setWmbMatDraft,
+    wmb3MatDraft,
+    setWmb3MatDraft,
+    wmbRawMode,
+    setWmbRawMode,
+    wmbB2Override,
+    setWmbB2Override,
+    wmbHeaderFlagsDraft,
+    setWmbHeaderFlagsDraft,
+    wmbBboxDraft,
+    setWmbBboxDraft,
+    bxmTreeDraft,
+    bxmXmlDraft,
+    setBxmXmlDraft,
+    selectedBxmPath,
+    setSelectedBxmPath,
+    bxmExpandedPaths,
+    setBxmExpandedPaths,
+    updateBxmDraftTree,
+    csvHeadersDraft,
+    setCsvHeadersDraft,
+    csvRowsDraft,
+    setCsvRowsDraft,
+    estDraft,
+    setEstDraft,
+    structDraft,
+    setStructDraft,
+    selectedMotTrackIdx,
+    setSelectedMotTrackIdx,
+    openCards,
+    toggleCard,
+  } = drafts;
+
+  const {
+    rightWidth,
+    draggingSplit,
+    setDraggingSplit,
+    setRightWidth,
+    panStartRef,
+  } = layout;
+
+  return (
+    <>
+      <div className="center-column">
+        <div className="studio-card viewer-card">
+          <div className="underline-tabbar">
+            {activeTexture ? (
+              <>
+                <button
+                  className={`underline-tab ${centerTab === "primary" ? "active" : ""}`}
+                  onClick={() => setCenterTab("primary")}
+                >
+                  <IconImage size={12} />
+                  <span>2D</span>
+                </button>
+                <button
+                  className={`underline-tab ${centerTab === "secondary" ? "active" : ""}`}
+                  onClick={() => setCenterTab("secondary")}
+                >
+                  <IconCube size={12} />
+                  <span>Header &amp; Surface Layout</span>
+                </button>
+              </>
+            ) : nodePayload?.view_type === "BXM" ? (
+              <>
+                <button
+                  className={`underline-tab ${bxmViewMode === "tree" ? "active" : ""}`}
+                  onClick={() => actions.switchBxmViewMode("tree")}
+                >
+                  <IconCode size={12} />
+                  <span>Interactive Tree</span>
+                </button>
+                <button
+                  className={`underline-tab ${bxmViewMode === "table" ? "active" : ""}`}
+                  onClick={() => actions.switchBxmViewMode("table")}
+                >
+                  <IconCube size={12} />
+                  <span>Table View</span>
+                </button>
+                <button
+                  className={`underline-tab ${bxmViewMode === "xml" ? "active" : ""}`}
+                  onClick={() => actions.switchBxmViewMode("xml")}
+                >
+                  <IconCode size={12} />
+                  <span>Raw XML</span>
+                </button>
+              </>
+            ) : (
+              <>
+                <button
+                  className={`underline-tab ${centerTab === "primary" ? "active" : ""}`}
+                  onClick={() => setCenterTab("primary")}
+                >
+                  <IconCube size={12} />
+                  <span>Structured Editor</span>
+                </button>
+                <button
+                  className={`underline-tab ${centerTab === "secondary" ? "active" : ""}`}
+                  onClick={() => setCenterTab("secondary")}
+                >
+                  <IconCode size={12} />
+                  <span>Hex / Raw Inspector</span>
+                </button>
+              </>
+            )}
+          </div>
+
+          {activeTexture ? (
+            <TextureCenterView
+              activeTexture={activeTexture}
+              centerTab={centerTab}
+              zoom={zoom}
+              setZoom={setZoom}
+              pan={pan}
+              setPan={setPan}
+              isPanning={isPanning}
+              setIsPanning={setIsPanning}
+              panStartRef={panStartRef}
+              handleResetView={actions.handleResetView}
+              buildAssetNodeContextMenu={actions.buildAssetNodeContextMenu}
+              setContextMenu={actions.setContextMenu}
+              setHoverSubmenuIdx={actions.setHoverSubmenuIdx}
+            />
+          ) : activeWmb && centerTab === "primary" ? (
+            <div
+              className="struct-table-container"
+              onContextMenu={(e) => {
+                e.preventDefault();
+                e.stopPropagation();
+                actions.setHoverSubmenuIdx(null);
+                const items = actions.buildAssetNodeContextMenu(
+                  activeWmb.node_id,
+                  activeWmb.is_wmb3 ? "WMB3" : "WMB"
+                );
+                if (items.length > 0) {
+                  actions.setContextMenu({
+                    x: Math.min(e.clientX, window.innerWidth - 250),
+                    y: Math.min(e.clientY, window.innerHeight - 260),
+                    items,
+                  });
+                }
+              }}
+            >
+              <WmbStructuredCenterView
+                wmb={activeWmb}
+                wmbMatDraft={wmbMatDraft}
+                setWmbMatDraft={setWmbMatDraft}
+                wmb3MatDraft={wmb3MatDraft}
+                setWmb3MatDraft={setWmb3MatDraft}
+                wmbRawMode={wmbRawMode}
+                setWmbRawMode={setWmbRawMode}
+                wmbB2Override={wmbB2Override}
+                setWmbB2Override={setWmbB2Override}
+                materialClipboard={materialClipboard}
+                setMaterialClipboard={setMaterialClipboard}
+                wmbHeaderFlagsDraft={wmbHeaderFlagsDraft}
+                setWmbHeaderFlagsDraft={setWmbHeaderFlagsDraft}
+                wmbBboxDraft={wmbBboxDraft}
+                setWmbBboxDraft={setWmbBboxDraft}
+                expandedMeshGroups={meshUi.expandedMeshGroups}
+                setExpandedMeshGroups={meshUi.setExpandedMeshGroups}
+                expandedBatchLods={meshUi.expandedBatchLods}
+                setExpandedBatchLods={meshUi.setExpandedBatchLods}
+                draggedBatchInfo={meshUi.draggedBatchInfo}
+                setDraggedBatchInfo={meshUi.setDraggedBatchInfo}
+                dragOverMeshIdx={meshUi.dragOverMeshIdx}
+                setDragOverMeshIdx={meshUi.setDragOverMeshIdx}
+                selectAndInspectNode={actions.selectAndInspectNode}
+                runWmbMutation={actions.runWmbMutation}
+                handleCrossGameMaterialConvert={actions.handleCrossGameMaterialConvert}
+                setStatusLeft={actions.setStatusLeft}
+              />
+            </div>
+          ) : nodePayload?.view_type === "BXM" ? (
+            <BxmCenterView
+              nodePayload={nodePayload}
+              bxmViewMode={bxmViewMode}
+              bxmTreeDraft={bxmTreeDraft}
+              bxmXmlDraft={bxmXmlDraft}
+              setBxmXmlDraft={setBxmXmlDraft}
+              selectedBxmPath={selectedBxmPath}
+              setSelectedBxmPath={setSelectedBxmPath}
+              bxmExpandedPaths={bxmExpandedPaths}
+              setBxmExpandedPaths={setBxmExpandedPaths}
+              pointerDrag={pointerDrag}
+              setPointerDrag={setPointerDrag}
+              updateBxmDraftTree={updateBxmDraftTree}
+              commitBxmDraft={actions.commitBxmDraft}
+              runContainerMutation={actions.runContainerMutation}
+              setContextMenu={actions.setContextMenu}
+              setHoverSubmenuIdx={actions.setHoverSubmenuIdx}
+              setStatusLeft={actions.setStatusLeft}
+            />
+          ) : nodePayload ? (
+            <StructCenterView
+              nodePayload={nodePayload}
+              setNodePayload={setNodePayload}
+              centerTab={centerTab}
+              csvHeadersDraft={csvHeadersDraft}
+              setCsvHeadersDraft={setCsvHeadersDraft}
+              csvRowsDraft={csvRowsDraft}
+              setCsvRowsDraft={setCsvRowsDraft}
+              estDraft={estDraft}
+              setEstDraft={setEstDraft}
+              structDraft={structDraft}
+              setStructDraft={setStructDraft}
+              selectedMotTrackIdx={selectedMotTrackIdx}
+              setSelectedMotTrackIdx={setSelectedMotTrackIdx}
+              pkzBulkCodec={meshUi.pkzBulkCodec}
+              setPkzBulkCodec={meshUi.setPkzBulkCodec}
+              runStructMutation={actions.runStructMutation}
+              runClothMutation={actions.runClothMutation}
+              runContainerMutation={actions.runContainerMutation}
+              selectAndInspectNode={actions.selectAndInspectNode}
+              handlePickOodleDll={dll.handlePickOodleDll}
+              loadDirectory={actions.loadDirectory}
+              currentDirRef={actions.currentDirRef}
+              buildAssetNodeContextMenu={actions.buildAssetNodeContextMenu}
+              setContextMenu={actions.setContextMenu}
+              setHoverSubmenuIdx={actions.setHoverSubmenuIdx}
+              setStatusLeft={actions.setStatusLeft}
+            />
+          ) : (
+            <div
+              style={{
+                padding: 24,
+                color: "var(--brush-muted)",
+                textAlign: "center",
+              }}
+            >
+              Select an asset node to edit.
+            </div>
+          )}
+        </div>
+      </div>
+
+      <div
+        className={`splitter-v ${draggingSplit === "right" ? "dragging" : ""}`}
+        onMouseDown={(e) => {
+          e.preventDefault();
+          setDraggingSplit("right");
+        }}
+        onDoubleClick={() => setRightWidth(380)}
+        title="Drag to resize, double-click to reset"
+      >
+        <div className="splitter-v-grip" />
+      </div>
+
+      <div className="right-column" style={{ width: rightWidth }}>
+        {activeTexture ? (
+          <TextureInspectorView
+            activeTexture={activeTexture}
+            openCards={openCards}
+            toggleCard={toggleCard}
+            hashDraft={hashDraft}
+            setHashDraft={setHashDraft}
+            flagsDraft={flagsDraft}
+            setFlagsDraft={setFlagsDraft}
+            texEncodeFormat={texEncodeFormat}
+            setTexEncodeFormat={setTexEncodeFormat}
+            texGenerateMips={texGenerateMips}
+            setTexGenerateMips={setTexGenerateMips}
+            texSolidify={texSolidify}
+            setTexSolidify={setTexSolidify}
+            texMakeOpaque={texMakeOpaque}
+            setTexMakeOpaque={setTexMakeOpaque}
+            runTextureMutation={actions.runTextureMutation}
+            promptAndRunTextureImport={actions.promptAndRunTextureImport}
+            handleTextureExport={actions.handleTextureExport}
+          />
+        ) : activeWmb ? (
+          <WmbInspectorView
+            activeWmb={activeWmb}
+            openCards={openCards}
+            toggleCard={toggleCard}
+            wmbB2Override={wmbB2Override}
+            wmbMatDraft={wmbMatDraft}
+            setWmbMatDraft={setWmbMatDraft}
+            runWmbMutation={actions.runWmbMutation}
+          />
+        ) : nodePayload?.view_type === "BXM" ? (
+          <BxmInspectorView
+            nodePayload={nodePayload}
+            bxmTreeDraft={bxmTreeDraft}
+            selectedBxmPath={selectedBxmPath}
+            openCards={openCards}
+            toggleCard={toggleCard}
+            updateBxmDraftTree={updateBxmDraftTree}
+            commitBxmDraft={actions.commitBxmDraft}
+          />
+        ) : nodePayload?.view_type === "CLOTH" ? (
+          <ClothInspectorView
+            nodePayload={nodePayload}
+            setNodePayload={setNodePayload}
+            openCards={openCards}
+            toggleCard={toggleCard}
+            runClothMutation={actions.runClothMutation}
+          />
+        ) : (
+          <div>
+            <div className="inspector-header">
+              <div className="inspector-icon-box">
+                <IconCube size={20} />
+              </div>
+              <div>
+                <div className="inspector-title">
+                  {nodePayload?.title ?? "No asset selected"}
+                </div>
+                <div className="inspector-subtitle">
+                  {nodePayload?.spec_line ??
+                    (outline
+                      ? `${outline.root_format} · ${outline.endian}`
+                      : "Open a container from the File Browser and pick an item from the Asset Browser.")}
+                </div>
+              </div>
+            </div>
+
+            <div className="inspector-card">
+              <button
+                className="card-header-toggle"
+                onClick={() => toggleCard("dll_config")}
+              >
+                <span className="card-header-left">
+                  <span style={{ color: "var(--brush-muted)" }}>⚙</span>
+                  <span>External Libraries (Oodle &amp; NVTT)</span>
+                </span>
+                <IconChevronDown collapsed={!openCards.dll_config} />
+              </button>
+              {openCards.dll_config && (
+                <div className="card-body">
+                  <div className="inspector-row">
+                    <span className="inspector-row-label">Oodle DLL</span>
+                    <div style={{ display: "flex", gap: 6, flex: 1 }}>
+                      <input
+                        type="text"
+                        className="field-box mono"
+                        style={{ flex: 1, minWidth: 0, fontSize: 11 }}
+                        value={dll.oodleDllPath}
+                        placeholder="oo2core_*_win64.dll (or pure-Rust ooz fallback)"
+                        onChange={(e) => dll.setOodleDllPath(e.target.value)}
+                      />
+                      <button
+                        className="pill-button"
+                        onClick={dll.handlePickOodleDll}
+                      >
+                        Browse
+                      </button>
+                    </div>
+                  </div>
+                  <div className="inspector-row">
+                    <span className="inspector-row-label">NVTT DLL</span>
+                    <div style={{ display: "flex", gap: 6, flex: 1 }}>
+                      <input
+                        type="text"
+                        className="field-box mono"
+                        style={{ flex: 1, minWidth: 0, fontSize: 11 }}
+                        value={dll.nvttDllPath}
+                        placeholder="nvtt30205.dll (or pure-Rust BCn/ASTC fallback)"
+                        onChange={(e) => dll.setNvttDllPath(e.target.value)}
+                      />
+                      <button
+                        className="pill-button"
+                        onClick={dll.handlePickNvttDll}
+                      >
+                        Browse
+                      </button>
+                    </div>
+                  </div>
+                  <div
+                    style={{
+                      color: "var(--brush-muted)",
+                      fontSize: 11,
+                      marginTop: 4,
+                    }}
+                  >
+                    Includes built-in pure-Rust Oodle Kraken (
+                    <span className="mono">ooz</span>) fallback decompressor when{" "}
+                    <span className="mono">oo2core_*_win64.dll</span> is not
+                    present.
+                  </div>
+                </div>
+              )}
+            </div>
+          </div>
+        )}
+      </div>
+    </>
+  );
+}

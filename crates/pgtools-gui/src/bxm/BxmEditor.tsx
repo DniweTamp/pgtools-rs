@@ -1,11 +1,17 @@
 import React from "react";
 import { invoke } from "@tauri-apps/api/core";
-import { BxmXmlNode, ContextMenuState, MenuItemSpec, PointerDragState } from "../types";
+import {
+  BxmXmlNode,
+  ContextMenuState,
+  MenuItemSpec,
+  NodeInspectPayload,
+  PointerDragState,
+} from "../types";
 import { getBxmNodeByPath, safeXmlName } from "./xml";
 import { IconChevronDown, IconCode } from "../components/Icons";
 
 export interface BxmCenterViewProps {
-  nodePayload: any;
+  nodePayload: NodeInspectPayload;
   bxmViewMode: "tree" | "table" | "xml";
   bxmTreeDraft: BxmXmlNode | null;
   bxmXmlDraft: string;
@@ -662,7 +668,7 @@ export const BxmCenterView: React.FC<BxmCenterViewProps> = ({
 };
 
 export interface BxmInspectorViewProps {
-  nodePayload: any;
+  nodePayload: NodeInspectPayload;
   bxmTreeDraft: BxmXmlNode | null;
   selectedBxmPath: string;
   openCards: Record<string, boolean>;

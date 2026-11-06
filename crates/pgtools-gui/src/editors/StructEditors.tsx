@@ -1,14 +1,14 @@
 import React from "react";
 import { invoke } from "@tauri-apps/api/core";
-import { ContextMenuState, MenuItemSpec } from "../types";
+import { ContextMenuState, MenuItemSpec, NodeInspectPayload } from "../types";
 import { hexToRgbFloat, rgbFloatToHex } from "../utils/color";
 import { formatBytes } from "../utils/format";
 import { EditableNumberCell } from "../components/EditableNumberCell";
 import { IconChevronDown, IconCube, IconImage } from "../components/Icons";
 
 export interface StructCenterViewProps {
-  nodePayload: any;
-  setNodePayload: React.Dispatch<React.SetStateAction<any>>;
+  nodePayload: NodeInspectPayload;
+  setNodePayload: React.Dispatch<React.SetStateAction<NodeInspectPayload | null>>;
   centerTab: string;
   csvHeadersDraft: string[];
   setCsvHeadersDraft: React.Dispatch<React.SetStateAction<string[]>>;
@@ -2006,8 +2006,8 @@ export const StructCenterView: React.FC<StructCenterViewProps> = ({
 };
 
 export interface ClothInspectorViewProps {
-  nodePayload: any;
-  setNodePayload: React.Dispatch<React.SetStateAction<any>>;
+  nodePayload: NodeInspectPayload;
+  setNodePayload: React.Dispatch<React.SetStateAction<NodeInspectPayload | null>>;
   openCards: Record<string, boolean>;
   toggleCard: (key: string) => void;
   runClothMutation: (nodeId: string, operation: string, preset?: string, updatedJson?: any) => Promise<void>;
