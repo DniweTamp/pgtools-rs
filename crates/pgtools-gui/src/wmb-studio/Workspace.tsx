@@ -1,4 +1,3 @@
-// [wmb-studio BEGIN phase2]
 import React, {
   useCallback,
   useEffect,
@@ -8,14 +7,17 @@ import React, {
 import { invoke } from "@tauri-apps/api/core";
 import {
   ClipboardStatus,
+  convertMaterialBetweenGames,
   getWmbScene,
+  LegacyActionKind,
   MaterialDesc,
+  MaterialShaderStatus,
   resolveLegacyNode,
   wmbClipboardCopy,
   WmbSceneManifest,
 } from "./contract";
 import { canPasteClipboard, refreshClipboardStatus } from "./clipboard";
-import { Hierarchy, LegacyActionKind } from "./Hierarchy";
+import { Hierarchy } from "./Hierarchy";
 import { Properties } from "./Properties";
 import {
   createGeometryCache,
@@ -24,11 +26,12 @@ import {
   findBatchById,
   findMaterialById,
   getKnownGeometryHashes,
+  getMeshGroupBatchIds,
   mergeScenePayloadIntoCache,
+  parseBoneSceneId,
   SceneSelectionItem,
 } from "./store";
 import { Viewport, ViewportHandle } from "./Viewport";
-import { MaterialShaderStatus } from "./viewer/sceneBuilder";
 import { DocumentOutline } from "../types";
 
 export interface WorkspaceProps {
@@ -262,10 +265,7 @@ export const Workspace: React.FC<WorkspaceProps> = React.memo(function Workspace
           const materialIndex = Number(opObj.materialIndex ?? 0);
           const mg = manifest.meshGroups.find((m) => m.id === meshId);
           if (!mg) return;
-          const allBids =
-            mg.lods.length > 0
-              ? mg.lods.flatMap((l) => l.batchIds)
-              : mg.batchIds;
+          const allBids = getMeshGroupBatchIds(mg);
           if (allBids.length === 0) return;
           await handleDirectWmbMutate("set_batches_material", {
             items: allBids,
@@ -405,11 +405,9 @@ export const Workspace: React.FC<WorkspaceProps> = React.memo(function Workspace
           }
           if (boneIds.length > 0) {
             for (const boneId of boneIds) {
-              const raw = boneId.replace(/^bone:/, "");
-              const gidStr = raw.includes(":") ? raw.split(":")[1] : raw;
-              const gid = parseInt(gidStr, 10);
-              if (!Number.isNaN(gid)) {
-                await handleDirectWmbMutate("delete_bone", { global_id: gid });
+              const { globalId } = parseBoneSceneId(boneId);
+              if (globalId !== null) {
+                await handleDirectWmbMutate("delete_bone", { global_id: globalId });
               }
             }
           }
@@ -532,14 +530,12 @@ export const Workspace: React.FC<WorkspaceProps> = React.memo(function Workspace
             : wmbView.is_bayo2
             ? "b2"
             : "b1";
-          const convertedRes = await invoke<{
-            converted: Record<string, unknown>;
-          }>("convert_material_action", {
+          const convertedRes = await convertMaterialBetweenGames<Record<string, unknown>>(
             srcGame,
-            dstGame: targetGame,
-            materialPayload: srcPayload,
-            targetShader: null,
-          });
+            targetGame,
+            srcPayload,
+            null
+          );
           if (
             !manifest.isWmb3 &&
             (targetGame === "b1" || targetGame === "b2") &&
@@ -709,4 +705,3 @@ export const Workspace: React.FC<WorkspaceProps> = React.memo(function Workspace
     </div>
   );
 });
-// [wmb-studio END]

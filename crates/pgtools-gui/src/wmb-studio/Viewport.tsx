@@ -1,4 +1,3 @@
-// [wmb-studio BEGIN phase2]
 import React, {
   forwardRef,
   useCallback,
@@ -202,8 +201,7 @@ export const Viewport = React.memo(forwardRef<ViewportHandle, ViewportProps>(
       [frameAll, frameSelection]
     );
 
-    // Initialize WebGLRenderer, Scene, Camera, OrbitControls
-    useEffect(() => {
+      useEffect(() => {
       const container = containerRef.current;
       if (!container) return;
 
@@ -324,8 +322,7 @@ export const Viewport = React.memo(forwardRef<ViewportHandle, ViewportProps>(
       };
     }, []); // Mount once
 
-    // Update theme background & grid colors when theme or gridVisible changes
-    useEffect(() => {
+      useEffect(() => {
       const scene = sceneRef.current;
       if (!scene) return;
       scene.background = new THREE.Color(
@@ -342,8 +339,7 @@ export const Viewport = React.memo(forwardRef<ViewportHandle, ViewportProps>(
       requestRender();
     }, [theme, gridVisible, requestRender]);
 
-    // Sync scene geometry and materials whenever manifest or display toggles change
-    useEffect(() => {
+      useEffect(() => {
       const meshBuilder = meshBuilderRef.current;
       const renderer = rendererRef.current;
       if (!meshBuilder || !renderer || !manifest) return;
@@ -390,8 +386,7 @@ export const Viewport = React.memo(forwardRef<ViewportHandle, ViewportProps>(
       contextLost,
     ]);
 
-    // Update selection highlights & skeleton overlay when selection or skeletonOverlay changes
-    useEffect(() => {
+      useEffect(() => {
       const scene = sceneRef.current;
       const meshBuilder = meshBuilderRef.current;
       if (!scene || !meshBuilder) return;
@@ -414,8 +409,7 @@ export const Viewport = React.memo(forwardRef<ViewportHandle, ViewportProps>(
       requestRender();
     }, [manifest, selection, skeletonOverlay, requestRender]);
 
-    // Keyboard shortcuts inside viewport (F = frame selection, Home = frame all)
-    const handleKeyDown = useCallback(
+      const handleKeyDown = useCallback(
       (e: React.KeyboardEvent<HTMLDivElement>) => {
         if (
           e.target instanceof HTMLInputElement ||
@@ -495,22 +489,7 @@ export const Viewport = React.memo(forwardRef<ViewportHandle, ViewportProps>(
         const b = findBatchById(manifest, firstSel.id);
         if (b) targetMat = findMaterialById(manifest, b.materialId);
       }
-      if (targetMat && targetMat.textureSlots.length > 0) {
-        return targetMat.textureSlots.map((s) => {
-          const bankTex = manifest.textures.find(
-            (t) => (t.textureId >>> 0) === (s.textureId >>> 0)
-          );
-          return {
-            slotIndex: s.slot,
-            name: s.name,
-            role: s.role,
-            thumbnailDataUrl:
-              bankTex?.thumbnailDataUrl ??
-              (s.slot === 0 ? targetMat?.thumbnailDataUrl ?? null : null),
-          };
-        });
-      }
-      return collectDebugTextureSlots(manifest);
+      return collectDebugTextureSlots(manifest, targetMat);
     }, [manifest, selection]);
 
     const channels: Array<"RGB" | "R" | "G" | "B" | "A"> = [
@@ -734,4 +713,3 @@ export const Viewport = React.memo(forwardRef<ViewportHandle, ViewportProps>(
     );
   }
 ));
-// [wmb-studio END]

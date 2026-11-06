@@ -1,0 +1,149 @@
+use crate::session::{lock_session, AppState};
+use serde::{Deserialize, Serialize};
+use std::fs;
+use std::path::{Path, PathBuf};
+use tauri::State;
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(default)]
+pub struct StudioSettings {
+    pub theme: String,
+    pub recent_files: Vec<String>,
+    pub last_dir: String,
+    pub hide_unsupported: bool,
+    pub file_sort_col: String,
+    pub file_sort_asc: bool,
+    pub left_width: u32,
+    pub right_width: u32,
+    pub asset_ratio: f32,
+    pub oodle_dll_path: String,
+    pub nvtt_dll_path: String,
+    pub core_dat_b1: String,
+    pub core_dat_b2: String,
+    pub core_dat_b3: String,
+    pub wmb_hierarchy_ratio: f32,
+    pub wmb_wireframe: bool,
+    pub wmb_normals_view: bool,
+    pub wmb_skeleton_overlay: bool,
+    pub wmb_grid_visible: bool,
+}
+
+impl StudioSettings {
+    pub(crate) fn oodle_path(&self) -> Option<&Path> {
+        if self.oodle_dll_path.trim().is_empty() {
+            None
+        } else {
+            Some(Path::new(self.oodle_dll_path.as_str()))
+        }
+    }
+
+}
+
+impl Default for StudioSettings {
+    fn default() -> Self {
+        Self {
+            theme: "Dark".to_string(),
+            recent_files: Vec::new(),
+            last_dir: String::new(),
+            hide_unsupported: true,
+            file_sort_col: "name".to_string(),
+            file_sort_asc: true,
+            left_width: 310,
+            right_width: 380,
+            asset_ratio: 0.50,
+            oodle_dll_path: String::new(),
+            nvtt_dll_path: String::new(),
+            core_dat_b1: String::new(),
+            core_dat_b2: String::new(),
+            core_dat_b3: String::new(),
+            wmb_hierarchy_ratio: 0.48,
+            wmb_wireframe: false,
+            wmb_normals_view: false,
+            wmb_skeleton_overlay: false,
+            wmb_grid_visible: true,
+        }
+    }
+}
+
+fn settings_file_path() -> PathBuf {
+    let base = std::env::var("APPDATA")
+        .or_else(|_| std::env::var("XDG_CONFIG_HOME"))
+        .map(PathBuf::from)
+        .unwrap_or_else(|_| {
+            std::env::var("HOME")
+                .map(|h| PathBuf::from(h).join(".config"))
+                .unwrap_or_else(|_| std::env::temp_dir())
+        });
+    let dir = base.join("pgtools-studio");
+    let _ = fs::create_dir_all(&dir);
+    dir.join("pgtools_settings.json")
+}
+
+fn validate_optional_dll_setting(path_str: &str) -> Result<String, String> {
+    let trimmed = path_str.trim();
+    if trimmed.is_empty() {
+        return Ok(String::new());
+    }
+    let p = Path::new(trimmed);
+    if !p.is_file() {
+        return Err(format!("Configured library path does not exist or is not a file: '{trimmed}'"));
+    }
+    let ext = p
+        .extension()
+        .and_then(|e| e.to_str())
+        .unwrap_or("")
+        .to_ascii_lowercase();
+    if !matches!(ext.as_str(), "dll" | "so" | "dylib") {
+        return Err(format!("Configured library path must be a .dll, .so, or .dylib file: '{trimmed}'"));
+    }
+    Ok(fs::canonicalize(p)
+        .unwrap_or_else(|_| p.to_path_buf())
+        .to_string_lossy()
+        .into_owned())
+}
+
+pub(crate) fn load_settings_from_disk() -> StudioSettings {
+    let p = settings_file_path();
+    if let Ok(txt) = fs::read_to_string(&p) {
+        if let Ok(mut s) = serde_json::from_str::<StudioSettings>(&txt) {
+            if validate_optional_dll_setting(&s.oodle_dll_path).is_err() {
+                s.oodle_dll_path.clear();
+            }
+            if validate_optional_dll_setting(&s.nvtt_dll_path).is_err() {
+                s.nvtt_dll_path.clear();
+            }
+            return s;
+        }
+    }
+    StudioSettings::default()
+}
+
+pub(crate) fn save_settings_to_disk(settings: &StudioSettings) {
+    let p = settings_file_path();
+    if let Ok(json) = serde_json::to_string_pretty(settings) {
+        let _ = fs::write(p, json);
+    }
+}
+
+#[tauri::command]
+pub fn get_studio_settings(state: State<'_, AppState>) -> StudioSettings {
+    lock_session(&state).settings.clone()
+}
+
+#[tauri::command]
+pub fn save_studio_settings(
+    mut settings: StudioSettings,
+    state: State<'_, AppState>,
+) -> Result<StudioSettings, String> {
+    settings.oodle_dll_path = validate_optional_dll_setting(&settings.oodle_dll_path)?;
+    settings.nvtt_dll_path = validate_optional_dll_setting(&settings.nvtt_dll_path)?;
+    let mut sess = lock_session(&state);
+    sess.settings = settings;
+    save_settings_to_disk(&sess.settings);
+    Ok(sess.settings.clone())
+}
+
+#[tauri::command]
+pub fn get_recent_files(state: State<'_, AppState>) -> Vec<String> {
+    lock_session(&state).settings.recent_files.clone()
+}

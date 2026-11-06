@@ -1,26 +1,18 @@
-// [wmb-studio BEGIN phase2]
 import * as THREE from "three";
 import { MaterialDesc, TextureSlotDesc } from "../contract";
-import { STUDIO_FRAGMENT_HEADER, STUDIO_VERTEX_SHADER } from "./common";
-import { B1_SHADERS, RenderQueueBucket } from "./b1/shaders";
-// [wmb-studio BEGIN phase3]
+import { RenderQueueBucket, STUDIO_FRAGMENT_HEADER, STUDIO_VERTEX_SHADER } from "./common";
+import { B1_SHADERS } from "./b1/shaders";
 import {
-  B2SamplerSlotBinding,
   classifyB2Queue,
   getB2ShaderSpec,
   resolveB2SamplerSlots,
 } from "./b2/shaders";
 import {
-  B3SamplerSlotBinding,
   getB3ShaderSpec,
   resolveB3SamplerSlots,
 } from "./b3/shaders";
 
-export type { B2SamplerSlotBinding, B3SamplerSlotBinding };
 export { resolveB2SamplerSlots, resolveB3SamplerSlots };
-// [wmb-studio END]
-
-export type { RenderQueueBucket };
 
 export interface ResolvedShaderSpec {
   id: string;
@@ -33,13 +25,11 @@ export interface ResolvedShaderSpec {
   envUseNormal: boolean;
   alphaBlendVariant: boolean;
   useVertexAlpha?: boolean;
-  // [wmb-studio BEGIN phase3]
   pbsVariant?: number;
   pbsHasDFlag?: number;
   hairVariant?: number;
   skinVariant?: number;
   glassVariant?: number;
-  // [wmb-studio END]
 }
 
 export const FALLBACK_FRAGMENT_SHADER = /* glsl */ `
@@ -151,7 +141,6 @@ export function getShader(
     }
   }
 
-  // [wmb-studio BEGIN phase3]
   if (game === "b2") {
     return getB2ShaderSpec(shaderName, materialType);
   }
@@ -162,7 +151,6 @@ export function getShader(
       return b3Spec;
     }
   }
-  // [wmb-studio END]
 
   return {
     id: "fallback",
@@ -330,7 +318,6 @@ function findParamValues(
   return found.values;
 }
 
-// [wmb-studio BEGIN phase3]
 function findScalarParam(
   mat: MaterialDesc,
   candidateNames: string[],
@@ -1250,7 +1237,6 @@ function populateB2AndB3UniformValues(
     );
   }
 }
-// [wmb-studio END]
 
 function nonZeroVec2(v: number[], defX: number, defY: number): THREE.Vector2 {
   const x = v[0] ?? defX;
@@ -1261,6 +1247,145 @@ function nonZeroVec2(v: number[], defX: number, defY: number): THREE.Vector2 {
   return new THREE.Vector2(x, y);
 }
 
+function populateB1UniformValues(
+  u: Record<string, THREE.IUniform>,
+  mat: MaterialDesc
+): void {
+  const c1Tile = nonZeroVec2(findParamValues(mat, "Color_1_Tile", [1, 1]), 1, 1);
+  const c1Off = findParamValues(mat, "Color_1_Offset", [0, 0]);
+  const nmTile = nonZeroVec2(findParamValues(mat, "tile", [1, 1]), 1, 1);
+  if (u.Color_1_Tile) u.Color_1_Tile.value.set(c1Tile.x, c1Tile.y);
+  if (u.Color_1_Offset) u.Color_1_Offset.value.set(c1Off[0] ?? 0, c1Off[1] ?? 0);
+  if (u.tile) u.tile.value.set(nmTile.x, nmTile.y);
+
+  const depthVal = findParamValues(mat, "depth", [1.0])[0] ?? 1.0;
+  if (u.depth) u.depth.value = depthVal;
+
+  const blendRaw = findParamValues(mat, "blend", [0.85])[0] ?? 0.85;
+  const blendVal = Math.abs(blendRaw) < 1e-6 ? 0.85 : blendRaw;
+  if (u.blend) u.blend.value = blendVal;
+
+  const envAmbParam = findParamValues(mat, "Env_Amb_Param", [0.5])[0] ?? 0.5;
+  if (u.Env_Amb_Param) u.Env_Amb_Param.value = envAmbParam;
+
+  const envFactor = findParamValues(mat, "env_factor", [0.0])[0] ?? 0.0;
+  if (u.env_factor) u.env_factor.value = envFactor;
+
+  const specVec = findParamValues(mat, "specular", [0.8, 0.8, 0.8]);
+  if (u.specular) {
+    u.specular.value.set(
+      specVec[0] ?? 0.8,
+      specVec[1] ?? 0.8,
+      specVec[2] ?? 0.8
+    );
+  }
+
+  const speLight = findParamValues(mat, "spelightpos", [5.0, 0.0, 10.0, 10000.0]);
+  if (u.spelightpos) {
+    u.spelightpos.value.set(
+      speLight[0] ?? 5.0,
+      speLight[1] ?? 0.0,
+      speLight[2] ?? 10.0,
+      speLight[3] ?? 10000.0
+    );
+  }
+
+  const specType = findParamValues(mat, "Spec_Type", [0.25])[0] ?? 0.25;
+  if (u.Spec_Type) u.Spec_Type.value = specType;
+
+  const specLimit =
+    findParamValues(
+      mat,
+      "Spec_Limit",
+      mat.materialType === 151 ? [95.0] : [0.5]
+    )[0] ?? (mat.materialType === 151 ? 95.0 : 0.5);
+  if (u.Spec_Limit) u.Spec_Limit.value = specLimit;
+
+  const shineVal = findParamValues(mat, "shine", [0.4])[0] ?? 0.4;
+  if (u.shine) u.shine.value = shineVal;
+
+  const biasRaw = findParamValues(mat, "bias", [1.0])[0] ?? 1.0;
+  const biasVal = Math.abs(biasRaw) < 1e-6 ? 1.0 : biasRaw;
+  if (u.bias) u.bias.value = biasVal;
+
+  const diffVec = findParamValues(mat, "diffuse", [1.0, 1.0, 1.0]);
+  if (u.uDiffuseParam) {
+    u.uDiffuseParam.value.set(
+      diffVec[0] ?? 1.0,
+      diffVec[1] ?? 1.0,
+      diffVec[2] ?? 1.0
+    );
+  }
+
+  const ambVec = findParamValues(mat, "ambient", [0.2, 0.2, 0.2]);
+  if (u.uAmbientParam) {
+    u.uAmbientParam.value.set(
+      ambVec[0] ?? 0.2,
+      ambVec[1] ?? 0.2,
+      ambVec[2] ?? 0.2
+    );
+  }
+
+  const sssColVec = findParamValues(mat, "SSS_color", [1.0, 1.0, 1.0]);
+  if (u.SSS_color) {
+    u.SSS_color.value.set(
+      sssColVec[0] ?? 1.0,
+      sssColVec[1] ?? 1.0,
+      sssColVec[2] ?? 1.0
+    );
+  }
+  const sssVal = findParamValues(mat, "SSS_value", [1.0])[0] ?? 1.0;
+  if (u.SSS_value) u.SSS_value.value = sssVal;
+  const sssFlag = findParamValues(mat, "SSS_flag", [1.0])[0] ?? 1.0;
+  if (u.SSS_flag) u.SSS_flag.value = sssFlag;
+  const sssNormVec = findParamValues(mat, "SSS_norm", [0.0, 1.0]);
+  if (u.SSS_norm) {
+    u.SSS_norm.value.set(sssNormVec[0] ?? 0.0, sssNormVec[1] ?? 1.0);
+  }
+
+  const dotMinVal = findParamValues(mat, "dot_min", [0.0])[0] ?? 0.0;
+  if (u.dot_min) u.dot_min.value = dotMinVal;
+  const dotMaxVal = findParamValues(mat, "dot_max", [0.5])[0] ?? 0.5;
+  if (u.dot_max) u.dot_max.value = dotMaxVal;
+  const dotColVec = findParamValues(mat, "dot_color", [0.0, 0.0, 0.0]);
+  if (u.dot_color) {
+    u.dot_color.value.set(
+      dotColVec[0] ?? 0.0,
+      dotColVec[1] ?? 0.0,
+      dotColVec[2] ?? 0.0
+    );
+  }
+
+  const lp1 = findParamValues(mat, "lightpos", [0, 0, 0, 1]);
+  if (u.lightpos) {
+    u.lightpos.value.set(lp1[0] ?? 0, lp1[1] ?? 0, lp1[2] ?? 0, lp1[3] ?? 1);
+  }
+  const lc1 = findParamValues(mat, "light_col", [0, 0, 0]);
+  if (u.light_col) {
+    u.light_col.value.set(lc1[0] ?? 0, lc1[1] ?? 0, lc1[2] ?? 0);
+  }
+  const lp2 = findParamValues(mat, "lightpos2", [0, 0, 0, 1]);
+  if (u.lightpos2) {
+    u.lightpos2.value.set(lp2[0] ?? 0, lp2[1] ?? 0, lp2[2] ?? 0, lp2[3] ?? 1);
+  }
+  const lc2 = findParamValues(mat, "light_col2", [0, 0, 0]);
+  if (u.light_col2) {
+    u.light_col2.value.set(lc2[0] ?? 0, lc2[1] ?? 0, lc2[2] ?? 0);
+  }
+
+  const b23Color = mat.params.find((p) => p.isColor && p.values.length >= 3);
+  if (b23Color && u.uBaseTint) {
+    u.uBaseTint.value.set(
+      b23Color.values[0] ?? 1,
+      b23Color.values[1] ?? 1,
+      b23Color.values[2] ?? 1,
+      b23Color.values[3] !== undefined && b23Color.values[3] > 0
+        ? b23Color.values[3]
+        : 1
+    );
+  }
+}
+
 export function createInitialUniforms(
   mat: MaterialDesc,
   resolvedSpec: ResolvedShaderSpec,
@@ -1268,44 +1393,8 @@ export function createInitialUniforms(
   defaultNormal2D: THREE.Texture,
   defaultSpecLut2D: THREE.Texture,
   defaultCube: THREE.CubeTexture,
-  // [wmb-studio BEGIN phase3]
   defaultSoftCube?: THREE.CubeTexture
-  // [wmb-studio END]
 ): Record<string, THREE.IUniform> {
-  const c1Tile = nonZeroVec2(findParamValues(mat, "Color_1_Tile", [1, 1]), 1, 1);
-  const c1Off = findParamValues(mat, "Color_1_Offset", [0, 0]);
-  const nmTile = nonZeroVec2(findParamValues(mat, "tile", [1, 1]), 1, 1);
-  const depthVal = findParamValues(mat, "depth", [1.0])[0] ?? 1.0;
-  const blendRaw = findParamValues(mat, "blend", [0.85])[0] ?? 0.85;
-  const blendVal = Math.abs(blendRaw) < 1e-6 ? 0.85 : blendRaw;
-  const envAmbParam = findParamValues(mat, "Env_Amb_Param", [0.5])[0] ?? 0.5;
-  const envFactor = findParamValues(mat, "env_factor", [0.0])[0] ?? 0.0;
-  const specVec = findParamValues(mat, "specular", [0.8, 0.8, 0.8]);
-  const speLight = findParamValues(mat, "spelightpos", [5.0, 0.0, 10.0, 10000.0]);
-  const specType = findParamValues(mat, "Spec_Type", [0.25])[0] ?? 0.25;
-  const specLimit =
-    findParamValues(
-      mat,
-      "Spec_Limit",
-      mat.materialType === 151 ? [95.0] : [0.5]
-    )[0] ?? (mat.materialType === 151 ? 95.0 : 0.5);
-  const shineVal = findParamValues(mat, "shine", [0.4])[0] ?? 0.4;
-  const biasRaw = findParamValues(mat, "bias", [1.0])[0] ?? 1.0;
-  const biasVal = Math.abs(biasRaw) < 1e-6 ? 1.0 : biasRaw;
-  const diffVec = findParamValues(mat, "diffuse", [1.0, 1.0, 1.0]);
-  const ambVec = findParamValues(mat, "ambient", [0.2, 0.2, 0.2]);
-  const sssColVec = findParamValues(mat, "SSS_color", [1.0, 1.0, 1.0]);
-  const sssVal = findParamValues(mat, "SSS_value", [1.0])[0] ?? 1.0;
-  const sssFlag = findParamValues(mat, "SSS_flag", [1.0])[0] ?? 1.0;
-  const sssNormVec = findParamValues(mat, "SSS_norm", [0.0, 1.0]);
-  const dotMinVal = findParamValues(mat, "dot_min", [0.0])[0] ?? 0.0;
-  const dotMaxVal = findParamValues(mat, "dot_max", [0.5])[0] ?? 0.5;
-  const dotColVec = findParamValues(mat, "dot_color", [0.0, 0.0, 0.0]);
-  const lp1 = findParamValues(mat, "lightpos", [0, 0, 0, 1]);
-  const lc1 = findParamValues(mat, "light_col", [0, 0, 0]);
-  const lp2 = findParamValues(mat, "lightpos2", [0, 0, 0, 1]);
-  const lc2 = findParamValues(mat, "light_col2", [0, 0, 0]);
-
   const hasNormalSlot = mat.textureSlots.some((s) => s.role === "normal");
   const irradCube = defaultSoftCube ?? defaultCube;
 
@@ -1331,95 +1420,36 @@ export function createInitialUniforms(
     uHasNormalMap: { value: hasNormalSlot ? 1 : 0 },
     uBaseTint: { value: new THREE.Vector4(1, 1, 1, 1) },
 
-    Color_1_Tile: { value: c1Tile },
-    Color_1_Offset: { value: new THREE.Vector2(c1Off[0] ?? 0, c1Off[1] ?? 0) },
-    tile: { value: nmTile },
-    depth: { value: depthVal },
-    blend: { value: blendVal },
-    Env_Amb_Param: { value: envAmbParam },
-    env_factor: { value: envFactor },
-    specular: {
-      value: new THREE.Vector3(
-        specVec[0] ?? 0.8,
-        specVec[1] ?? 0.8,
-        specVec[2] ?? 0.8
-      ),
-    },
-    spelightpos: {
-      value: new THREE.Vector4(
-        speLight[0] ?? 5.0,
-        speLight[1] ?? 0.0,
-        speLight[2] ?? 10.0,
-        speLight[3] ?? 10000.0
-      ),
-    },
-    Spec_Type: { value: specType },
-    Spec_Limit: { value: specLimit },
-    shine: { value: shineVal },
-    bias: { value: biasVal },
-    uDiffuseParam: {
-      value: new THREE.Vector3(
-        diffVec[0] ?? 1.0,
-        diffVec[1] ?? 1.0,
-        diffVec[2] ?? 1.0
-      ),
-    },
-    uAmbientParam: {
-      value: new THREE.Vector3(
-        ambVec[0] ?? 0.2,
-        ambVec[1] ?? 0.2,
-        ambVec[2] ?? 0.2
-      ),
-    },
-    SSS_color: {
-      value: new THREE.Vector3(
-        sssColVec[0] ?? 1.0,
-        sssColVec[1] ?? 1.0,
-        sssColVec[2] ?? 1.0
-      ),
-    },
-    SSS_value: { value: sssVal },
-    SSS_flag: { value: sssFlag },
-    SSS_norm: {
-      value: new THREE.Vector2(sssNormVec[0] ?? 0.0, sssNormVec[1] ?? 1.0),
-    },
-    dot_min: { value: dotMinVal },
-    dot_max: { value: dotMaxVal },
-    dot_color: {
-      value: new THREE.Vector3(
-        dotColVec[0] ?? 0.0,
-        dotColVec[1] ?? 0.0,
-        dotColVec[2] ?? 0.0
-      ),
-    },
-    lightpos: {
-      value: new THREE.Vector4(
-        lp1[0] ?? 0,
-        lp1[1] ?? 0,
-        lp1[2] ?? 0,
-        lp1[3] ?? 1
-      ),
-    },
-    light_col: {
-      value: new THREE.Vector3(lc1[0] ?? 0, lc1[1] ?? 0, lc1[2] ?? 0),
-    },
-    lightpos2: {
-      value: new THREE.Vector4(
-        lp2[0] ?? 0,
-        lp2[1] ?? 0,
-        lp2[2] ?? 0,
-        lp2[3] ?? 1
-      ),
-    },
-    light_col2: {
-      value: new THREE.Vector3(lc2[0] ?? 0, lc2[1] ?? 0, lc2[2] ?? 0),
-    },
+    Color_1_Tile: { value: new THREE.Vector2(1, 1) },
+    Color_1_Offset: { value: new THREE.Vector2(0, 0) },
+    tile: { value: new THREE.Vector2(1, 1) },
+    depth: { value: 1.0 },
+    blend: { value: 0.85 },
+    Env_Amb_Param: { value: 0.5 },
+    env_factor: { value: 0.0 },
+    specular: { value: new THREE.Vector3(0.8, 0.8, 0.8) },
+    spelightpos: { value: new THREE.Vector4(5.0, 0.0, 10.0, 10000.0) },
+    Spec_Type: { value: 0.25 },
+    Spec_Limit: { value: mat.materialType === 151 ? 95.0 : 0.5 },
+    shine: { value: 0.4 },
+    bias: { value: 1.0 },
+    uDiffuseParam: { value: new THREE.Vector3(1.0, 1.0, 1.0) },
+    uAmbientParam: { value: new THREE.Vector3(0.2, 0.2, 0.2) },
+    SSS_color: { value: new THREE.Vector3(1.0, 1.0, 1.0) },
+    SSS_value: { value: 1.0 },
+    SSS_flag: { value: 1.0 },
+    SSS_norm: { value: new THREE.Vector2(0.0, 1.0) },
+    dot_min: { value: 0.0 },
+    dot_max: { value: 0.5 },
+    dot_color: { value: new THREE.Vector3(0.0, 0.0, 0.0) },
+    lightpos: { value: new THREE.Vector4(0, 0, 0, 1) },
+    light_col: { value: new THREE.Vector3(0, 0, 0) },
+    lightpos2: { value: new THREE.Vector4(0, 0, 0, 1) },
+    light_col2: { value: new THREE.Vector3(0, 0, 0) },
     uEnvUseNormal: { value: resolvedSpec.envUseNormal ? 1 : 0 },
     uAlphaBlendVariant: { value: resolvedSpec.alphaBlendVariant ? 1 : 0 },
     uUseVertexAlpha: { value: resolvedSpec.useVertexAlpha ? 1 : 0 },
 
-    // [wmb-studio BEGIN phase3]
-    // Bayonetta 2 (`Bayo2.hlsl`) uniforms
     uB2AlbedoMap: { value: defaultTex2D },
     uB2NormalMap: { value: defaultNormal2D },
     uB2RssMap: { value: defaultTex2D },
@@ -1439,7 +1469,6 @@ export function createInitialUniforms(
     uB2CubemapStrength: { value: 15.0 },
     uB2ShadowColor: { value: new THREE.Vector3(0.5, 0.5, 0.5) },
 
-    // Bayonetta 3 (`PBS00`..`PBS99`, `BAYO00`, `Hair20/21/22`, `SKN20/21/25/30/31`, `Gls*`, `HZR00`, `JWL*`, `CNS*`) uniforms
     uTexAlbedo: { value: defaultTex2D },
     uTexMask: { value: defaultTex2D },
     uTexNormal: { value: defaultNormal2D },
@@ -1469,8 +1498,6 @@ export function createInitialUniforms(
     g_OnlyLayer1: { value: 1.0 },
     g_EyeBlowMode: { value: 0.0 },
     g_UseAlphaEffect: { value: 0.0 },
-    g_BumpHeight: { value: 0.0 },
-    g_ParallaxIntensity: { value: 0.0 },
     g_Layer1_UseNormalMap: { value: 1.0 },
     g_Layer1_UseSpecularMask: { value: 1.0 },
     g_Tile: { value: new THREE.Vector2(1.0, 1.0) },
@@ -1563,164 +1590,23 @@ export function createInitialUniforms(
     g_FresnelMinMax: { value: new THREE.Vector2(0.1, 0.9) },
     g_FresnelColor: { value: new THREE.Vector3(0.65, 0.85, 1.0) },
     g_EmissiveRoughnessParams: { value: new THREE.Vector3(0.2, 0.5, 0.65) },
-    // [wmb-studio END]
   };
 
-  // [wmb-studio BEGIN phase3]
+  populateB1UniformValues(uniforms, mat);
   populateB2AndB3UniformValues(uniforms, mat, resolvedSpec);
-  // [wmb-studio END]
 
   return uniforms;
 }
 
-/**
- * Updates uniform values on an existing `THREE.ShaderMaterial` in place (zero shader recompilation,
- * zero geometry rebuild) for real-time 60fps parameter dragging in `MaterialEditor`.
- */
 export function updateMaterialUniformsInPlace(
   shaderMat: THREE.ShaderMaterial,
   mat: MaterialDesc
 ): void {
   const u = shaderMat.uniforms;
   if (!u) return;
-
-  const c1Tile = nonZeroVec2(findParamValues(mat, "Color_1_Tile", [1, 1]), 1, 1);
-  const c1Off = findParamValues(mat, "Color_1_Offset", [0, 0]);
-  const nmTile = nonZeroVec2(findParamValues(mat, "tile", [1, 1]), 1, 1);
-  if (u.Color_1_Tile) u.Color_1_Tile.value.set(c1Tile.x, c1Tile.y);
-  if (u.Color_1_Offset) u.Color_1_Offset.value.set(c1Off[0] ?? 0, c1Off[1] ?? 0);
-  if (u.tile) u.tile.value.set(nmTile.x, nmTile.y);
-
-  const depthVal = findParamValues(mat, "depth", [1.0])[0] ?? 1.0;
-  if (u.depth) u.depth.value = depthVal;
-
-  const blendVal = findParamValues(mat, "blend", [0.85])[0] ?? 0.85;
-  if (u.blend) u.blend.value = blendVal;
-
-  const envAmbParam = findParamValues(mat, "Env_Amb_Param", [0.5])[0] ?? 0.5;
-  if (u.Env_Amb_Param) u.Env_Amb_Param.value = envAmbParam;
-
-  const envFactor = findParamValues(mat, "env_factor", [0.0])[0] ?? 0.0;
-  if (u.env_factor) u.env_factor.value = envFactor;
-
-  const specVec = findParamValues(mat, "specular", [0.8, 0.8, 0.8]);
-  if (u.specular) {
-    u.specular.value.set(
-      specVec[0] ?? 0.8,
-      specVec[1] ?? 0.8,
-      specVec[2] ?? 0.8
-    );
-  }
-
-  const speLight = findParamValues(mat, "spelightpos", [5.0, 0.0, 10.0, 10000.0]);
-  if (u.spelightpos) {
-    u.spelightpos.value.set(
-      speLight[0] ?? 5.0,
-      speLight[1] ?? 0.0,
-      speLight[2] ?? 10.0,
-      speLight[3] ?? 10000.0
-    );
-  }
-
-  const specType = findParamValues(mat, "Spec_Type", [0.25])[0] ?? 0.25;
-  if (u.Spec_Type) u.Spec_Type.value = specType;
-
-  const specLimit =
-    findParamValues(
-      mat,
-      "Spec_Limit",
-      mat.materialType === 151 ? [95.0] : [0.5]
-    )[0] ?? (mat.materialType === 151 ? 95.0 : 0.5);
-  if (u.Spec_Limit) u.Spec_Limit.value = specLimit;
-
-  const shineVal = findParamValues(mat, "shine", [0.4])[0] ?? 0.4;
-  if (u.shine) u.shine.value = shineVal;
-
-  const biasVal = findParamValues(mat, "bias", [1.0])[0] ?? 1.0;
-  if (u.bias) u.bias.value = biasVal;
-
-  const diffVec = findParamValues(mat, "diffuse", [1.0, 1.0, 1.0]);
-  if (u.uDiffuseParam) {
-    u.uDiffuseParam.value.set(
-      diffVec[0] ?? 1.0,
-      diffVec[1] ?? 1.0,
-      diffVec[2] ?? 1.0
-    );
-  }
-
-  const ambVec = findParamValues(mat, "ambient", [0.2, 0.2, 0.2]);
-  if (u.uAmbientParam) {
-    u.uAmbientParam.value.set(
-      ambVec[0] ?? 0.2,
-      ambVec[1] ?? 0.2,
-      ambVec[2] ?? 0.2
-    );
-  }
-
-  const sssColVec = findParamValues(mat, "SSS_color", [1.0, 1.0, 1.0]);
-  if (u.SSS_color) {
-    u.SSS_color.value.set(
-      sssColVec[0] ?? 1.0,
-      sssColVec[1] ?? 1.0,
-      sssColVec[2] ?? 1.0
-    );
-  }
-  const sssVal = findParamValues(mat, "SSS_value", [1.0])[0] ?? 1.0;
-  if (u.SSS_value) u.SSS_value.value = sssVal;
-  const sssFlag = findParamValues(mat, "SSS_flag", [1.0])[0] ?? 1.0;
-  if (u.SSS_flag) u.SSS_flag.value = sssFlag;
-  const sssNormVec = findParamValues(mat, "SSS_norm", [0.0, 1.0]);
-  if (u.SSS_norm) {
-    u.SSS_norm.value.set(sssNormVec[0] ?? 0.0, sssNormVec[1] ?? 1.0);
-  }
-
-  const dotMinVal = findParamValues(mat, "dot_min", [0.0])[0] ?? 0.0;
-  if (u.dot_min) u.dot_min.value = dotMinVal;
-  const dotMaxVal = findParamValues(mat, "dot_max", [0.5])[0] ?? 0.5;
-  if (u.dot_max) u.dot_max.value = dotMaxVal;
-  const dotColVec = findParamValues(mat, "dot_color", [0.0, 0.0, 0.0]);
-  if (u.dot_color) {
-    u.dot_color.value.set(
-      dotColVec[0] ?? 0.0,
-      dotColVec[1] ?? 0.0,
-      dotColVec[2] ?? 0.0
-    );
-  }
-
-  const lp1 = findParamValues(mat, "lightpos", [0, 0, 0, 1]);
-  if (u.lightpos) {
-    u.lightpos.value.set(lp1[0] ?? 0, lp1[1] ?? 0, lp1[2] ?? 0, lp1[3] ?? 1);
-  }
-  const lc1 = findParamValues(mat, "light_col", [0, 0, 0]);
-  if (u.light_col) {
-    u.light_col.value.set(lc1[0] ?? 0, lc1[1] ?? 0, lc1[2] ?? 0);
-  }
-  const lp2 = findParamValues(mat, "lightpos2", [0, 0, 0, 1]);
-  if (u.lightpos2) {
-    u.lightpos2.value.set(lp2[0] ?? 0, lp2[1] ?? 0, lp2[2] ?? 0, lp2[3] ?? 1);
-  }
-  const lc2 = findParamValues(mat, "light_col2", [0, 0, 0]);
-  if (u.light_col2) {
-    u.light_col2.value.set(lc2[0] ?? 0, lc2[1] ?? 0, lc2[2] ?? 0);
-  }
-
-  // Fallback tint support for B2/B3 color params (e.g. Color_1_Color / g_AlbedoColor)
-  const b23Color = mat.params.find((p) => p.isColor && p.values.length >= 3);
-  if (b23Color && u.uBaseTint) {
-    u.uBaseTint.value.set(
-      b23Color.values[0] ?? 1,
-      b23Color.values[1] ?? 1,
-      b23Color.values[2] ?? 1,
-      b23Color.values[3] !== undefined && b23Color.values[3] > 0
-        ? b23Color.values[3]
-        : 1
-    );
-  }
-
-  // [wmb-studio BEGIN phase3]
+  populateB1UniformValues(u, mat);
   const resolvedSpec = getShader(mat.game, mat.shaderName, mat.materialType);
   populateB2AndB3UniformValues(u, mat, resolvedSpec);
-  // [wmb-studio END]
 }
 
 /**
@@ -1783,4 +1669,3 @@ export function resolveB3BlendAndSort(
 
   return { blending, transparent, depthWrite, queue, localSortNo };
 }
-// [wmb-studio END]

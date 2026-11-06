@@ -10,18 +10,14 @@ export interface StudioSettings {
   asset_ratio: number;
   oodle_dll_path: string;
   nvtt_dll_path: string;
-  // [wmb-studio BEGIN phase1]
   core_dat_b1: string;
   core_dat_b2: string;
   core_dat_b3: string;
-  // [wmb-studio END]
-  // [wmb-studio BEGIN phase2]
   wmb_hierarchy_ratio?: number;
   wmb_wireframe?: boolean;
   wmb_normals_view?: boolean;
   wmb_skeleton_overlay?: boolean;
   wmb_grid_visible?: boolean;
-  // [wmb-studio END]
 }
 
 export interface FsEntry {
@@ -215,4 +211,52 @@ export interface BxmXmlNode {
   attributes: [string, string][];
   value: string | null;
   children: BxmXmlNode[];
+}
+
+export type ThemeMode = "dark" | "light";
+export type FileSortCol = "name" | "type" | "modified" | "size";
+
+export interface MenuItemSpec {
+  label?: string;
+  shortcut?: string;
+  disabled?: boolean;
+  separator?: boolean;
+  action?: () => void;
+  submenu?: MenuItemSpec[];
+}
+
+export interface ContextMenuState {
+  x: number;
+  y: number;
+  items: MenuItemSpec[];
+}
+
+export interface PointerDragState {
+  kind: "asset" | "bxm";
+  sourceId: string;
+  label: string;
+  startX: number;
+  startY: number;
+  curX: number;
+  curY: number;
+  active: boolean;
+  overId: string | null;
+  insertPos: "before" | "after" | null;
+  dragOutTriggered: boolean;
+}
+
+export interface TexModalState {
+  nodeId: string;
+  action: "replace_file" | "add_texture";
+  path: string;
+  fileName: string;
+  encodeFormat: string;
+  generateMips: boolean;
+  solidify: boolean;
+  makeOpaque: boolean;
+}
+
+export interface MaterialClipboardState {
+  game: "b1" | "b2" | "b3";
+  payload: any;
 }

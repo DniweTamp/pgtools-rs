@@ -1,4 +1,3 @@
-// [wmb-studio BEGIN phase1]
 import { invoke } from "@tauri-apps/api/core";
 
 export interface Region {
@@ -289,4 +288,39 @@ export async function wmbClipboardCopy(
 export async function wmbClipboardStatus(): Promise<ClipboardStatus | null> {
   return invoke<ClipboardStatus | null>("wmb_clipboard_status");
 }
-// [wmb-studio END]
+
+export type LegacyActionKind =
+  | "export_obj"
+  | "import_obj"
+  | "import_gltf"
+  | "export_gltf"
+  | "cleanup_vertexes"
+  | "cleanup_materials"
+  | "recompute_relative_positions"
+  | "set_tpose"
+  | "bone_preset"
+  | "export_texture"
+  | "replace_texture"
+  | "import_texture";
+
+export interface MaterialShaderStatus {
+  materialId: string;
+  shaderId: string;
+  isFallback: boolean;
+  hasCompileError: boolean;
+  compileErrorLog?: string;
+}
+
+export async function convertMaterialBetweenGames<T = any>(
+  srcGame: "b1" | "b2" | "b3",
+  dstGame: "b1" | "b2" | "b3",
+  materialPayload: unknown,
+  targetShader: string | null = null
+): Promise<{ converted: T; report: any }> {
+  return invoke<{ converted: T; report: any }>("convert_material_action", {
+    srcGame,
+    dstGame,
+    materialPayload,
+    targetShader,
+  });
+}

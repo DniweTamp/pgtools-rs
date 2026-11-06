@@ -1,36 +1,27 @@
-// [wmb-studio BEGIN phase2]
 import * as THREE from "three";
 import {
   BatchDesc,
   MaterialDesc,
+  MaterialShaderStatus,
   TextureSlotDesc,
   WmbSceneManifest,
 } from "../contract";
+export type { MaterialShaderStatus };
 import {
   createInitialUniforms,
   FALLBACK_FRAGMENT_SHADER,
   getShader,
   isB1GlobalCubeId,
   resolveB1SamplerSlots,
-  // [wmb-studio BEGIN phase3]
   resolveB2SamplerSlots,
   resolveB3BlendAndSort,
   resolveB3SamplerSlots,
-  // [wmb-studio END]
   ResolvedShaderSpec,
   updateMaterialUniformsInPlace,
 } from "../shaders/registry";
 import { STUDIO_VERTEX_SHADER } from "../shaders/common";
 import { DebugChannelMode, DebugSlotPreview, WmbGeometryCache } from "../store";
 import { ViewerTextureCache } from "./textures";
-
-export interface MaterialShaderStatus {
-  materialId: string;
-  shaderId: string;
-  isFallback: boolean;
-  hasCompileError: boolean;
-  compileErrorLog?: string;
-}
 
 const verifiedShaderPrograms = new WeakMap<
   WebGLRenderingContext | WebGL2RenderingContext,
@@ -210,7 +201,6 @@ export class SceneMeshBuilder {
       secondaryNormalsEnabled?: boolean;
     }
   ): void {
-    // 1. Sync materials
     const activeMatIds = new Set<string>();
     const texHashById = new Map<number, string>();
     for (const t of manifest.textures) {
@@ -251,7 +241,6 @@ export class SceneMeshBuilder {
       }
     }
 
-    // 2. Sync batch geometries & meshes
     const activeBatchIds = new Set<string>();
     const activeVbHashes = new Set<string>();
     const vbByIndex = new Map<number, string>();
@@ -265,7 +254,6 @@ export class SceneMeshBuilder {
       }
     }
 
-    // Map LOD id -> level
     const lodLevelById = new Map<string, number>();
     for (const mg of manifest.meshGroups) {
       for (const l of mg.lods) {
@@ -352,7 +340,6 @@ export class SceneMeshBuilder {
       mesh.visible = visible;
     }
 
-    // Remove stale batch meshes
     for (const [batchId, mesh] of Array.from(this.batchMeshes.entries())) {
       if (!activeBatchIds.has(batchId)) {
         this.rootGroup.remove(mesh);
@@ -363,7 +350,6 @@ export class SceneMeshBuilder {
       }
     }
 
-    // 3. Apply display options (wireframe, normals/slot debug mode)
     this.applyDisplayOptions(
       manifest,
       options.wireframe,
@@ -560,9 +546,7 @@ export class SceneMeshBuilder {
       this.texCache.flatNormal2D,
       this.texCache.specLut2D,
       this.texCache.studioCubeHard,
-      // [wmb-studio BEGIN phase3]
       this.texCache.studioCubeSoft
-      // [wmb-studio END]
     );
 
     const blendSort = resolveB3BlendAndSort(matDesc, spec);
@@ -580,8 +564,7 @@ export class SceneMeshBuilder {
     const slotTexMap = new Map<number, THREE.Texture | THREE.CubeTexture>();
     this.materialSlotTextures.set(matDesc.id, slotTexMap);
 
-    // Resolve and bind textures asynchronously
-    this.bindMaterialTextures(manifest, matDesc, shaderMat, slotTexMap);
+      this.bindMaterialTextures(manifest, matDesc, shaderMat, slotTexMap);
 
     return shaderMat;
   }
@@ -649,7 +632,6 @@ export class SceneMeshBuilder {
       loadAndAssign(b1Slots.Spec_Mask, "Spec_Mask_sampler", false);
       loadAndAssign(b1Slots.lightmap, "lightmap_sampler", false);
     } else if (matDesc.game === "b2") {
-      // [wmb-studio BEGIN phase3]
       const b2Slots = resolveB2SamplerSlots(matDesc);
       loadAndAssign(
         b2Slots.albedo,
@@ -689,7 +671,6 @@ export class SceneMeshBuilder {
       if (b3Slots.normal) {
         loadAndAssign(b3Slots.normal, "reliefmap_sampler", false);
       }
-      // [wmb-studio END]
     }
 
     // Also populate slotTexMap for all remaining slots so texture debug preview works on every slot
@@ -745,7 +726,6 @@ export class SceneMeshBuilder {
     const vb = geomCache.vertexBuffers.get(vbHash);
     const indices = geomCache.batchIndices.get(batch.geometryHash);
 
-    // [wmb-studio BEGIN phase3]
     // Malformed / empty batch guard: return a clean empty BufferGeometry with a zero-length position attribute
     if (
       !vb ||
@@ -765,7 +745,6 @@ export class SceneMeshBuilder {
       );
       return geom;
     }
-    // [wmb-studio END]
 
     let sharedAttrs = this.sharedVbAttributes.get(vbHash);
     if (!sharedAttrs) {
@@ -857,4 +836,3 @@ export class SceneMeshBuilder {
     this.rootGroup.clear();
   }
 }
-// [wmb-studio END]

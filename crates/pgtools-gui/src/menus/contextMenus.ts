@@ -1,0 +1,913 @@
+import { invoke } from "@tauri-apps/api/core";
+import {
+  DecodedWmbMaterial,
+  FsEntry,
+  MaterialClipboardState,
+  MenuItemSpec,
+  Wmb3Material,
+  WmbSectionView,
+} from "../types";
+import { isVirtualSubNode } from "../utils/format";
+import { convertMaterialBetweenGames } from "../wmb-studio/contract";
+
+export interface AssetMenuDeps {
+  activeWmb: WmbSectionView | null;
+  wmbMatDraft: DecodedWmbMaterial | null;
+  wmb3MatDraft: Wmb3Material | null;
+  wmbB2Override: boolean | null;
+  materialClipboard: MaterialClipboardState | null;
+  setMaterialClipboard: (val: MaterialClipboardState | null) => void;
+  setContextMenu: (val: any) => void;
+  setStatusLeft: (msg: string) => void;
+  runWmbMutation: (nodeId: string, operation: string, payload?: any) => Promise<void>;
+  handleCrossGameMaterialConvert: (wmb: WmbSectionView, dstGame: "b1" | "b2" | "b3") => Promise<void>;
+  runContainerMutation: (nodeId: string, action: string, targetPath?: string, payload?: any) => Promise<void>;
+  promptAndRunTextureImport: (nodeId: string, action: "replace_file" | "add_texture") => Promise<void>;
+  handleTextureExport: (nodeId: string, scope: "single" | "bank", format: "png" | "dds" | "raw") => Promise<void>;
+  runTextureMutation: (nodeId: string, action: string, payload?: any) => Promise<void>;
+  runClothMutation: (nodeId: string, operation: string, preset?: string, updatedJson?: any) => Promise<void>;
+  loadDirectory: (target?: string) => Promise<void>;
+  currentDirRef: React.MutableRefObject<string>;
+}
+
+export interface FileMenuDeps {
+  selectedFilePaths: string[];
+  setSelectedFilePaths: (paths: string[]) => void;
+  filteredFiles: FsEntry[];
+  fsClipboard: { mode: "copy" | "cut"; paths: string[] } | null;
+  setFsClipboard: (val: { mode: "copy" | "cut"; paths: string[] } | null) => void;
+  currentDir: string;
+  setContextMenu: (val: any) => void;
+  setStatusLeft: (msg: string) => void;
+  loadDirectory: (target?: string) => Promise<void>;
+  openDocumentByPath: (path: string) => Promise<void>;
+}
+
+export function createMenuBuilders(assetDeps: AssetMenuDeps, fileDeps: FileMenuDeps) {
+  const {
+    activeWmb,
+    wmbMatDraft,
+    wmb3MatDraft,
+    wmbB2Override,
+    materialClipboard,
+    setMaterialClipboard,
+    setContextMenu,
+    setStatusLeft,
+    runWmbMutation,
+    handleCrossGameMaterialConvert,
+    runContainerMutation,
+    promptAndRunTextureImport,
+    handleTextureExport,
+    runTextureMutation,
+    runClothMutation,
+    loadDirectory,
+    currentDirRef,
+  } = assetDeps;
+
+  const {
+    selectedFilePaths,
+    setSelectedFilePaths,
+    filteredFiles,
+    fsClipboard,
+    setFsClipboard,
+    currentDir,
+    openDocumentByPath,
+  } = fileDeps;
+
+  function buildAssetNodeContextMenu(nodeId: string, kind: string): MenuItemSpec[] {
+    const virtualSub = isVirtualSubNode(nodeId);
+    const leafSeg = nodeId.split("/").pop() || "";
+    const isContainerEntry =
+      !virtualSub &&
+      nodeId !== "root" &&
+      nodeId !== "root:dat" &&
+      nodeId !== "root:dtt" &&
+      (leafSeg.startsWith("dat:") || leafSeg.startsWith("pkz:") || leafSeg.startsWith("efffile:"));
+    const isContainer =
+      kind === "DAT" ||
+      kind === "DTT" ||
+      kind === "PKZ" ||
+      kind === "EFF" ||
+      kind === "EFF_DIR" ||
+      kind === "SCR";
+
+    // 1. Virtual Material Sub-Node (`wmb:mat:X` or `wmb3:mat:X`)
+    if (virtualSub && (leafSeg.startsWith("wmb:mat:") || leafSeg.startsWith("wmb3:mat:"))) {
+      const isWmb3Mat = leafSeg.startsWith("wmb3:mat:");
+      return [
+        {
+          label: "Copy Material to Clipboard",
+          action: () => {
+            setContextMenu(null);
+            if (isWmb3Mat && wmb3MatDraft) {
+              setMaterialClipboard({ game: "b3", payload: structuredClone(wmb3MatDraft) });
+              setStatusLeft(`Copied WMB3 material '${wmb3MatDraft.name}' to clipboard`);
+            } else if (wmbMatDraft) {
+              const g = (wmbB2Override ?? activeWmb?.is_bayo2) ? "b2" : "b1";
+              setMaterialClipboard({ game: g, payload: structuredClone(wmbMatDraft) });
+              setStatusLeft(`Copied Material #${wmbMatDraft.index} to clipboard`);
+            }
+          },
+        },
+        {
+          label: "Paste Material from Clipboard",
+          disabled: !materialClipboard,
+          action: async () => {
+            setContextMenu(null);
+            if (!materialClipboard || !activeWmb) return;
+            const dstGame = activeWmb.is_wmb3
+              ? "b3"
+              : (wmbB2Override ?? activeWmb.is_bayo2)
+              ? "b2"
+              : "b1";
+            if (materialClipboard.game === dstGame) {
+              if (activeWmb.is_wmb3) {
+                const matIdx = parseInt(activeWmb.section.replace("mat:", ""), 10) || 0;
+                await runWmbMutation(activeWmb.node_id, "update_wmb3_material", {
+                  index: matIdx,
+                  material: materialClipboard.payload,
+                });
+              } else {
+                const nextMat = {
+                  ...materialClipboard.payload,
+                  index: wmbMatDraft?.index ?? 0,
+                };
+                await runWmbMutation(activeWmb.node_id, "update_material", nextMat);
+              }
+            } else {
+              const res = await convertMaterialBetweenGames(
+                materialClipboard.game,
+                dstGame,
+                materialClipboard.payload,
+                null
+              );
+              if (activeWmb.is_wmb3) {
+                const matIdx = parseInt(activeWmb.section.replace("mat:", ""), 10) || 0;
+                await runWmbMutation(activeWmb.node_id, "update_wmb3_material", {
+                  index: matIdx,
+                  material: res.converted,
+                });
+              } else {
+                const nextMat = {
+                  ...res.converted,
+                  index: wmbMatDraft?.index ?? 0,
+                };
+                await runWmbMutation(activeWmb.node_id, "update_material", nextMat);
+              }
+            }
+          },
+        },
+        { separator: true },
+        {
+          label: "Cross-Game Convert Material",
+          submenu: [
+            {
+              label: "Convert → Bayonetta 1 (0x24..0xBC)",
+              action: () => activeWmb && handleCrossGameMaterialConvert(activeWmb, "b1"),
+            },
+            {
+              label: "Convert → Bayonetta 2 (843 Shaders)",
+              action: () => activeWmb && handleCrossGameMaterialConvert(activeWmb, "b2"),
+            },
+            {
+              label: "Convert → Bayonetta 3 (WMB3 PBS00)",
+              action: () => activeWmb && handleCrossGameMaterialConvert(activeWmb, "b3"),
+            },
+          ],
+        },
+      ];
+    }
+
+    // 2. Other virtual WMB sub-nodes (`wmb:header`, `wmb:bones`, `wmb:meshes`, `wmb:vertexes`)
+    if (virtualSub && (leafSeg.startsWith("wmb:") || leafSeg.startsWith("wmb3:"))) {
+      const isWmb3Node = leafSeg.startsWith("wmb3:");
+      return [
+        {
+          label: "Export Model to Wavefront .OBJ...",
+          action: async () => {
+            setContextMenu(null);
+            const dest = await invoke<string | null>("save_file_dialog", {
+              title: "Export WMB Model to .OBJ",
+              defaultName: "model.obj",
+            });
+            if (dest) await runWmbMutation(nodeId, "export_obj", { path: dest });
+          },
+        },
+        ...(isWmb3Node
+          ? [
+              {
+                label: "Bake Skeleton & Vertices to T-Pose",
+                action: () => runWmbMutation(nodeId, "set_tpose"),
+              },
+            ]
+          : [
+              {
+                label: "Cleanup Unreferenced Vertexes",
+                action: () => runWmbMutation(nodeId, "cleanup_vertexes"),
+              },
+              {
+                label: "Cleanup Unused Materials",
+                action: () => runWmbMutation(nodeId, "cleanup_materials"),
+              },
+              {
+                label: "Recompute Relative Bone Positions",
+                action: () => runWmbMutation(nodeId, "recompute_relative_positions"),
+              },
+              {
+                label: "Swap Endianness (Wii U ↔ PC)",
+                action: () => runWmbMutation(nodeId, "swap_endian"),
+              },
+            ]),
+      ];
+    }
+
+    // Standard leaf entry actions inside a parent container (NO Move Up/Down — drag & drop handles reordering!)
+    const leafEntryMgmtItems: MenuItemSpec[] = isContainerEntry
+      ? [
+          {
+            label: "Replace Sub-File from Disk...",
+            action: async () => {
+              setContextMenu(null);
+              const src = await invoke<string | null>("pick_file_dialog", {
+                title: "Select Replacement Sub-File",
+                extensions: null,
+              });
+              if (src) {
+                await runContainerMutation(nodeId, "replace_subfile", src);
+              }
+            },
+          },
+          {
+            label: "Export Raw Sub-File...",
+            action: async () => {
+              setContextMenu(null);
+              const dest = await invoke<string | null>("save_file_dialog", {
+                title: "Export Raw Sub-File",
+                defaultName: "extracted.bin",
+              });
+              if (dest) {
+                await runContainerMutation(nodeId, "export_subfile", dest);
+                setStatusLeft(`Exported raw sub-file to ${dest}`);
+              }
+            },
+          },
+          {
+            label: "Rename Entry...",
+            action: async () => {
+              setContextMenu(null);
+              const nextName = window.prompt("Enter new entry filename:");
+              if (nextName && nextName.trim()) {
+                await runContainerMutation(nodeId, "rename_entry", nextName.trim(), {
+                  new_name: nextName.trim(),
+                });
+              }
+            },
+          },
+          {
+            label: "Delete from Container",
+            action: () => runContainerMutation(nodeId, "remove_entry"),
+          },
+        ]
+      : [];
+
+    // 2B. PKZ Virtual Folder Node (`PKZ_FOLDER` / `pkzfolder:<prefix>`)
+    if (kind === "PKZ_FOLDER" || leafSeg.startsWith("pkzfolder:")) {
+      const folderPrefix = leafSeg.replace(/^pkzfolder:/, "");
+      return [
+        {
+          label: `Add File(s) into '${folderPrefix}/'...`,
+          action: async () => {
+            setContextMenu(null);
+            const paths = await invoke<string[]>("pick_multiple_files_dialog", {
+              title: `Add File(s) into PKZ Folder '${folderPrefix}/'`,
+              extensions: null,
+            });
+            if (paths && paths.length > 0) {
+              await runContainerMutation(nodeId, "add_files", "", {
+                paths,
+                folder_prefix: folderPrefix,
+              });
+            }
+          },
+        },
+        {
+          label: `Extract Folder '${folderPrefix}/' to Disk...`,
+          action: async () => {
+            setContextMenu(null);
+            const folder = await invoke<string | null>("pick_folder_dialog", {
+              title: `Extract PKZ Folder '${folderPrefix}'`,
+            });
+            if (folder) {
+              await runContainerMutation(nodeId, "extract_pkz_folder", folder, {
+                folder_prefix: folderPrefix,
+              });
+              setStatusLeft(`Extracted PKZ folder '${folderPrefix}' to ${folder}`);
+              loadDirectory(currentDirRef.current);
+            }
+          },
+        },
+        {
+          label: "Rename Folder Prefix...",
+          action: async () => {
+            setContextMenu(null);
+            const nextPrefix = window.prompt("Enter new PKZ folder prefix:", folderPrefix);
+            if (nextPrefix !== null && nextPrefix.trim() !== folderPrefix) {
+              await runContainerMutation(nodeId, "rename_pkz_folder", nextPrefix.trim(), {
+                folder_prefix: folderPrefix,
+                new_prefix: nextPrefix.trim(),
+              });
+            }
+          },
+        },
+        { separator: true },
+        {
+          label: `Delete Folder '${folderPrefix}/' from PKZ`,
+          action: () =>
+            runContainerMutation(nodeId, "remove_pkz_folder", "", {
+              folder_prefix: folderPrefix,
+            }),
+        },
+      ];
+    }
+
+    // 3. Container Node (`DAT`, `DTT`, `PKZ`, `EFF`, `EFF_DIR`, `SCR`)
+    if (isContainer) {
+      const items: MenuItemSpec[] = [];
+      if (kind !== "SCR") {
+        items.push({
+          label: "Add File(s) to Container...",
+          action: async () => {
+            setContextMenu(null);
+            const paths = await invoke<string[]>("pick_multiple_files_dialog", {
+              title: "Select File(s) to Add to Container",
+              extensions: null,
+            });
+            if (paths && paths.length > 0) {
+              await runContainerMutation(nodeId, "add_files", "", { paths });
+            }
+          },
+        });
+      }
+      items.push({
+        label: "Extract All to Folder...",
+        action: async () => {
+          setContextMenu(null);
+          const folder = await invoke<string | null>("pick_folder_dialog", {
+            title: "Extract Container Entries to Folder",
+          });
+          if (folder) {
+            await runContainerMutation(nodeId, "extract_all", folder);
+            setStatusLeft(`Extracted all entries to ${folder}`);
+            loadDirectory(currentDirRef.current);
+          }
+        },
+      });
+      if (nodeId !== "root") {
+        items.push({
+          label: "Export Raw Container...",
+          action: async () => {
+            setContextMenu(null);
+            const dest = await invoke<string | null>("save_file_dialog", {
+              title: "Export Raw Container",
+              defaultName: `archive.${kind.toLowerCase()}`,
+            });
+            if (dest) {
+              await runContainerMutation(nodeId, "export_subfile", dest);
+              setStatusLeft(`Exported container to ${dest}`);
+            }
+          },
+        });
+      }
+      if (leafEntryMgmtItems.length > 0) {
+        items.push({ separator: true }, ...leafEntryMgmtItems);
+      }
+      return items;
+    }
+
+    // 4. Texture / WTB / BNTX / DDS / GTX / XT1
+    if (
+      kind === "TEXTURE" ||
+      kind === "WTB" ||
+      kind === "DDS" ||
+      kind === "GTX" ||
+      kind === "XT1" ||
+      kind === "BNTX"
+    ) {
+      const targetId =
+        kind === "WTB" || kind === "BNTX"
+          ? nodeId === "root"
+            ? "tex:0"
+            : `${nodeId}/tex:0`
+          : nodeId;
+      return [
+        {
+          label: "Replace Texture (PNG / DDS / GTX / XT1 / BNTX)...",
+          action: () => promptAndRunTextureImport(targetId, "replace_file"),
+        },
+        {
+          label: "Dummy out",
+          submenu: [
+            {
+              label: "White (8x8)",
+              action: () => {
+                setContextMenu(null);
+                runTextureMutation(targetId, "dummy_out", { kind: "white" });
+              },
+            },
+            {
+              label: "Black (8x8)",
+              action: () => {
+                setContextMenu(null);
+                runTextureMutation(targetId, "dummy_out", { kind: "black" });
+              },
+            },
+            {
+              label: "Normal (128, 128, 255)",
+              action: () => {
+                setContextMenu(null);
+                runTextureMutation(targetId, "dummy_out", { kind: "normal" });
+              },
+            },
+          ],
+        },
+        { separator: true },
+        {
+          label: "Export",
+          submenu: [
+            {
+              label: "Export .png...",
+              action: () => handleTextureExport(targetId, "single", "png"),
+            },
+            {
+              label: "Export .dds...",
+              action: () => handleTextureExport(targetId, "single", "dds"),
+            },
+            {
+              label: "Export raw payload...",
+              action: () => handleTextureExport(targetId, "single", "raw"),
+            },
+          ],
+        },
+        { separator: true },
+        {
+          label: "Add texture to bank...",
+          action: () => promptAndRunTextureImport(targetId, "add_texture"),
+        },
+        {
+          label: "Delete texture from bank",
+          action: () => {
+            setContextMenu(null);
+            runTextureMutation(targetId, "delete_texture");
+          },
+        },
+        { separator: true },
+        {
+          label: "Export every texture in this bank",
+          submenu: [
+            {
+              label: "As PNG folder...",
+              action: () => handleTextureExport(targetId, "bank", "png"),
+            },
+            {
+              label: "As DDS folder...",
+              action: () => handleTextureExport(targetId, "bank", "dds"),
+            },
+            {
+              label: "As raw folder...",
+              action: () => handleTextureExport(targetId, "bank", "raw"),
+            },
+          ],
+        },
+        {
+          label: "Convert Wii U (.gtx) bank to PC (.dds)",
+          action: () => {
+            setContextMenu(null);
+            runTextureMutation(targetId, "convert_wiiu_to_pc");
+          },
+        },
+        {
+          label: "Batch replace from folder...",
+          action: async () => {
+            setContextMenu(null);
+            const folder = await invoke<string | null>("pick_folder_dialog", {
+              title: "Select Folder of Replacement Textures (matched by tex<idx> or hash)",
+            });
+            if (folder) await runTextureMutation(targetId, "batch_replace_folder", { folder });
+          },
+        },
+        ...(leafEntryMgmtItems.length > 0 ? [{ separator: true }, ...leafEntryMgmtItems] : []),
+      ];
+    }
+
+    // 5. WMB / WMB3 Model File
+    if (kind.startsWith("WMB")) {
+      const isWmb3 = kind === "WMB3";
+      return [
+        {
+          label: "Export Model to Wavefront .OBJ...",
+          action: async () => {
+            setContextMenu(null);
+            const dest = await invoke<string | null>("save_file_dialog", {
+              title: "Export WMB Model to .OBJ",
+              defaultName: "model.obj",
+            });
+            if (dest) await runWmbMutation(nodeId, "export_obj", { path: dest });
+          },
+        },
+        ...(isWmb3
+          ? [
+              {
+                label: "Bake WMB3 Skeleton & Vertices to T-Pose",
+                action: () => runWmbMutation(nodeId, "set_tpose"),
+              },
+            ]
+          : [
+              { separator: true },
+              {
+                label: "Cleanup & Optimization",
+                submenu: [
+                  {
+                    label: "Cleanup Unreferenced Vertexes",
+                    action: () => runWmbMutation(nodeId, "cleanup_vertexes"),
+                  },
+                  {
+                    label: "Cleanup Unused Materials",
+                    action: () => runWmbMutation(nodeId, "cleanup_materials"),
+                  },
+                  {
+                    label: "Clamp Material Sizes to Shader Spec",
+                    action: () => runWmbMutation(nodeId, "cleanup_material_sizes"),
+                  },
+                  {
+                    label: "Maximize Material Sizes",
+                    action: () => runWmbMutation(nodeId, "maximize_material_sizes"),
+                  },
+                  {
+                    label: "Convert Triangle Strips to Triangles",
+                    action: () => runWmbMutation(nodeId, "remove_triangle_strips"),
+                  },
+                ],
+              },
+              {
+                label: "Normals & Skeleton",
+                submenu: [
+                  {
+                    label: "Convert Normals to 10-10-10-2 Wide",
+                    action: () => runWmbMutation(nodeId, "normals_to_wide"),
+                  },
+                  {
+                    label: "Check & Normalize Vertex Normals",
+                    action: () => runWmbMutation(nodeId, "check_normals"),
+                  },
+                  {
+                    label: "Recompute Relative Bone Positions",
+                    action: () => runWmbMutation(nodeId, "recompute_relative_positions"),
+                  },
+                ],
+              },
+              {
+                label: "Swap Endianness (Wii U ↔ PC)",
+                action: () => runWmbMutation(nodeId, "swap_endian"),
+              },
+            ]),
+        ...(leafEntryMgmtItems.length > 0 ? [{ separator: true }, ...leafEntryMgmtItems] : []),
+      ];
+    }
+
+    // 6. Cloth Physics (`CLP`, `CLH`, `CLW`)
+    if (kind === "CLP" || kind === "CLH" || kind === "CLW") {
+      return [
+        {
+          label: "Remap Bone IDs (Cross-Game Presets)",
+          submenu: [
+            {
+              label: "Bayonetta 2 (pl0010) → Bayonetta 1 (pl0010)",
+              action: () => runClothMutation(nodeId, "remap_bones", "bayo2_pl0010_to_bayo1"),
+            },
+            {
+              label: "Bayonetta 2 (pl0000) → Bayonetta 1 (pl0010)",
+              action: () => runClothMutation(nodeId, "remap_bones", "bayo2_pl0000_to_bayo1"),
+            },
+            {
+              label: "Bayonetta 2 Combat Head → Bayonetta 1",
+              action: () => runClothMutation(nodeId, "remap_bones", "bayo2_combat_head"),
+            },
+            {
+              label: "Bayonetta 2 Cutscene Head → Bayonetta 1",
+              action: () => runClothMutation(nodeId, "remap_bones", "bayo2_cutscene_head"),
+            },
+            {
+              label: "Bayonetta 2 Common Bones → Bayonetta 1",
+              action: () => runClothMutation(nodeId, "remap_bones", "bayo2_common"),
+            },
+            {
+              label: "NieR:Automata → Bayonetta 1",
+              action: () => runClothMutation(nodeId, "remap_bones", "nier_to_bayo1"),
+            },
+          ],
+        },
+        {
+          label: "Swap Endianness (Wii U Big ↔ PC Little)",
+          action: () => runClothMutation(nodeId, "swap_endian"),
+        },
+        ...(leafEntryMgmtItems.length > 0 ? [{ separator: true }, ...leafEntryMgmtItems] : []),
+      ];
+    }
+
+    // 7. BXM / XML / GAD
+    if (kind === "BXM") {
+      return [
+        {
+          label: "Export Decoded XML (.xml)...",
+          action: async () => {
+            setContextMenu(null);
+            const dest = await invoke<string | null>("save_file_dialog", {
+              title: "Export Decoded XML (.xml)",
+              defaultName: "decoded.xml",
+            });
+            if (dest) {
+              await runContainerMutation(nodeId, "export_bxm_xml", dest);
+              setStatusLeft(`Exported decoded UTF-8 XML to ${dest}`);
+              loadDirectory(currentDirRef.current);
+            }
+          },
+        },
+        {
+          label: "Import & Encode from .XML...",
+          action: async () => {
+            setContextMenu(null);
+            const srcXml = await invoke<string | null>("pick_file_dialog", {
+              title: "Import & Encode XML into Binary BXM",
+              extensions: ["xml"],
+            });
+            if (srcXml) {
+              await runContainerMutation(nodeId, "import_bxm_xml", srcXml);
+              setStatusLeft(`Imported and encoded ${srcXml} into BXM`);
+            }
+          },
+        },
+        ...(leafEntryMgmtItems.length > 0 ? [{ separator: true }, ...leafEntryMgmtItems] : []),
+      ];
+    }
+
+    if (leafEntryMgmtItems.length > 0) {
+      return leafEntryMgmtItems;
+    }
+
+    return [
+      {
+        label: "Export Raw File...",
+        action: async () => {
+          setContextMenu(null);
+          const dest = await invoke<string | null>("save_file_dialog", {
+            title: "Export Raw File",
+            defaultName: "extracted.bin",
+          });
+          if (dest) await runContainerMutation(nodeId, "export_subfile", dest);
+        },
+      },
+      {
+        label: "Replace from Disk...",
+        action: async () => {
+          setContextMenu(null);
+          const src = await invoke<string | null>("pick_file_dialog", {
+            title: "Select Replacement File",
+            extensions: null,
+          });
+          if (src) await runContainerMutation(nodeId, "replace_subfile", src);
+        },
+      },
+    ];
+  }
+
+  function buildFileBrowserContextMenu(entry: FsEntry): MenuItemSpec[] {
+    const ext = entry.extension.toLowerCase();
+    const runCliOp = async (op: string, dest?: string) => {
+      setContextMenu(null);
+      try {
+        setStatusLeft(`Running ${op} on ${entry.name}...`);
+        const msg = await invoke<string>("run_file_context_operation", {
+          filePath: entry.path,
+          operation: op,
+          destPath: dest ?? null,
+        });
+        setStatusLeft(msg);
+        loadDirectory(currentDirRef.current);
+      } catch (err) {
+        setStatusLeft(`Operation failed: ${String(err)}`);
+      }
+    };
+
+    const items: MenuItemSpec[] = [
+      {
+        label: entry.is_dir ? "Open Folder" : "Open in Studio",
+        action: () => {
+          setContextMenu(null);
+          if (entry.is_dir) {
+            loadDirectory(entry.path);
+          } else {
+            openDocumentByPath(entry.path);
+          }
+        },
+      },
+      {
+        label: "Reload Directory",
+        action: () => {
+          setContextMenu(null);
+          loadDirectory(currentDirRef.current);
+        },
+      },
+      { separator: true },
+    ];
+
+    if (entry.is_dir) {
+      items.push(
+        {
+          label: "Repack Folder into .DAT / .DTT Archive",
+          action: () => runCliOp("repack_folder_dat"),
+        },
+        {
+          label: "Pack Folder into .PKZ (ZStandard) Archive",
+          action: () => runCliOp("repack_folder_pkz"),
+        },
+        { separator: true }
+      );
+    } else {
+      if (["dat", "dtt", "evn", "pkz", "eff", "idd", "scr", "wtb", "wta", "bntx"].includes(ext)) {
+        items.push({
+          label: `Extract .${ext.toUpperCase()} to Folder...`,
+          action: () => runCliOp("extract_archive"),
+        });
+      }
+      if (["wtb", "wta"].includes(ext)) {
+        items.push({
+          label: "Convert Wii U (.gtx) → PC (.wtb)",
+          action: () => runCliOp("convert_wtb_wiiu_pc"),
+        });
+      }
+      if (ext === "wmb" || ext === "mdb") {
+        items.push({
+          label: "Export Model to Wavefront .OBJ",
+          action: () => runCliOp("wmb_export_obj"),
+        });
+        if (ext === "wmb") {
+          items.push({
+            label: "Swap Endianness (Wii U ↔ PC)",
+            action: () => runCliOp("swap_endian_file"),
+          });
+        }
+      }
+      if (ext === "bxm" || ext === "gad") {
+        items.push({
+          label: "Decode Binary .BXM/.GAD → .XML",
+          action: () => runCliOp("bxm_decode_xml"),
+        });
+      }
+      if (ext === "xml") {
+        items.push({
+          label: "Encode .XML → Binary .BXM",
+          action: () => runCliOp("bxm_encode_xml"),
+        });
+      }
+      if (["clp", "clh", "clw", "mot", "exp"].includes(ext)) {
+        items.push({
+          label: `Swap .${ext.toUpperCase()} Endianness (Wii U ↔ PC)`,
+          action: () => runCliOp("swap_endian_file"),
+        });
+      }
+      items.push({ separator: true });
+    }
+
+    const targetPaths =
+      selectedFilePaths.includes(entry.path) && selectedFilePaths.length > 1
+        ? selectedFilePaths
+        : [entry.path];
+
+    const runFsBatch = async (
+      op: string,
+      paths: string[],
+      destDir?: string,
+      newName?: string
+    ) => {
+      setContextMenu(null);
+      try {
+        const msg = await invoke<string>("fs_batch_operation", {
+          operation: op,
+          sourcePaths: paths,
+          destDir: destDir ?? null,
+          newName: newName ?? null,
+        });
+        setStatusLeft(msg);
+        await loadDirectory(currentDirRef.current);
+      } catch (err) {
+        setStatusLeft(`File operation failed: ${String(err)}`);
+      }
+    };
+
+    items.push(
+      {
+        label: targetPaths.length > 1 ? `Copy (${targetPaths.length} items)` : "Copy",
+        shortcut: "Ctrl+C",
+        action: () => {
+          setContextMenu(null);
+          setFsClipboard({ mode: "copy", paths: targetPaths });
+          setStatusLeft(`Copied ${targetPaths.length} item(s) to clipboard`);
+        },
+      },
+      {
+        label: targetPaths.length > 1 ? `Cut (${targetPaths.length} items)` : "Cut",
+        shortcut: "Ctrl+X",
+        action: () => {
+          setContextMenu(null);
+          setFsClipboard({ mode: "cut", paths: targetPaths });
+          setStatusLeft(`Cut ${targetPaths.length} item(s) to clipboard`);
+        },
+      },
+      {
+        label: fsClipboard
+          ? `Paste into Current Folder (${fsClipboard.paths.length})`
+          : "Paste",
+        shortcut: "Ctrl+V",
+        disabled: !fsClipboard || fsClipboard.paths.length === 0,
+        action: async () => {
+          if (!fsClipboard || !currentDir) return;
+          const op = fsClipboard.mode === "cut" ? "paste_cut" : "paste_copy";
+          const paths = fsClipboard.paths;
+          if (fsClipboard.mode === "cut") setFsClipboard(null);
+          await runFsBatch(op, paths, currentDir);
+        },
+      },
+      {
+        label: "Duplicate",
+        action: () => runFsBatch("duplicate", targetPaths),
+      },
+      {
+        label: "Rename...",
+        shortcut: "F2",
+        action: async () => {
+          setContextMenu(null);
+          const nextName = window.prompt("Rename to:", entry.name);
+          if (nextName && nextName.trim() && nextName.trim() !== entry.name) {
+            await runFsBatch("rename", [entry.path], undefined, nextName.trim());
+          }
+        },
+      },
+      {
+        label: targetPaths.length > 1 ? `Delete (${targetPaths.length} items)` : "Delete",
+        shortcut: "Del",
+        action: async () => {
+          setContextMenu(null);
+          const ok = window.confirm(
+            targetPaths.length > 1
+              ? `Delete ${targetPaths.length} selected items from disk?`
+              : `Delete '${entry.name}' from disk?`
+          );
+          if (ok) {
+            await runFsBatch("delete", targetPaths);
+            setSelectedFilePaths([]);
+          }
+        },
+      },
+      { separator: true },
+      {
+        label: "New Folder...",
+        action: async () => {
+          setContextMenu(null);
+          const folderName = window.prompt("New folder name:", "New Folder");
+          if (folderName && folderName.trim()) {
+            await runFsBatch("new_folder", [], currentDir, folderName.trim());
+          }
+        },
+      },
+      {
+        label: "Select All",
+        shortcut: "Ctrl+A",
+        action: () => {
+          setContextMenu(null);
+          setSelectedFilePaths(filteredFiles.map((f) => f.path));
+        },
+      },
+      { separator: true },
+      {
+        label: "Copy full path",
+        action: () => {
+          setContextMenu(null);
+          navigator.clipboard?.writeText(entry.path);
+          setStatusLeft(`Copied ${entry.path}`);
+        },
+      },
+      {
+        label: "Show in Explorer",
+        action: () => {
+          setContextMenu(null);
+          invoke("reveal_in_explorer", { path: entry.path });
+        },
+      }
+    );
+
+    return items;
+  }
+
+
+  return { buildAssetNodeContextMenu, buildFileBrowserContextMenu };
+}

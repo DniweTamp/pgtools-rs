@@ -1,6 +1,6 @@
-// [wmb-studio BEGIN phase2]
 import * as THREE from "three";
 import { BoneDesc } from "../contract";
+import { buildBoneHierarchy } from "../store";
 
 /**
  * Builds the ground grid (`y = 0`) and subtle XYZ axis lines at the origin.
@@ -58,19 +58,15 @@ export function buildSkeletonOverlay(
 
   if (bones.length === 0) return group;
 
-  const byGlobalId = new Map<number, BoneDesc>();
-  const byIndex = new Map<number, BoneDesc>();
-  bones.forEach((b, idx) => {
-    byGlobalId.set(b.globalId, b);
-    byIndex.set(idx, b);
-  });
+  const { parentIdxByBoneIdx } = buildBoneHierarchy(bones);
 
   const linePositions: number[] = [];
   const lineColors: number[] = [];
   const jointPositions: number[] = [];
   const jointColors: number[] = [];
 
-  for (const b of bones) {
+  for (let idx = 0; idx < bones.length; idx++) {
+    const b = bones[idx];
     const wp = b.worldPosition;
     if (wp.length < 3) continue;
     const isSel = selectedBoneIds.has(b.globalId);
@@ -82,9 +78,9 @@ export function buildSkeletonOverlay(
       jointColors.push(0.22, 0.78, 0.95); // cyan joint
     }
 
-    if (b.parent >= 0) {
-      const parentBone =
-        byIndex.get(b.parent) ?? byGlobalId.get(b.parent);
+    const parentIdx = parentIdxByBoneIdx.get(idx) ?? -1;
+    if (parentIdx >= 0) {
+      const parentBone = bones[parentIdx];
       if (parentBone && parentBone.worldPosition.length >= 3) {
         const pp = parentBone.worldPosition;
         const parentSel = selectedBoneIds.has(parentBone.globalId);
@@ -162,4 +158,3 @@ export function disposeObjectGroup(group: THREE.Group): void {
   });
   group.clear();
 }
-// [wmb-studio END]

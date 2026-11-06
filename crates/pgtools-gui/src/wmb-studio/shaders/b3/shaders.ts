@@ -1,7 +1,5 @@
-// [wmb-studio BEGIN phase3]
 import { MaterialDesc, TextureSlotDesc } from "../../contract";
-import { STUDIO_VERTEX_SHADER } from "../common";
-import { RenderQueueBucket } from "../b1/shaders";
+import { RenderQueueBucket, STUDIO_VERTEX_SHADER } from "../common";
 import { B3_PBR_COMMON_GLSL } from "./pbrCommon";
 
 export interface B3SamplerSlotBinding {
@@ -13,7 +11,6 @@ export interface B3SamplerSlotBinding {
   indexMap?: TextureSlotDesc;
   envCube?: TextureSlotDesc;
   irradCube?: TextureSlotDesc;
-  lightmap?: TextureSlotDesc;
 }
 
 const KNOWN_B3_SLOT_NAMES = new Set([
@@ -328,11 +325,6 @@ export function resolveB3SamplerSlots(mat: MaterialDesc): B3SamplerSlotBinding {
     slots.find((s) => s.role === "env");
   const irradCube =
     byNameLow.get("g_irradiancemap") ?? getUnnamedSlot(bySlot, slots, 12);
-  const lightmap =
-    byNameLow.get("g_subsurfacelut") ??
-    byNameLow.get("g_lightmap") ??
-    getUnnamedSlot(bySlot, slots, 9);
-
   return {
     albedo,
     normal,
@@ -342,7 +334,6 @@ export function resolveB3SamplerSlots(mat: MaterialDesc): B3SamplerSlotBinding {
     indexMap,
     envCube,
     irradCube,
-    lightmap,
   };
 }
 
@@ -359,7 +350,7 @@ export function resolveB3SamplerSlots(mat: MaterialDesc): B3SamplerSlotBinding {
 //   91 = PBS91 (leanest PBR: no mask map; normal.rg = normal, normal.b = metallic, normal.a^2 = roughness)
 //   99 = PBS99 (Maziora thin-film interference using g_mazioraParam1/2/3 + g_MetalMinMax & g_RoughnessMinMax)
 // ============================================================================
-export const B3_PBS_FRAGMENT_SHADER = /* glsl */ `
+const B3_PBS_FRAGMENT_SHADER = /* glsl */ `
 ${B3_PBR_COMMON_GLSL}
 
 uniform sampler2D uTexAlbedo;
@@ -445,11 +436,11 @@ void main() {
 
   // Normal decode: always reconstructs Z from RG
   if (g_UseNormalMap > 0.5 && uHasTexNormal == 1) {
-    vec3 nTS = DecodeB3NormalTS(sNormal, true);
+    vec3 nTS = DecodeB3NormalTS(sNormal);
     if (uUseSecondaryNormals == 1 && uB3PbsVariant == 2 && uHasTexNormal2 == 1) {
       // PBS02 blends primary normal (slot 3) and secondary normal (slot 2, tiled by g_Tile2) by coat weight (§3 line 535)
       vec4 sNorm2 = texture2D(uTexNormal2, baseUv * g_Tile2);
-      vec3 nTS2 = DecodeB3NormalTS(sNorm2, true);
+      vec3 nTS2 = DecodeB3NormalTS(sNorm2);
       nTS = normalize(mix(nTS, nTS2, coat));
     } else if (uUseSecondaryNormals == 1 && uB3PbsVariant == 4 && uHasTexNormal2 == 1) {
       // PBS04 RNM detail normal blend on attr.uv1 * g_DetailNormalTile (SHADER_ALGORITHMS_DEEP.md §01b line 1044)
@@ -465,12 +456,12 @@ void main() {
       // PBS00 / PBS03 / PBS40 detail normal map tiled by g_DetailNormalTile
       vec2 uvDetail = baseUv * g_DetailNormalTile;
       vec4 sDetail = texture2D(uTexNormal2, uvDetail);
-      vec3 nDetTS = DecodeB3NormalTS(sDetail, true);
+      vec3 nDetTS = DecodeB3NormalTS(sDetail);
       float detStr = clamp(g_DetailNormalIntensity, 0.15, 1.5);
       nTS = normalize(vec3(nTS.xy + nDetTS.xy * detStr, nTS.z));
     }
-    Nw = PerturbB3NormalW(nTS, 1.0, vTanW, NwGeo);
-    Nv = PerturbB3NormalV(nTS, 1.0, vTanV, NvGeo);
+    Nw = PerturbB3Normal(nTS, 1.0, vTanW, NwGeo);
+    Nv = PerturbB3Normal(nTS, 1.0, vTanV, NvGeo);
   }
 
   // Base Albedo (overwritten by g_AlbedoColor when g_bAlbedoOverWrite != 0)
@@ -579,7 +570,7 @@ void main() {
 // ============================================================================
 // 2. BAYO00 — Bayonetta Hybrid Body PBR + Hair-Cloth (`PS_FP_Bayo00_*`)
 // ============================================================================
-export const B3_BAYO00_FRAGMENT_SHADER = /* glsl */ `
+const B3_BAYO00_FRAGMENT_SHADER = /* glsl */ `
 ${B3_PBR_COMMON_GLSL}
 
 uniform sampler2D uTexAlbedo;
@@ -630,14 +621,14 @@ void main() {
 
   // Blend body normal (slot 1 .rg) and hair normal (slot 4 .rg) by hair region mask (slot 7 .a * slot 4 .a)
   float hairBlend = clamp(sIndex.a * saturate((sNorm3.a - 0.02) * max(g_HairNormalIntensity, 1.0)), 0.0, 1.0);
-  vec3 nBodyTS = DecodeB3NormalTS(sNorm, true);
+  vec3 nBodyTS = DecodeB3NormalTS(sNorm);
   vec3 nMixTS = nBodyTS;
   if (uUseSecondaryNormals == 1) {
-    vec3 nHairTS = (uHasTexNormal3 == 1) ? DecodeB3NormalTS(sNorm3, true) : nBodyTS;
+    vec3 nHairTS = (uHasTexNormal3 == 1) ? DecodeB3NormalTS(sNorm3) : nBodyTS;
     nMixTS = normalize(mix(nBodyTS, nHairTS, hairBlend));
     if (uHasTexNormal2 == 1) {
       vec4 sNorm2 = texture2D(uTexNormal2, uv);
-      vec3 nDetTS = DecodeB3NormalTS(sNorm2, true);
+      vec3 nDetTS = DecodeB3NormalTS(sNorm2);
       nMixTS = normalize(vec3(nMixTS.xy + nDetTS.xy * 0.35, nMixTS.z));
     }
   }
@@ -645,8 +636,8 @@ void main() {
   vec3 Nw = normalize(vNrmW);
   vec3 Nv = normalize(vNrmV);
   if (uHasTexNormal == 1) {
-    Nw = PerturbB3NormalW(nMixTS, 1.0, vTanW, Nw);
-    Nv = PerturbB3NormalV(nMixTS, 1.0, vTanV, Nv);
+    Nw = PerturbB3Normal(nMixTS, 1.0, vTanW, Nw);
+    Nv = PerturbB3Normal(nMixTS, 1.0, vTanV, Nv);
   }
 
   // Body channels (SHADER_ALGORITHMS_DEEP.md §1.3 & §1.5)
@@ -726,7 +717,7 @@ void main() {
 // ============================================================================
 // 3. Hair20 / Hair21 / Hair22 — Layered Anisotropic Strand Hair (`PS_FP_Hair20/21/22_*`)
 // ============================================================================
-export const B3_HAIR_FRAGMENT_SHADER = /* glsl */ `
+const B3_HAIR_FRAGMENT_SHADER = /* glsl */ `
 ${B3_PBR_COMMON_GLSL}
 
 uniform sampler2D uTexAlbedo;
@@ -864,20 +855,20 @@ void main() {
   vec3 Nw = normalize(vNrmW);
   vec3 Nv = normalize(vNrmV);
   if (uHasTexNormal == 1) {
-    vec3 n1 = DecodeB3NormalTS(sNorm1, true);
+    vec3 n1 = DecodeB3NormalTS(sNorm1);
     if (uUseSecondaryNormals == 1 && uHasTexNormal2 == 1) {
       if (uB3HairVariant == 40) {
         if (g_Layer1_UseNormalMap > 0.5) {
-          vec3 n2 = DecodeB3NormalTS(sNorm2, true);
+          vec3 n2 = DecodeB3NormalTS(sNorm2);
           n1 = normalize(mix(n1, n2, clamp(sNorm2.a, 0.25, 0.85)));
         }
       } else {
-        vec3 n2 = DecodeB3NormalTS(sNorm2, true);
+        vec3 n2 = DecodeB3NormalTS(sNorm2);
         n1 = normalize(mix(n1, n2, clamp(g_NormalIntensity, 0.0, 1.0)));
       }
     }
-    Nw = PerturbB3NormalW(n1, 1.0, vTanW, Nw);
-    Nv = PerturbB3NormalV(n1, 1.0, vTanV, Nv);
+    Nw = PerturbB3Normal(n1, 1.0, vTanW, Nw);
+    Nv = PerturbB3Normal(n1, 1.0, vTanV, Nv);
   }
 
   // Rotate strand tangent frame by g_HairOffset (§2.4 lines 2794-2795)
@@ -1005,7 +996,7 @@ void main() {
 //     25 = SKN25 (SKN20 with explicit AO map on slot 15 / uTexIndex)
 //     30 = SKN30 / SKN31 (two-layer Fresnel shell with constant-depth parallax g_ParallaxDepth, out.a = albedo.a)
 // ============================================================================
-export const B3_SKIN_FRAGMENT_SHADER = /* glsl */ `
+const B3_SKIN_FRAGMENT_SHADER = /* glsl */ `
 ${B3_PBR_COMMON_GLSL}
 
 uniform sampler2D uTexAlbedo;
@@ -1072,22 +1063,22 @@ void main() {
   vec3 Nw = NwGeo;
   vec3 Nv = NvGeo;
   if (uHasTexNormal == 1) {
-    vec3 nTS = DecodeB3NormalTS(sNorm, true);
+    vec3 nTS = DecodeB3NormalTS(sNorm);
     if (uUseSecondaryNormals == 1 && uHasTexNormal2 == 1) {
       if (uB3SkinVariant == 30) {
         vec4 sNormIn = texture2D(uTexNormal2, uvParallax);
-        vec3 nInTS = DecodeB3NormalTS(sNormIn, true);
+        vec3 nInTS = DecodeB3NormalTS(sNormIn);
         nTS = normalize(mix(nTS, nInTS, 0.45));
       } else if (g_UseDetailNormalMap > 0.5) {
         // SKN20 / SKN25 D-variant pore detail normal tiled by g_DetailNormalTile (from Variables)
         vec4 sDet = texture2D(uTexNormal2, uv * g_DetailNormalTile);
-        vec3 nDetTS = DecodeB3NormalTS(sDet, true);
+        vec3 nDetTS = DecodeB3NormalTS(sDet);
         float detStr = clamp(g_DetailNormalIntensity, 0.15, 1.2);
         nTS = normalize(vec3(nTS.xy + nDetTS.xy * detStr, nTS.z));
       }
     }
-    Nw = PerturbB3NormalW(nTS, 1.0, vTanW, NwGeo);
-    Nv = PerturbB3NormalV(nTS, 1.0, vTanV, NvGeo);
+    Nw = PerturbB3Normal(nTS, 1.0, vTanW, NwGeo);
+    Nv = PerturbB3Normal(nTS, 1.0, vTanV, NvGeo);
   }
 
   // Bent normal for subsurface wrap (§1.3 lines 8180-8183)
@@ -1178,7 +1169,7 @@ void main() {
 //     3  = Gls03 (interior room projection using wallFrequencies & TileXZ)
 //     2  = Gls01 / Gls02 / Gls20 / Gls22 / Gls31 (transparent Fresnel glass)
 // ============================================================================
-export const B3_GLASS_FRAGMENT_SHADER = /* glsl */ `
+const B3_GLASS_FRAGMENT_SHADER = /* glsl */ `
 ${B3_PBR_COMMON_GLSL}
 
 uniform sampler2D uTexAlbedo;
@@ -1210,9 +1201,9 @@ void main() {
   vec3 Nv = normalize(vNrmV);
   if (uHasTexNormal == 1) {
     vec4 sNorm = texture2D(uTexNormal, uv);
-    vec3 nTS = DecodeB3NormalTS(sNorm, true);
-    Nw = PerturbB3NormalW(nTS, 1.0, vTanW, Nw);
-    Nv = PerturbB3NormalV(nTS, 1.0, vTanV, Nv);
+    vec3 nTS = DecodeB3NormalTS(sNorm);
+    Nw = PerturbB3Normal(nTS, 1.0, vTanW, Nw);
+    Nv = PerturbB3Normal(nTS, 1.0, vTanV, Nv);
   }
 
   vec3 V = normalize(-vEyeW);
@@ -1269,7 +1260,7 @@ void main() {
 // 6. HZR00 / Sand00 / Wtr* / Lava00 — Layered Ground / Terrain Shader
 // (`SHADER_ALGORITHMS_DEEP.md` §04 lines 4657-4700)
 // ============================================================================
-export const B3_GROUND_FRAGMENT_SHADER = /* glsl */ `
+const B3_GROUND_FRAGMENT_SHADER = /* glsl */ `
 ${B3_PBR_COMMON_GLSL}
 
 uniform sampler2D uTexAlbedo;
@@ -1308,13 +1299,13 @@ void main() {
   vec3 Nv = normalize(vNrmV);
   if (uHasTexNormal == 1) {
     vec4 n1 = texture2D(uTexNormal, uv);
-    vec3 nTS = DecodeB3NormalTS(n1, true);
+    vec3 nTS = DecodeB3NormalTS(n1);
     if (uUseSecondaryNormals == 1 && uHasTexNormal2 == 1) {
       vec4 n2 = texture2D(uTexNormal2, uv * 2.0);
-      nTS = normalize(mix(nTS, DecodeB3NormalTS(n2, true), blendW));
+      nTS = normalize(mix(nTS, DecodeB3NormalTS(n2), blendW));
     }
-    Nw = PerturbB3NormalW(nTS, 1.0, vTanW, Nw);
-    Nv = PerturbB3NormalV(nTS, 1.0, vTanV, Nv);
+    Nw = PerturbB3Normal(nTS, 1.0, vTanW, Nw);
+    Nv = PerturbB3Normal(nTS, 1.0, vTanV, Nv);
   }
 
   vec3 base = mix(DecodeB3Albedo(sRock.rgb), DecodeB3Albedo(sSand.rgb), blendW);
@@ -1338,7 +1329,7 @@ void main() {
 // 7. JWL00 / JWL01 / DMN00 / SPRT00 / Eye* — Dual-Height Parallax Crystal & Jewel
 // (`SHADER_ALGORITHMS_DEEP.md` §3-4 lines 6860-7140)
 // ============================================================================
-export const B3_JEWEL_FRAGMENT_SHADER = /* glsl */ `
+const B3_JEWEL_FRAGMENT_SHADER = /* glsl */ `
 ${B3_PBR_COMMON_GLSL}
 
 uniform sampler2D uTexAlbedo;
@@ -1369,9 +1360,9 @@ void main() {
   if (uHasTexNormal == 1) {
     vec4 sNorm = texture2D(uTexNormal, vUv.xy);
     erMask = sNorm.a;
-    vec3 nTS = DecodeB3NormalTS(sNorm, true);
-    Nw = PerturbB3NormalW(nTS, 1.0, vTanW, Nw);
-    Nv = PerturbB3NormalV(nTS, 1.0, vTanV, Nv);
+    vec3 nTS = DecodeB3NormalTS(sNorm);
+    Nw = PerturbB3Normal(nTS, 1.0, vTanW, Nw);
+    Nv = PerturbB3Normal(nTS, 1.0, vTanV, Nv);
   }
 
   // Dual-height mirror-pair parallax UV offsets (SHADER_ALGORITHMS_DEEP.md §3 lines 6876-6884)
@@ -1427,7 +1418,7 @@ void main() {
 // 8. CNS* / HMFRM* / OCL* / FOG* — Effect Cards, Flow Maps & Frame Shaders
 // (`SHADER_ALGORITHMS_DEEP.md` §05a-05b lines 6360-6720)
 // ============================================================================
-export const B3_EFFECT_FRAGMENT_SHADER = /* glsl */ `
+const B3_EFFECT_FRAGMENT_SHADER = /* glsl */ `
 ${B3_PBR_COMMON_GLSL}
 
 uniform sampler2D uTexAlbedo;
@@ -1835,4 +1826,3 @@ export function getB3ShaderSpec(shaderName: string | null): {
     glassVariant: resolved.glassVariant,
   };
 }
-// [wmb-studio END]

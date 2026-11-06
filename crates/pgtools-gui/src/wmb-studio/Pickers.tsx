@@ -1,69 +1,112 @@
-// [wmb-studio BEGIN phase2]
 import React, { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import type { MaterialDesc, TextureRefDesc, WmbSceneManifest } from "./contract";
-import type { CorePretextureInfo } from "../types";
+import type {
+  CorePretextureInfo,
+  MaterialBankTextureOption,
+  MaterialPickerOption,
+} from "../types";
+import {
+  IconChevronRight,
+  IconDelete,
+  IconDuplicate,
+  IconEye,
+  IconShadow,
+} from "../components/Icons";
+import { formatHexId, formatHexU8, parseStrictHexU32 } from "../utils/format";
 
-export function IconChevronRight({ expanded, className = "" }: { expanded?: boolean; className?: string }) {
-  return (
-    <svg
-      className={`chevron-icon${expanded ? " expanded" : ""}${className ? ` ${className}` : ""}`}
-      viewBox="0 0 12 12"
-      fill="none"
-      stroke="currentColor"
-      strokeWidth="1.7"
-      strokeLinecap="round"
-      strokeLinejoin="round"
-      aria-hidden="true"
-    >
-      <path d="M4.25 2.5L7.75 6L4.25 9.5" />
-    </svg>
-  );
+export {
+  IconChevronRight,
+  IconDelete,
+  IconDuplicate,
+  IconEye,
+  IconShadow,
+  formatHexId,
+  parseStrictHexU32,
+};
+
+function useOutsideDismiss(
+  open: boolean,
+  setOpen: (v: boolean) => void,
+  triggerRef: React.RefObject<HTMLElement | null>,
+  dropdownRef: React.RefObject<HTMLElement | null>
+) {
+  useEffect(() => {
+    if (!open) return;
+    const onPointerDown = (e: MouseEvent) => {
+      const target = e.target as Node;
+      if (
+        triggerRef.current &&
+        !triggerRef.current.contains(target) &&
+        dropdownRef.current &&
+        !dropdownRef.current.contains(target)
+      ) {
+        setOpen(false);
+      }
+    };
+    const onKeyDown = (e: KeyboardEvent) => {
+      if (e.key === "Escape") {
+        setOpen(false);
+      }
+    };
+    document.addEventListener("mousedown", onPointerDown);
+    document.addEventListener("keydown", onKeyDown);
+    return () => {
+      document.removeEventListener("mousedown", onPointerDown);
+      document.removeEventListener("keydown", onKeyDown);
+    };
+  }, [open, setOpen, triggerRef, dropdownRef]);
 }
 
-export function IconEye({ visible }: { visible: boolean }) {
-  if (visible) {
-    return (
-      <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.4" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
-        <path d="M1.5 8C2.9 5.1 5.3 3.5 8 3.5C10.7 3.5 13.1 5.1 14.5 8C13.1 10.9 10.7 12.5 8 12.5C5.3 12.5 2.9 10.9 1.5 8Z" />
-        <circle cx="8" cy="8" r="2.1" />
-      </svg>
-    );
-  }
-  return (
-    <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.4" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
-      <path d="M2.2 2.2L13.8 13.8" />
-      <path d="M6.5 3.7C7 3.57 7.5 3.5 8 3.5C10.7 3.5 13.1 5.1 14.5 8C13.88 9.28 13.02 10.33 12 11.08" />
-      <path d="M4.2 5.3C3.07 6.02 2.15 6.94 1.5 8C2.9 10.9 5.3 12.5 8 12.5C9.1 12.5 10.15 12.23 11.1 11.74" />
-    </svg>
-  );
+export function bankOptionsToTextureRefs(
+  bankTextures: MaterialBankTextureOption[]
+): TextureRefDesc[] {
+  return bankTextures.map((bt) => ({
+    textureId: bt.texture_id >>> 0,
+    idHex: bt.texture_id_hex,
+    name: `tex${bt.index}`,
+    width: bt.width,
+    height: bt.height,
+    formatName: bt.format_name,
+    contentHash: "",
+    usedByMaterialIds: [],
+    thumbnailDataUrl: bt.thumbnail_data_url ?? null,
+  }));
 }
 
-export function IconDuplicate() {
-  return (
-    <svg viewBox="0 0 14 14" fill="none" stroke="currentColor" strokeWidth="1.4" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
-      <rect x="4.5" y="4.5" width="7.5" height="7.5" rx="1.3" />
-      <path d="M2.5 9.5H2.2C1.8 9.5 1.5 9.2 1.5 8.8V2.2C1.5 1.8 1.8 1.5 2.2 1.5H8.8C9.2 1.5 9.5 1.8 9.5 2.2V2.5" />
-    </svg>
-  );
-}
-
-export function IconDelete() {
-  return (
-    <svg viewBox="0 0 14 14" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
-      <path d="M3.25 3.25L10.75 10.75" />
-      <path d="M10.75 3.25L3.25 10.75" />
-    </svg>
-  );
-}
-
-export function IconShadow() {
-  return (
-    <svg viewBox="0 0 14 14" fill="none" stroke="currentColor" strokeWidth="1.3" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
-      <rect x="2" y="2" width="6.8" height="6.8" rx="1.1" />
-      <path d="M5.5 8.8V10.9C5.5 11.5 6 12 6.6 12H10.9C11.5 12 12 11.5 12 10.9V6.6C12 6 11.5 5.5 10.9 5.5H8.8" strokeDasharray="1.6 1.4" />
-    </svg>
-  );
+export function materialOptionsToMaterialDescs(
+  options: MaterialPickerOption[]
+): MaterialDesc[] {
+  return options.map((opt) => {
+    const firstTid = opt.first_tex_id_hex ? parseStrictHexU32(opt.first_tex_id_hex) : null;
+    const materialType = parseInt(opt.badge.replace(/^0x/i, ""), 16) || null;
+    return {
+      id: opt.node_id,
+      index: opt.index,
+      name: opt.label,
+      game: "b1",
+      shaderName: opt.shader_name,
+      materialType,
+      technique: opt.badge ?? null,
+      textureSlots:
+        firstTid !== null && opt.first_tex_id_hex
+          ? [
+              {
+                slot: 0,
+                name: "Albedo",
+                textureId: firstTid,
+                textureIdHex: opt.first_tex_id_hex,
+                role: "albedo",
+                present: true,
+                global: false,
+              },
+            ]
+          : [],
+      params: [],
+      usedByBatchIds: [],
+      thumbnailDataUrl: opt.thumbnail_data_url ?? null,
+    };
+  });
 }
 
 /**
@@ -141,20 +184,6 @@ export function inferTextureRoles(manifest: WmbSceneManifest | null): Map<number
   return map;
 }
 
-const HEX_U32_REGEX = /^(?:0x)?[0-9a-f]{1,8}$/i;
-
-export function parseStrictHexU32(input: string): number | null {
-  const trimmed = input.trim();
-  if (!HEX_U32_REGEX.test(trimmed)) return null;
-  const clean = trimmed.replace(/^0x/i, "");
-  const parsed = parseInt(clean, 16);
-  return Number.isNaN(parsed) ? null : parsed >>> 0;
-}
-
-export function formatHexId(id: number): string {
-  return `0x${(id >>> 0).toString(16).toUpperCase().padStart(8, "0")}`;
-}
-
 function usePortalDropdownPosition(
   open: boolean,
   triggerRef: React.RefObject<HTMLElement | null>,
@@ -227,31 +256,7 @@ export const MaterialPickerPopover: React.FC<MaterialPickerPopoverProps> = ({
 
   const pos = usePortalDropdownPosition(open, triggerRef, compact ? 290 : 300, 310);
 
-  useEffect(() => {
-    if (!open) return;
-    const onPointerDown = (e: MouseEvent) => {
-      const target = e.target as Node;
-      if (
-        triggerRef.current &&
-        !triggerRef.current.contains(target) &&
-        dropdownRef.current &&
-        !dropdownRef.current.contains(target)
-      ) {
-        setOpen(false);
-      }
-    };
-    const onKeyDown = (e: KeyboardEvent) => {
-      if (e.key === "Escape") {
-        setOpen(false);
-      }
-    };
-    document.addEventListener("mousedown", onPointerDown);
-    document.addEventListener("keydown", onKeyDown);
-    return () => {
-      document.removeEventListener("mousedown", onPointerDown);
-      document.removeEventListener("keydown", onKeyDown);
-    };
-  }, [open]);
+  useOutsideDismiss(open, setOpen, triggerRef, dropdownRef);
 
   useEffect(() => {
     if (open) {
@@ -447,6 +452,7 @@ export interface TextureSlotPickerPopoverProps {
   materials: MaterialDesc[];
   corePretextures?: CorePretextureInfo[];
   textureRoles: Map<number, string>;
+  useSlotIndexValue?: boolean;
   onSelectTextureId: (nextTexId: number) => void;
   onJumpToTexture?: (texId: number) => void;
 }
@@ -460,6 +466,7 @@ export const TextureSlotPickerPopover: React.FC<TextureSlotPickerPopoverProps> =
   materials,
   corePretextures = [],
   textureRoles,
+  useSlotIndexValue = false,
   onSelectTextureId,
   onJumpToTexture,
 }) => {
@@ -472,31 +479,7 @@ export const TextureSlotPickerPopover: React.FC<TextureSlotPickerPopoverProps> =
 
   const pos = usePortalDropdownPosition(open, triggerRef, 305, 340);
 
-  useEffect(() => {
-    if (!open) return;
-    const onPointerDown = (e: MouseEvent) => {
-      const target = e.target as Node;
-      if (
-        triggerRef.current &&
-        !triggerRef.current.contains(target) &&
-        dropdownRef.current &&
-        !dropdownRef.current.contains(target)
-      ) {
-        setOpen(false);
-      }
-    };
-    const onKeyDown = (e: KeyboardEvent) => {
-      if (e.key === "Escape") {
-        setOpen(false);
-      }
-    };
-    document.addEventListener("mousedown", onPointerDown);
-    document.addEventListener("keydown", onKeyDown);
-    return () => {
-      document.removeEventListener("mousedown", onPointerDown);
-      document.removeEventListener("keydown", onKeyDown);
-    };
-  }, [open]);
+  useOutsideDismiss(open, setOpen, triggerRef, dropdownRef);
 
   useEffect(() => {
     if (open) {
@@ -509,7 +492,9 @@ export const TextureSlotPickerPopover: React.FC<TextureSlotPickerPopoverProps> =
   }, [open, currentTexId]);
 
   const uCurrentId = currentTexId >>> 0;
-  const bankIdx = textures.findIndex((t) => (t.textureId >>> 0) === uCurrentId);
+  const bankIdx = useSlotIndexValue
+    ? (uCurrentId < textures.length ? uCurrentId : textures.findIndex((t) => (t.textureId >>> 0) === uCurrentId))
+    : textures.findIndex((t) => (t.textureId >>> 0) === uCurrentId);
   const currentBankTex = bankIdx >= 0 ? textures[bankIdx] : undefined;
   const currentThumb = currentBankTex?.thumbnailDataUrl || null;
   const currentHex = currentBankTex ? currentBankTex.idHex : formatHexId(uCurrentId);
@@ -664,7 +649,8 @@ export const TextureSlotPickerPopover: React.FC<TextureSlotPickerPopoverProps> =
               </div>
               {filteredBank.map(({ tex, idx }) => {
                 const tid = tex.textureId >>> 0;
-                const active = tid === uCurrentId;
+                const optionValue = useSlotIndexValue ? idx : tid;
+                const active = useSlotIndexValue ? idx === bankIdx : tid === uCurrentId;
                 const thumb = tex.thumbnailDataUrl;
                 const role = textureRoles.get(tid) || "Bank";
                 const bntxName = !isSyntheticTexName(tex.name) ? tex.name : null;
@@ -676,7 +662,7 @@ export const TextureSlotPickerPopover: React.FC<TextureSlotPickerPopoverProps> =
                     onClick={(e) => {
                       e.stopPropagation();
                       setOpen(false);
-                      onSelectTextureId(tid);
+                      onSelectTextureId(optionValue);
                     }}
                   >
                     <span className="mat-picker-thumb">
@@ -776,4 +762,3 @@ export const TextureSlotPickerPopover: React.FC<TextureSlotPickerPopoverProps> =
     </div>
   );
 };
-// [wmb-studio END]

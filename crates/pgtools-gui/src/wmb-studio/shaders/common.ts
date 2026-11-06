@@ -1,4 +1,18 @@
-// [wmb-studio BEGIN phase2]
+export type RenderQueueBucket = "opaque" | "alphatest" | "blend";
+
+export const NEUTRAL_LIGHTMAP_IDS = [0x4e9c16f4, 0x5864a24f] as const;
+
+export function isNeutralLightmapId(texId: number): boolean {
+  const u = texId >>> 0;
+  return u === 0x4e9c16f4 || u === 0x5864a24f;
+}
+
+export const STUDIO_KEY_LIGHT_DIR: readonly [number, number, number] = [
+  0.42640143,
+  0.68224229,
+  0.59696201,
+];
+
 /**
  * Shared GLSL vertex and fragment shader building blocks for the PGTools Studio 3D Viewport.
  *
@@ -206,4 +220,3 @@ vec4 ApplyStudioPost(vec4 shadedColor, vec3 worldNormal, vec3 viewNormal, vec3 p
   return vec4(outRgb, shadedColor.a);
 }
 `;
-// [wmb-studio END]

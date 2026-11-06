@@ -1,4 +1,3 @@
-// [wmb-studio BEGIN phase2]
 /**
  * Bayonetta 1 (PC, 2017) character shaders ported from `bayonetta_character_shaders.hlsl`
  * and D3D9 SM3.0 disassemblies (`disasm_all/*.pso.asm`) to WebGL2 / Three.js `ShaderMaterial` GLSL.
@@ -20,9 +19,7 @@
  *  14. pls00 (type 67 — normal-mapped Spec_Pow LUT + dot_min/dot_max/dot_color silhouette rim)
  */
 
-import { STUDIO_FRAGMENT_HEADER, STUDIO_VERTEX_SHADER } from "../common";
-
-export type RenderQueueBucket = "opaque" | "alphatest" | "blend";
+import { RenderQueueBucket, STUDIO_FRAGMENT_HEADER, STUDIO_VERTEX_SHADER } from "../common";
 
 export interface B1ShaderSpec {
   id: string;
@@ -90,7 +87,7 @@ uniform int uUseVertexAlpha;    // 1 for pls07 / pls08 vertex-color alpha varian
 //   float4 E   = lerp(env, amb, saturate(nm.b * 4));
 //   float3 color = albedo.rgb * (E.rgb * blend + diffuse) + E.rgb * E.a * nm.a * Env_Amb_Param;
 // ============================================================================================
-export const FRAG_B1_PLS03 = /* glsl */ `
+const FRAG_B1_PLS03 = /* glsl */ `
 ${STUDIO_FRAGMENT_HEADER}
 ${B1_UNIFORMS_BLOCK}
 
@@ -129,7 +126,7 @@ void main() {
 //   float3 color = albedo.rgb * (env.rgb * blend + TwoLights(i.posV, Nv))
 //                + env.rgb * env.a * nm.a * Env_Amb_Param;
 // ============================================================================================
-export const FRAG_B1_OBS07 = /* glsl */ `
+const FRAG_B1_OBS07 = /* glsl */ `
 ${STUDIO_FRAGMENT_HEADER}
 ${B1_UNIFORMS_BLOCK}
 
@@ -174,7 +171,7 @@ void main() {
 //                + mask * env.rgb * env.a * Env_Amb_Param
 //                + spec * env.rgb * blend;
 // ============================================================================================
-export const FRAG_B1_PLS01 = /* glsl */ `
+const FRAG_B1_PLS01 = /* glsl */ `
 ${STUDIO_FRAGMENT_HEADER}
 ${B1_UNIFORMS_BLOCK}
 
@@ -253,7 +250,7 @@ void main() {
 //   float3 spec  = smask * specular * tex2D(Spec_Pow_sampler, float2(x, Spec_Type)).rgb * nm.a;
 //   float3 color = base * (1 + rim) + refl + E.rgb * spec * blend;
 // ============================================================================================
-export const FRAG_B1_PLS05 = /* glsl */ `
+const FRAG_B1_PLS05 = /* glsl */ `
 ${STUDIO_FRAGMENT_HEADER}
 ${B1_UNIFORMS_BLOCK}
 
@@ -311,7 +308,7 @@ void main() {
 //   float3 tint  = 1 + (albedo.a * sss) * SSS_color;
 //   float3 color = albedo.rgb * lit * tint + E.rgb * E.a * nm.a * Env_Amb_Param;
 // ============================================================================================
-export const FRAG_B1_PLS06 = /* glsl */ `
+const FRAG_B1_PLS06 = /* glsl */ `
 ${STUDIO_FRAGMENT_HEADER}
 ${B1_UNIFORMS_BLOCK}
 
@@ -355,7 +352,7 @@ void main() {
 //   float3 sp = specular * tex2D(Spec_Pow_sampler, float2(x, Spec_Type)).rgb;
 //   return FinalOut(albedo.rgb * lit + refl + sp, posV.z);
 // ============================================================================================
-export const FRAG_B1_PLS09 = /* glsl */ `
+const FRAG_B1_PLS09 = /* glsl */ `
 ${STUDIO_FRAGMENT_HEADER}
 ${B1_UNIFORMS_BLOCK}
 
@@ -401,7 +398,7 @@ void main() {
 //   float4 env = texCUBE_game(envmap_sampler, envDir);
 //   float3 color = albedo.rgb * (env.rgb * blend + TwoLights(i.posV, Nv)) + env.rgb * env.a * mask * Env_Amb_Param;
 // ============================================================================================
-export const FRAG_B1_OBS00 = /* glsl */ `
+const FRAG_B1_OBS00 = /* glsl */ `
 ${STUDIO_FRAGMENT_HEADER}
 ${B1_UNIFORMS_BLOCK}
 
@@ -431,7 +428,7 @@ void main() {
 //   float3 color = albedo.rgb * (env.rgb * blend + TwoLights(posV, normalize(nrmV)))
 //                + env.rgb * env.a * Env_Amb_Param;
 // ============================================================================================
-export const FRAG_B1_OBS04 = /* glsl */ `
+const FRAG_B1_OBS04 = /* glsl */ `
 ${STUDIO_FRAGMENT_HEADER}
 ${B1_UNIFORMS_BLOCK}
 
@@ -462,7 +459,7 @@ void main() {
 //   float3 color = albedo.rgb * (amb * blend + TwoLights(i.posV, Nv))
 //                + env.rgb * (env.a * Env_Amb_Param + env_factor);
 // ============================================================================================
-export const FRAG_B1_OBS10 = /* glsl */ `
+const FRAG_B1_OBS10 = /* glsl */ `
 ${STUDIO_FRAGMENT_HEADER}
 ${B1_UNIFORMS_BLOCK}
 
@@ -496,7 +493,7 @@ void main() {
 //   float3 color = albedo.rgb * (env.rgb * blend + TwoLights(i.posV, Nv)) + env.rgb * r;
 //   o.a = max(albedo.a, r) * prefogcolor_enhance.w * finalcolor_enhance.a;
 // ============================================================================================
-export const FRAG_B1_ETC01 = /* glsl */ `
+const FRAG_B1_ETC01 = /* glsl */ `
 ${STUDIO_FRAGMENT_HEADER}
 ${B1_UNIFORMS_BLOCK}
 
@@ -528,7 +525,7 @@ void main() {
 //   float3 color = albedo.rgb * lit + env.rgb * (env.a * Env_Amb_Param + env_factor);
 //   color *= tex2D(lightmap_sampler, uv.zw * Color_1_Tile + Color_1_Offset).rgb;
 // ============================================================================================
-export const FRAG_B1_OBS02 = /* glsl */ `
+const FRAG_B1_OBS02 = /* glsl */ `
 ${STUDIO_FRAGMENT_HEADER}
 ${B1_UNIFORMS_BLOCK}
 
@@ -553,7 +550,7 @@ void main() {
 // 12. etc00_bxxxx / etc00_bxxmx (types 59, 104) — eye shadow ("eye_kage"), obs04 with alpha test 0.001 (blended)
 // Original HLSL: PS_obs04 with clip(albedo.a - 0.001) and envDirW = uEnvUseNormal ? Nw : reflect(vEyeW, Nw)
 // ============================================================================================
-export const FRAG_B1_ETC00 = /* glsl */ `
+const FRAG_B1_ETC00 = /* glsl */ `
 ${STUDIO_FRAGMENT_HEADER}
 ${B1_UNIFORMS_BLOCK}
 
@@ -579,7 +576,7 @@ void main() {
 //   clip(alpha - 0.001);
 //   return FinalOut((diffuse * albedo.rgb + ambient) * bias, posV.z);
 // ============================================================================================
-export const FRAG_B1_PLS02 = /* glsl */ `
+const FRAG_B1_PLS02 = /* glsl */ `
 ${STUDIO_FRAGMENT_HEADER}
 ${B1_UNIFORMS_BLOCK}
 
@@ -613,7 +610,7 @@ void main() {
 //   float3 V = normalize(i.posV);
 //   // Rim band between dot_min and dot_max: triangle wave 1 - abs(2 * t - 1)
 // ============================================================================================
-export const FRAG_B1_PLS00 = /* glsl */ `
+const FRAG_B1_PLS00 = /* glsl */ `
 ${STUDIO_FRAGMENT_HEADER}
 ${B1_UNIFORMS_BLOCK}
 
@@ -872,4 +869,3 @@ export const B1_SHADERS: B1ShaderSpec[] = [
     depthWrite: true,
   },
 ];
-// [wmb-studio END]

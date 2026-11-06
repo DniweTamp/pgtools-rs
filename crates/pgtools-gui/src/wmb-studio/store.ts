@@ -1,15 +1,12 @@
-// [wmb-studio BEGIN phase2]
 import {
   BatchDesc,
   BoneDesc,
-  ClipboardStatus,
   LodDesc,
   MaterialDesc,
   MeshGroupDesc,
   Region,
   TextureRefDesc,
   TextureSlotRole,
-  VertexBufferDesc,
   WmbSceneManifest,
   WmbScenePayload,
 } from "./contract";
@@ -68,34 +65,14 @@ export function getKnownGeometryHashes(cache: WmbGeometryCache): string[] {
   return Array.from(out);
 }
 
-function readFloat32Region(
+function readTypedRegion<T extends Float32Array | Uint8Array | Uint32Array>(
   binary: ArrayBuffer,
-  region: Region | null
-): Float32Array | null {
+  region: Region | null | undefined,
+  ctor: { new (buffer: ArrayBuffer): T }
+): T | null {
   if (!region || region.omitted || region.byteLength <= 0) return null;
   if (region.offset + region.byteLength > binary.byteLength) return null;
-  const slice = binary.slice(region.offset, region.offset + region.byteLength);
-  return new Float32Array(slice);
-}
-
-function readUint8Region(
-  binary: ArrayBuffer,
-  region: Region | null
-): Uint8Array | null {
-  if (!region || region.omitted || region.byteLength <= 0) return null;
-  if (region.offset + region.byteLength > binary.byteLength) return null;
-  const slice = binary.slice(region.offset, region.offset + region.byteLength);
-  return new Uint8Array(slice);
-}
-
-function readUint32Region(
-  binary: ArrayBuffer,
-  region: Region | null
-): Uint32Array | null {
-  if (!region || region.omitted || region.byteLength <= 0) return null;
-  if (region.offset + region.byteLength > binary.byteLength) return null;
-  const slice = binary.slice(region.offset, region.offset + region.byteLength);
-  return new Uint32Array(slice);
+  return new ctor(binary.slice(region.offset, region.offset + region.byteLength));
 }
 
 export function mergeScenePayloadIntoCache(
@@ -115,14 +92,14 @@ export function mergeScenePayloadIntoCache(
     activeVbHashes.add(vb.geometryHash);
     if (!vb.position.omitted || !cache.vertexBuffers.has(vb.geometryHash)) {
       const pos =
-        readFloat32Region(binary, vb.position) ??
+        readTypedRegion(binary, vb.position, Float32Array) ??
         new Float32Array(vb.vertexCount * 3);
-      const nrm = readFloat32Region(binary, vb.normal);
-      const tan = readFloat32Region(binary, vb.tangent);
-      const uv0 = readFloat32Region(binary, vb.uv0);
-      const uv1 = readFloat32Region(binary, vb.uv1);
-      const uv2 = readFloat32Region(binary, vb.uv2 ?? null);
-      const col = readUint8Region(binary, vb.color);
+      const nrm = readTypedRegion(binary, vb.normal, Float32Array);
+      const tan = readTypedRegion(binary, vb.tangent, Float32Array);
+      const uv0 = readTypedRegion(binary, vb.uv0, Float32Array);
+      const uv1 = readTypedRegion(binary, vb.uv1, Float32Array);
+      const uv2 = readTypedRegion(binary, vb.uv2 ?? null, Float32Array);
+      const col = readTypedRegion(binary, vb.color, Uint8Array);
       cache.vertexBuffers.set(vb.geometryHash, {
         geometryHash: vb.geometryHash,
         vertexCount: vb.vertexCount,
@@ -145,13 +122,13 @@ export function mergeScenePayloadIntoCache(
       !cache.batchIndices.has(batch.geometryHash)
     ) {
       const idx =
-        readUint32Region(binary, batch.indices) ?? new Uint32Array(0);
+        readTypedRegion(binary, batch.indices, Uint32Array) ??
+        new Uint32Array(0);
       cache.batchIndices.set(batch.geometryHash, idx);
       changedBatchHashes.add(batch.geometryHash);
     }
   }
 
-  // Prune unreferenced geometry hashes
   for (const key of Array.from(cache.vertexBuffers.keys())) {
     if (!activeVbHashes.has(key)) {
       cache.vertexBuffers.delete(key);
@@ -166,45 +143,38 @@ export function mergeScenePayloadIntoCache(
   return { changedVbHashes, changedBatchHashes };
 }
 
-export function isItemPresentInManifest(
-  manifest: WmbSceneManifest | null,
-  item: SceneSelectionItem
-): boolean {
-  if (!manifest) return false;
-  switch (item.kind) {
-    case "root":
-      return item.id === "root";
-    case "texture":
-      return manifest.textures.some(
-        (t) => `tex:${t.textureId}` === item.id || t.idHex === item.id
-      );
-    case "material":
-      return manifest.materials.some((m) => m.id === item.id);
-    case "bone":
-      return findBoneBySceneId(manifest, item.id) !== undefined;
-    case "meshGroup":
-      return manifest.meshGroups.some((mg) => mg.id === item.id);
-    case "lod":
-      return manifest.meshGroups.some((mg) =>
-        mg.lods.some((l) => l.id === item.id)
-      );
-    case "batch":
-      return manifest.batches.some((b) => b.id === item.id);
-    default:
-      return false;
-  }
+export function getBoneSceneId(bone: BoneDesc, index: number): string {
+  return `bone:${index}:${bone.globalId}`;
 }
 
-export function filterValidSelection(
-  manifest: WmbSceneManifest | null,
-  selection: SceneSelectionItem[]
-): SceneSelectionItem[] {
-  if (!manifest) return [];
-  const valid = selection.filter((s) => isItemPresentInManifest(manifest, s));
-  if (valid.length === 0) {
-    return [{ kind: "root", id: "root" }];
+export function parseBoneSceneId(id: string): {
+  index: number | null;
+  globalId: number | null;
+} {
+  const raw = id.replace(/^bone:/, "").trim();
+  if (raw.includes(":")) {
+    const [idxStr, gidStr] = raw.split(":");
+    const idx = parseInt(idxStr, 10);
+    const gid = parseInt(gidStr, 10);
+    return {
+      index: Number.isNaN(idx) ? null : idx,
+      globalId: Number.isNaN(gid) ? null : gid,
+    };
   }
-  return valid;
+  const gid = parseInt(raw, 10);
+  return {
+    index: null,
+    globalId: Number.isNaN(gid) ? null : gid,
+  };
+}
+
+export function parseTextureSceneId(id: string): number | null {
+  const raw = id.replace(/^tex:/, "").trim();
+  if (!raw) return null;
+  const parsed = raw.toLowerCase().startsWith("0x")
+    ? parseInt(raw.slice(2), 16)
+    : parseInt(raw, 10);
+  return Number.isNaN(parsed) ? null : parsed >>> 0;
 }
 
 export function findMaterialById(
@@ -240,8 +210,8 @@ export function findLodById(
   return undefined;
 }
 
-export function getBoneSceneId(bone: BoneDesc, index: number): string {
-  return `bone:${index}:${bone.globalId}`;
+export function getMeshGroupBatchIds(mg: MeshGroupDesc): string[] {
+  return mg.lods.length > 0 ? mg.lods.flatMap((l) => l.batchIds) : mg.batchIds;
 }
 
 export function findBoneIndexAndDescBySceneId(
@@ -249,26 +219,20 @@ export function findBoneIndexAndDescBySceneId(
   id: string
 ): { bone: BoneDesc; index: number } | undefined {
   if (!manifest) return undefined;
-  const raw = id.replace(/^bone:/, "");
-  if (raw.includes(":")) {
-    const [idxStr, gidStr] = raw.split(":");
-    const idx = parseInt(idxStr, 10);
-    const gid = parseInt(gidStr, 10);
-    if (!Number.isNaN(idx) && idx >= 0 && idx < manifest.bones.length) {
-      const candidate = manifest.bones[idx];
-      if (Number.isNaN(gid) || candidate.globalId === gid) {
-        return { bone: candidate, index: idx };
-      }
+  const { index, globalId } = parseBoneSceneId(id);
+  if (index !== null && index >= 0 && index < manifest.bones.length) {
+    const candidate = manifest.bones[index];
+    if (globalId === null || candidate.globalId === globalId) {
+      return { bone: candidate, index };
     }
   }
-  const gid = parseInt(raw, 10);
-  if (Number.isNaN(gid)) return undefined;
-  const foundIdx = manifest.bones.findIndex((b) => b.globalId === gid);
+  if (globalId === null) return undefined;
+  const foundIdx = manifest.bones.findIndex((b) => b.globalId === globalId);
   if (foundIdx >= 0) {
     return { bone: manifest.bones[foundIdx], index: foundIdx };
   }
-  if (gid >= 0 && gid < manifest.bones.length) {
-    return { bone: manifest.bones[gid], index: gid };
+  if (globalId >= 0 && globalId < manifest.bones.length) {
+    return { bone: manifest.bones[globalId], index: globalId };
   }
   return undefined;
 }
@@ -285,30 +249,136 @@ export function findTextureBySceneId(
   id: string
 ): TextureRefDesc | undefined {
   if (!manifest) return undefined;
-  const raw = id.replace(/^tex:/, "");
-  const tid = raw.toLowerCase().startsWith("0x")
-    ? parseInt(raw.slice(2), 16)
-    : parseInt(raw, 10);
-  if (Number.isNaN(tid)) return undefined;
-  return manifest.textures.find((t) => (t.textureId >>> 0) === (tid >>> 0));
+  const tid = parseTextureSceneId(id);
+  if (tid === null) return undefined;
+  return manifest.textures.find((t) => (t.textureId >>> 0) === tid);
 }
 
-export function computeSelectionBoundingBox(
+function isItemPresentInManifest(
+  manifest: WmbSceneManifest | null,
+  item: SceneSelectionItem
+): boolean {
+  if (!manifest) return false;
+  switch (item.kind) {
+    case "root":
+      return item.id === "root";
+    case "texture":
+      return findTextureBySceneId(manifest, item.id) !== undefined;
+    case "material":
+      return findMaterialById(manifest, item.id) !== undefined;
+    case "bone":
+      return findBoneBySceneId(manifest, item.id) !== undefined;
+    case "meshGroup":
+      return findMeshGroupById(manifest, item.id) !== undefined;
+    case "lod":
+      return findLodById(manifest, item.id) !== undefined;
+    case "batch":
+      return findBatchById(manifest, item.id) !== undefined;
+    default:
+      return false;
+  }
+}
+
+export function filterValidSelection(
   manifest: WmbSceneManifest | null,
   selection: SceneSelectionItem[]
-): number[] | null {
-  if (!manifest || selection.length === 0) return null;
+): SceneSelectionItem[] {
+  if (!manifest) return [];
+  const valid = selection.filter((s) => isItemPresentInManifest(manifest, s));
+  return valid.length === 0 ? [{ kind: "root", id: "root" }] : valid;
+}
+
+export interface BoneHierarchyGraph {
+  childrenByParentIdx: Map<number, Array<{ bone: BoneDesc; idx: number }>>;
+  indexByGlobalId: Map<number, number>;
+  parentIdxByBoneIdx: Map<number, number>;
+  resolveBoneIdxFromId: (boneSceneId: string) => number;
+  isBoneDescendantOf: (candidateIdx: number, ancestorIdx: number) => boolean;
+}
+
+export function buildBoneHierarchy(bones: BoneDesc[]): BoneHierarchyGraph {
+  const childrenByParentIdx = new Map<number, Array<{ bone: BoneDesc; idx: number }>>();
+  const indexByGlobalId = new Map<number, number>();
+  const parentIdxByBoneIdx = new Map<number, number>();
+
+  bones.forEach((b, idx) => {
+    if (!indexByGlobalId.has(b.globalId)) {
+      indexByGlobalId.set(b.globalId, idx);
+    }
+  });
+
+  for (let i = 0; i < bones.length; i++) {
+    const b = bones[i];
+    let parentIdx = b.parent;
+    if (parentIdx >= bones.length && indexByGlobalId.has(parentIdx)) {
+      parentIdx = indexByGlobalId.get(parentIdx)!;
+    }
+    if (parentIdx < 0 || parentIdx >= bones.length || parentIdx === i) {
+      parentIdx = -1;
+    }
+    parentIdxByBoneIdx.set(i, parentIdx);
+  }
+
+  for (let i = 0; i < bones.length; i++) {
+    let cur = parentIdxByBoneIdx.get(i) ?? -1;
+    const seen = new Set<number>([i]);
+    while (cur >= 0) {
+      if (seen.has(cur)) {
+        parentIdxByBoneIdx.set(i, -1);
+        break;
+      }
+      seen.add(cur);
+      cur = parentIdxByBoneIdx.get(cur) ?? -1;
+    }
+    const finalParent = parentIdxByBoneIdx.get(i) ?? -1;
+    const list = childrenByParentIdx.get(finalParent) ?? [];
+    list.push({ bone: bones[i], idx: i });
+    childrenByParentIdx.set(finalParent, list);
+  }
+
+  const resolveBoneIdxFromId = (boneSceneId: string): number => {
+    const { index, globalId } = parseBoneSceneId(boneSceneId);
+    if (index !== null && index >= 0 && index < bones.length) {
+      return index;
+    }
+    return globalId !== null ? indexByGlobalId.get(globalId) ?? -1 : -1;
+  };
+
+  const isBoneDescendantOf = (candidateIdx: number, ancestorIdx: number): boolean => {
+    let cur = candidateIdx;
+    const visited = new Set<number>();
+    while (cur >= 0 && !visited.has(cur)) {
+      if (cur === ancestorIdx) return true;
+      visited.add(cur);
+      cur = parentIdxByBoneIdx.get(cur) ?? -1;
+    }
+    return false;
+  };
+
+  return {
+    childrenByParentIdx,
+    indexByGlobalId,
+    parentIdxByBoneIdx,
+    resolveBoneIdxFromId,
+    isBoneDescendantOf,
+  };
+}
+
+export function collectBatchIdsForSelection(
+  manifest: WmbSceneManifest | null,
+  selection: SceneSelectionItem[],
+  includeTextureUsers = false
+): Set<string> {
   const batchIds = new Set<string>();
-  const bonePoints: number[][] = [];
+  if (!manifest) return batchIds;
 
   for (const sel of selection) {
-    if (sel.kind === "root") {
-      return manifest.boundingBox.length === 6 ? manifest.boundingBox : null;
-    } else if (sel.kind === "batch") {
+    if (sel.kind === "batch") {
       batchIds.add(sel.id);
     } else if (sel.kind === "material") {
-      const mat = findMaterialById(manifest, sel.id);
-      mat?.usedByBatchIds.forEach((bid) => batchIds.add(bid));
+      findMaterialById(manifest, sel.id)?.usedByBatchIds.forEach((bid) =>
+        batchIds.add(bid)
+      );
     } else if (sel.kind === "meshGroup") {
       const mg = findMeshGroupById(manifest, sel.id);
       if (mg) {
@@ -316,9 +386,34 @@ export function computeSelectionBoundingBox(
         mg.lods.forEach((l) => l.batchIds.forEach((bid) => batchIds.add(bid)));
       }
     } else if (sel.kind === "lod") {
-      const found = findLodById(manifest, sel.id);
-      found?.lod.batchIds.forEach((bid) => batchIds.add(bid));
-    } else if (sel.kind === "bone") {
+      findLodById(manifest, sel.id)?.lod.batchIds.forEach((bid) =>
+        batchIds.add(bid)
+      );
+    } else if (includeTextureUsers && sel.kind === "texture") {
+      const texRef = findTextureBySceneId(manifest, sel.id);
+      texRef?.usedByMaterialIds.forEach((mid) => {
+        findMaterialById(manifest, mid)?.usedByBatchIds.forEach((bid) =>
+          batchIds.add(bid)
+        );
+      });
+    }
+  }
+  return batchIds;
+}
+
+export function computeSelectionBoundingBox(
+  manifest: WmbSceneManifest | null,
+  selection: SceneSelectionItem[]
+): number[] | null {
+  if (!manifest || selection.length === 0) return null;
+  if (selection.some((s) => s.kind === "root")) {
+    return manifest.boundingBox.length === 6 ? manifest.boundingBox : null;
+  }
+
+  const batchIds = collectBatchIdsForSelection(manifest, selection, false);
+  const bonePoints: number[][] = [];
+  for (const sel of selection) {
+    if (sel.kind === "bone") {
       const bone = findBoneBySceneId(manifest, sel.id);
       if (bone && bone.worldPosition.length === 3) {
         bonePoints.push(bone.worldPosition);
@@ -371,14 +466,26 @@ export interface TextureSlotDebugRow {
 }
 
 export function collectDebugTextureSlots(
-  manifest: WmbSceneManifest | null
+  manifest: WmbSceneManifest | null,
+  targetMaterial?: MaterialDesc
 ): TextureSlotDebugRow[] {
   if (!manifest) return [];
-  const bySlot = new Map<number, TextureSlotDebugRow>();
   const texThumbById = new Map<number, string | null>();
   for (const t of manifest.textures) {
     texThumbById.set(t.textureId >>> 0, t.thumbnailDataUrl);
   }
+  if (targetMaterial && targetMaterial.textureSlots.length > 0) {
+    return targetMaterial.textureSlots.map((slot) => ({
+      slotIndex: slot.slot,
+      name: slot.name,
+      role: slot.role,
+      thumbnailDataUrl:
+        texThumbById.get(slot.textureId >>> 0) ??
+        (slot.slot === 0 ? targetMaterial.thumbnailDataUrl : null) ??
+        null,
+    }));
+  }
+  const bySlot = new Map<number, TextureSlotDebugRow>();
   for (const mat of manifest.materials) {
     for (const slot of mat.textureSlots) {
       const existing = bySlot.get(slot.slot);
@@ -400,18 +507,3 @@ export function collectDebugTextureSlots(
   }
   return Array.from(bySlot.values()).sort((a, b) => a.slotIndex - b.slotIndex);
 }
-
-export type {
-  BatchDesc,
-  BoneDesc,
-  ClipboardStatus,
-  LodDesc,
-  MaterialDesc,
-  MeshGroupDesc,
-  TextureRefDesc,
-  TextureSlotRole,
-  VertexBufferDesc,
-  WmbSceneManifest,
-  WmbScenePayload,
-};
-// [wmb-studio END]

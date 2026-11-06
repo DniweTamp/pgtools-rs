@@ -1,4 +1,3 @@
-// [wmb-studio BEGIN phase2]
 import React, { useEffect, useMemo, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import {
@@ -11,7 +10,7 @@ import {
   TextureRefDesc,
   WmbSceneManifest,
 } from "./contract";
-import { LegacyActionKind } from "./Hierarchy";
+import { LegacyActionKind } from "./contract";
 import { MaterialEditor } from "./MaterialEditor";
 import {
   IconChevronRight,
@@ -23,6 +22,7 @@ import {
   MaterialPickerPopover,
 } from "./Pickers";
 import {
+  buildBoneHierarchy,
   DebugSlotPreview,
   findBatchById,
   findBoneIndexAndDescBySceneId,
@@ -31,6 +31,7 @@ import {
   findMeshGroupById,
   findTextureBySceneId,
   getBoneSceneId,
+  getMeshGroupBatchIds,
   SceneSelectionItem,
 } from "./store";
 
@@ -63,8 +64,8 @@ export const Properties: React.FC<PropertiesProps> = React.memo(function Propert
   const primary = selection[0] ?? { kind: "root", id: "root" };
   const isMulti = selection.length > 1;
 
-  // Batch Header expanded by default with animated `>` button
   const [batchHeaderOpen, setBatchHeaderOpen] = useState(true);
+  const boneHierarchy = useMemo(() => buildBoneHierarchy(manifest.bones), [manifest.bones]);
 
   // Root header extra fields fetched via resolve_legacy_node("root")
   const [headerMeta, setHeaderMeta] = useState<{
@@ -127,14 +128,12 @@ export const Properties: React.FC<PropertiesProps> = React.memo(function Propert
     };
   }, [isMulti, manifest.nodeId, primary.kind]);
 
-  // Batch raw header fields are embedded directly in BatchDesc on the manifest (B-2, B-21)
 
   const totalVertices = useMemo(
     () => manifest.vertexBuffers.reduce((acc, vb) => acc + vb.vertexCount, 0),
     [manifest.vertexBuffers]
   );
 
-  // Render Multi-Select Inspector
   const renderMultiSelect = () => {
     const selectedBatches = selection
       .filter((s) => s.kind === "batch")
@@ -181,7 +180,6 @@ export const Properties: React.FC<PropertiesProps> = React.memo(function Propert
     );
   };
 
-  // 1. Root Header Editor
   const renderRootEditor = () => (
     <div className="wmb-prop-body">
       <div className="insp-card">
@@ -423,7 +421,6 @@ export const Properties: React.FC<PropertiesProps> = React.memo(function Propert
     </div>
   );
 
-  // 2. Texture Editor (handles nameless WTB/WTA textures cleanly alongside BNTX named textures)
   const renderTextureEditor = (tex: TextureRefDesc) => {
     const texIdx = manifest.textures.findIndex(
       (t) => (t.textureId >>> 0) === (tex.textureId >>> 0)
@@ -557,9 +554,10 @@ export const Properties: React.FC<PropertiesProps> = React.memo(function Propert
   // 3. Bone Editor (displays #index, gid, local ID — never fabricated names; reparenting via Outliner drag-and-drop)
   const renderBoneEditor = (bone: BoneDesc, boneIdx: number) => {
     const localIdx = bone.localId ?? boneIdx;
+    const resolvedParentIdx = boneHierarchy.parentIdxByBoneIdx.get(boneIdx) ?? -1;
     const parentBone =
-      bone.parent >= 0 && bone.parent < manifest.bones.length
-        ? manifest.bones[bone.parent]
+      resolvedParentIdx >= 0 && resolvedParentIdx < manifest.bones.length
+        ? manifest.bones[resolvedParentIdx]
         : null;
 
     return (
@@ -592,7 +590,7 @@ export const Properties: React.FC<PropertiesProps> = React.memo(function Propert
                       [
                         {
                           kind: "bone",
-                          id: getBoneSceneId(parentBone, bone.parent),
+                          id: getBoneSceneId(parentBone, resolvedParentIdx),
                         },
                       ],
                       false
@@ -809,12 +807,8 @@ export const Properties: React.FC<PropertiesProps> = React.memo(function Propert
     );
   };
 
-  // 4. Mesh Group Editor
   const renderMeshGroupEditor = (mg: MeshGroupDesc) => {
-    const allBatchIds =
-      mg.lods.length > 0
-        ? mg.lods.flatMap((l) => l.batchIds)
-        : mg.batchIds;
+    const allBatchIds = getMeshGroupBatchIds(mg);
     const groupBatches = allBatchIds
       .map((id) => findBatchById(manifest, id))
       .filter((b): b is BatchDesc => Boolean(b));
@@ -933,7 +927,6 @@ export const Properties: React.FC<PropertiesProps> = React.memo(function Propert
     );
   };
 
-  // 5. LOD Editor (WMB3)
   const renderLodEditor = (mg: MeshGroupDesc, lod: LodDesc) => (
     <div className="wmb-prop-body">
       <div className="insp-card">
@@ -997,8 +990,6 @@ export const Properties: React.FC<PropertiesProps> = React.memo(function Propert
     </div>
   );
 
-  // 6. Batch Editor — Standalone Batch Card with animated `>` chevron (expanded by default),
-  // MaterialPickerPopover + `↗ Edit Mat`, no `Mesh:` dropdown, and no embedded MaterialEditor (1D removed)
   const renderBatchEditor = (batch: BatchDesc) => {
     const mg = findMeshGroupById(manifest, batch.meshId);
     const triCount = Math.floor(batch.indexCount / 3);
@@ -1463,4 +1454,3 @@ export const Properties: React.FC<PropertiesProps> = React.memo(function Propert
     </div>
   );
 });
-// [wmb-studio END]

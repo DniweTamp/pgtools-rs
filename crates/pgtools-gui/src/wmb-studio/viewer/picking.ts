@@ -1,4 +1,3 @@
-// [wmb-studio BEGIN phase2]
 import * as THREE from "three";
 
 export interface PickResult {
@@ -55,4 +54,3 @@ export function pickBatchAtNdc(
 
   return null;
 }
-// [wmb-studio END]

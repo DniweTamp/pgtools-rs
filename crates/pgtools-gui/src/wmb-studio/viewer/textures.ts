@@ -1,4 +1,3 @@
-// [wmb-studio BEGIN phase2]
 import * as THREE from "three";
 import {
   DecodedWtx1Texture,
@@ -8,6 +7,7 @@ import {
   TextureSlotDesc,
   TextureSlotRole,
 } from "../contract";
+import { isNeutralLightmapId, STUDIO_KEY_LIGHT_DIR } from "../shaders/common";
 import { isB1GlobalCubeId, isB1GlobalSpecLutId } from "../shaders/registry";
 
 const VIEWPORT_MAX_ALBEDO_DIM = 2048;
@@ -110,10 +110,8 @@ function makeProceduralStudioCube(hardHotspot: boolean): THREE.CubeTexture {
     (u, v) => [-u, -v, -1],
   ];
 
-  // Key light direction in cube space
-  const lx = 0.4264;
-  const ly = 0.6822;
-  const lz = -0.597;
+  const [lx, ly, posLz] = STUDIO_KEY_LIGHT_DIR;
+  const lz = -posLz;
 
   for (let f = 0; f < 6; f++) {
     const data = new Uint8Array(size * size * 4);
@@ -334,12 +332,7 @@ export class ViewerTextureCache {
   ): THREE.Texture {
     if (slot) {
       const u = slot.textureId >>> 0;
-      if (
-        u === 0x80000000 ||
-        u === 0x80000004 ||
-        u === 0x5864a24f ||
-        u === 0x4e9c16f4
-      ) {
+      if (u === 0x80000000 || u === 0x80000004 || isNeutralLightmapId(u)) {
         return this.white2D;
       }
       if (u === 0x132ed5c3) {
@@ -532,4 +525,3 @@ export class ViewerTextureCache {
     this.missingChecker2D.dispose();
   }
 }
-// [wmb-studio END]

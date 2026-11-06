@@ -1,0 +1,846 @@
+use crate::session::{atomic_write_file, lock_session, AppState};
+use crate::settings::save_settings_to_disk;
+use crate::vfs::{is_supported_extension, resolve_subblob, split_container_and_leaf};
+use pgtools_core::{
+    bt_formats::MdbFile,
+    bxm::BxmFile,
+    cloth::{ClhFile, ClpFile, ClwFile},
+    dat::DatFile,
+    eff::EffFile,
+    exp::ExpFile,
+    io::{validate_single_entry_name, Endian},
+    mot::MotFile,
+    pkz::PkzArchive,
+    scr::ScrFile,
+    wmb::WmbFile,
+    wmb3::Wmb3File,
+    wtb::WtbFile,
+};
+use serde::{Deserialize, Serialize};
+use std::fs;
+use std::path::{Path, PathBuf};
+use std::process::Command;
+use std::time::UNIX_EPOCH;
+use tauri::State;
+
+mod win_drag {
+    use std::ffi::c_void;
+    use std::os::windows::ffi::OsStrExt;
+    use std::path::Path;
+
+    #[repr(C)]
+    struct Guid {
+        data1: u32,
+        data2: u16,
+        data3: u16,
+        data4: [u8; 8],
+    }
+
+    const IID_ISHELL_ITEM: Guid = Guid {
+        data1: 0x43826D1E,
+        data2: 0xE718,
+        data3: 0x42EE,
+        data4: [0xBC, 0x55, 0xA1, 0xE2, 0x61, 0xC3, 0x7B, 0xFE],
+    };
+
+    const BHID_DATA_OBJECT: Guid = Guid {
+        data1: 0xB8C0BD9F,
+        data2: 0xED24,
+        data3: 0x455C,
+        data4: [0x83, 0xE6, 0xD5, 0x39, 0x0C, 0x4F, 0xE8, 0xC4],
+    };
+
+    const IID_IDATA_OBJECT: Guid = Guid {
+        data1: 0x0000010E,
+        data2: 0x0000,
+        data3: 0x0000,
+        data4: [0xC0, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x46],
+    };
+
+    #[repr(C)]
+    struct IShellItemVtbl {
+        query_interface: unsafe extern "system" fn(*mut c_void, *const Guid, *mut *mut c_void) -> i32,
+        add_ref: unsafe extern "system" fn(*mut c_void) -> u32,
+        release: unsafe extern "system" fn(*mut c_void) -> u32,
+        bind_to_handler: unsafe extern "system" fn(
+            *mut c_void,
+            *mut c_void,
+            *const Guid,
+            *const Guid,
+            *mut *mut c_void,
+        ) -> i32,
+    }
+
+    #[repr(C)]
+    struct IShellItem {
+        lp_vtbl: *const IShellItemVtbl,
+    }
+
+    #[repr(C)]
+    struct IUnknownVtbl {
+        query_interface: unsafe extern "system" fn(*mut c_void, *const Guid, *mut *mut c_void) -> i32,
+        add_ref: unsafe extern "system" fn(*mut c_void) -> u32,
+        release: unsafe extern "system" fn(*mut c_void) -> u32,
+    }
+
+    #[repr(C)]
+    struct IUnknown {
+        lp_vtbl: *const IUnknownVtbl,
+    }
+
+    #[link(name = "ole32")]
+    extern "system" {
+        fn OleInitialize(pv_reserved: *mut c_void) -> i32;
+    }
+
+    #[link(name = "shell32")]
+    extern "system" {
+        fn SHCreateItemFromParsingName(
+            psz_path: *const u16,
+            pbc: *mut c_void,
+            riid: *const Guid,
+            ppv: *mut *mut c_void,
+        ) -> i32;
+        fn SHDoDragDrop(
+            hwnd: *mut c_void,
+            pdtobj: *mut c_void,
+            pdsrc: *mut c_void,
+            dw_effect: u32,
+            pdw_effect: *mut u32,
+        ) -> i32;
+    }
+
+    pub fn do_native_file_drag(file_path: &Path) -> Result<(), String> {
+        let wide: Vec<u16> = file_path
+            .as_os_str()
+            .encode_wide()
+            .chain(std::iter::once(0))
+            .collect();
+        unsafe {
+            let _ = OleInitialize(std::ptr::null_mut());
+            let mut shell_item: *mut c_void = std::ptr::null_mut();
+            let hr = SHCreateItemFromParsingName(
+                wide.as_ptr(),
+                std::ptr::null_mut(),
+                &IID_ISHELL_ITEM,
+                &mut shell_item,
+            );
+            if hr < 0 || shell_item.is_null() {
+                return Err(format!(
+                    "SHCreateItemFromParsingName failed (HRESULT 0x{hr:08X})"
+                ));
+            }
+            let item_ref = &*(shell_item as *const IShellItem);
+            let mut data_obj: *mut c_void = std::ptr::null_mut();
+            let hr_bind = ((*item_ref.lp_vtbl).bind_to_handler)(
+                shell_item,
+                std::ptr::null_mut(),
+                &BHID_DATA_OBJECT,
+                &IID_IDATA_OBJECT,
+                &mut data_obj,
+            );
+            if hr_bind >= 0 && !data_obj.is_null() {
+                let mut effect: u32 = 0;
+                // DROPEFFECT_COPY (1) | DROPEFFECT_MOVE (2)
+                let _ = SHDoDragDrop(
+                    std::ptr::null_mut(),
+                    data_obj,
+                    std::ptr::null_mut(),
+                    1 | 2,
+                    &mut effect,
+                );
+                let dobj_ref = &*(data_obj as *const IUnknown);
+                ((*dobj_ref.lp_vtbl).release)(data_obj);
+            }
+            ((*item_ref.lp_vtbl).release)(shell_item);
+            if hr_bind < 0 {
+                return Err(format!("BindToHandler failed (HRESULT 0x{hr_bind:08X})"));
+            }
+        }
+        Ok(())
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct FsEntry {
+    pub name: String,
+    pub path: String,
+    pub is_dir: bool,
+    pub size: u64,
+    pub modified_epoch_ms: u64,
+    pub modified_str: String,
+    pub extension: String,
+    pub is_supported: bool,
+}
+
+pub(crate) fn clean_win_verbatim_path(s: String) -> String {
+    if let Some(rest) = s.strip_prefix(r"\\?\UNC\") {
+        format!(r"\\{rest}")
+    } else if let Some(rest) = s.strip_prefix(r"\\?\") {
+        rest.to_string()
+    } else {
+        s
+    }
+}
+
+pub(crate) fn format_epoch_date(secs: u64) -> String {
+    let days = (secs / 86400) as i64;
+    let z = days + 719468;
+    let era = if z >= 0 { z } else { z - 146096 } / 146097;
+    let doe = (z - era * 146097) as u64;
+    let yoe = (doe - doe / 1460 + doe / 36524 - doe / 146096) / 365;
+    let y = (yoe as i64) + era * 400;
+    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
+    let mp = (5 * doy + 2) / 153;
+    let d = doy - (153 * mp + 2) / 5 + 1;
+    let m = if mp < 10 { mp + 3 } else { mp - 9 };
+    let year = if m <= 2 { y + 1 } else { y };
+    format!("{year:04}-{m:02}-{d:02}")
+}
+
+#[tauri::command]
+pub fn pick_file_dialog(
+    title: Option<String>,
+    extensions: Option<Vec<String>>,
+) -> Result<Option<String>, String> {
+    let mut dlg = rfd::FileDialog::new();
+    if let Some(t) = title {
+        dlg = dlg.set_title(&t);
+    }
+    if let Some(exts) = extensions {
+        let refs: Vec<&str> = exts.iter().map(|s| s.as_str()).collect();
+        if !refs.is_empty() {
+            dlg = dlg.add_filter("Supported Files", &refs);
+        }
+    }
+    Ok(dlg.pick_file().map(|p| p.to_string_lossy().into_owned()))
+}
+
+#[tauri::command]
+pub fn pick_multiple_files_dialog(
+    title: Option<String>,
+    extensions: Option<Vec<String>>,
+) -> Result<Vec<String>, String> {
+    let mut dlg = rfd::FileDialog::new();
+    if let Some(t) = title {
+        dlg = dlg.set_title(&t);
+    }
+    if let Some(exts) = extensions {
+        let refs: Vec<&str> = exts.iter().map(|s| s.as_str()).collect();
+        if !refs.is_empty() {
+            dlg = dlg.add_filter("Supported Files", &refs);
+        }
+    }
+    Ok(dlg
+        .pick_files()
+        .unwrap_or_default()
+        .into_iter()
+        .map(|p| p.to_string_lossy().into_owned())
+        .collect())
+}
+
+#[tauri::command]
+pub fn save_file_dialog(
+    title: Option<String>,
+    default_name: Option<String>,
+) -> Result<Option<String>, String> {
+    let mut dlg = rfd::FileDialog::new();
+    if let Some(t) = title {
+        dlg = dlg.set_title(&t);
+    }
+    if let Some(name) = default_name {
+        dlg = dlg.set_file_name(&name);
+    }
+    Ok(dlg.save_file().map(|p| p.to_string_lossy().into_owned()))
+}
+
+#[tauri::command]
+pub fn pick_folder_dialog(title: Option<String>) -> Result<Option<String>, String> {
+    let mut dlg = rfd::FileDialog::new();
+    if let Some(t) = title {
+        dlg = dlg.set_title(&t);
+    }
+    Ok(dlg.pick_folder().map(|p| p.to_string_lossy().into_owned()))
+}
+
+#[tauri::command]
+pub fn reveal_in_explorer(path: String) -> Result<(), String> {
+    let p = PathBuf::from(&path);
+    #[cfg(target_os = "windows")]
+    {
+        Command::new("explorer")
+            .args(["/select,", &p.to_string_lossy()])
+            .spawn()
+            .map_err(|e| format!("Failed to open Explorer: {e}"))?;
+    }
+    #[cfg(target_os = "macos")]
+    {
+        Command::new("open")
+            .args(["-R", "--", &p.to_string_lossy()])
+            .spawn()
+            .map_err(|e| format!("Failed to reveal in Finder: {e}"))?;
+    }
+    #[cfg(target_os = "linux")]
+    {
+        let target = p.parent().unwrap_or(&p);
+        Command::new("xdg-open")
+            .args(["--", &target.to_string_lossy()])
+            .spawn()
+            .map_err(|e| format!("Failed to open file manager: {e}"))?;
+    }
+    Ok(())
+}
+
+/// Extract raw file bytes for `node_id` to a per-process temp staging folder and initiate a native OS
+/// shell file drag (`SHDoDragDrop`) so the user can drop the file straight onto Windows Explorer or Desktop.
+#[tauri::command]
+pub fn drag_out_asset_node(node_id: String, state: State<'_, AppState>) -> Result<String, String> {
+    let (file_name, raw_bytes) = {
+        let sess = lock_session(&state);
+        let snap = sess.current.as_ref().ok_or("No active document loaded")?;
+        let oodle_opt = if sess.settings.oodle_dll_path.is_empty() {
+            None
+        } else {
+            Some(Path::new(sess.settings.oodle_dll_path.as_str()))
+        };
+        let (container_parts, leaf) = split_container_and_leaf(&node_id);
+        let container_id = container_parts.join("/");
+        let (sub_name, sub_bytes, sub_wtp, _) = resolve_subblob(snap, &container_id, oodle_opt)?;
+
+        if let Some(tex_idx_str) = leaf.strip_prefix("tex:") {
+            let tex_idx: usize = tex_idx_str
+                .parse()
+                .map_err(|_| format!("Invalid texture index '{tex_idx_str}'"))?;
+            let wtb = WtbFile::from_bytes(&sub_bytes, sub_wtp.as_deref()).map_err(|e| e.to_string())?;
+            let entry = wtb.entries.get(tex_idx).ok_or("Texture index out of range")?;
+            let hash_s = entry
+                .texture_id
+                .map(|h| format!("_0x{h:08X}"))
+                .unwrap_or_default();
+            (
+                format!("tex{}{}{}", entry.index, hash_s, entry.extension),
+                entry.data.clone(),
+            )
+        } else {
+            let doc_fallback = sess
+                .doc_path
+                .as_ref()
+                .and_then(|p| p.file_name())
+                .and_then(|s| s.to_str())
+                .unwrap_or("extracted.bin")
+                .to_string();
+            let raw_name = if sub_name == "root" || sub_name.is_empty() {
+                doc_fallback
+            } else {
+                Path::new(&sub_name)
+                    .file_name()
+                    .and_then(|s| s.to_str())
+                    .unwrap_or(&sub_name)
+                    .to_string()
+            };
+            let clean_name = validate_single_entry_name(&raw_name)
+                .unwrap_or_else(|_| "extracted.bin".to_string());
+            (clean_name, sub_bytes)
+        }
+    };
+
+    let staging_dir = std::env::temp_dir().join(format!("pgtools-studio-drag-{}", std::process::id()));
+    if let Ok(rd) = fs::read_dir(&staging_dir) {
+        for item in rd.flatten() {
+            let _ = fs::remove_file(item.path());
+        }
+    }
+    fs::create_dir_all(&staging_dir).map_err(|e| e.to_string())?;
+    let staged_file = staging_dir.join(&file_name);
+    atomic_write_file(&staged_file, &raw_bytes)?;
+
+    #[cfg(target_os = "windows")]
+    {
+        win_drag::do_native_file_drag(&staged_file)?;
+    }
+
+    Ok(staged_file.to_string_lossy().into_owned())
+}
+
+#[tauri::command]
+pub fn list_directory(
+    dir_path: Option<String>,
+    state: State<'_, AppState>,
+) -> Result<(String, Vec<FsEntry>), String> {
+    let saved_last_dir = {
+        let sess = lock_session(&state);
+        sess.settings.last_dir.clone()
+    };
+    let target = dir_path
+        .filter(|s| !s.trim().is_empty())
+        .map(PathBuf::from)
+        .or_else(|| {
+            if !saved_last_dir.is_empty() && Path::new(&saved_last_dir).is_dir() {
+                Some(PathBuf::from(saved_last_dir))
+            } else {
+                None
+            }
+        })
+        .unwrap_or_else(|| std::env::current_dir().unwrap_or_else(|_| PathBuf::from(".")));
+
+    let canonical = fs::canonicalize(&target).unwrap_or_else(|_| target.clone());
+    let rd =
+        fs::read_dir(&target).map_err(|e| format!("Failed to read {}: {e}", target.display()))?;
+    let mut entries = Vec::new();
+    for item in rd.flatten() {
+        let path = item.path();
+        let meta = item.metadata().ok();
+        let is_dir = meta.as_ref().map(|m| m.is_dir()).unwrap_or(false);
+        let size = meta.as_ref().map(|m| m.len()).unwrap_or(0);
+        let modified_epoch_ms = meta
+            .as_ref()
+            .and_then(|m| m.modified().ok())
+            .and_then(|t| t.duration_since(UNIX_EPOCH).ok())
+            .map(|d| d.as_millis() as u64)
+            .unwrap_or(0);
+        let modified_str = if modified_epoch_ms > 0 {
+            format_epoch_date(modified_epoch_ms / 1000)
+        } else {
+            "—".to_string()
+        };
+        let name = item.file_name().to_string_lossy().into_owned();
+        let extension = path
+            .extension()
+            .and_then(|e| e.to_str())
+            .unwrap_or("")
+            .to_ascii_lowercase();
+        let is_supported = is_dir || is_supported_extension(&extension);
+        entries.push(FsEntry {
+            name,
+            path: clean_win_verbatim_path(path.to_string_lossy().into_owned()),
+            is_dir,
+            size,
+            modified_epoch_ms,
+            modified_str,
+            extension,
+            is_supported,
+        });
+    }
+    entries.sort_by(|a, b| b.is_dir.cmp(&a.is_dir).then_with(|| a.name.cmp(&b.name)));
+
+    let canon_str = clean_win_verbatim_path(canonical.to_string_lossy().into_owned());
+    {
+        let mut sess = lock_session(&state);
+        if sess.settings.last_dir != canon_str {
+            sess.settings.last_dir = canon_str.clone();
+            let _ = save_settings_to_disk(&sess.settings);
+        }
+    }
+
+    Ok((canon_str, entries))
+}
+
+#[tauri::command]
+pub fn run_file_context_operation(
+    file_path: String,
+    operation: String,
+    dest_path: Option<String>,
+    state: State<'_, AppState>,
+) -> Result<String, String> {
+    let oodle_path = lock_session(&state)
+        .settings
+        .oodle_dll_path
+        .clone();
+    let oodle_opt = if oodle_path.is_empty() {
+        None
+    } else {
+        Some(Path::new(oodle_path.as_str()))
+    };
+    let p = PathBuf::from(&file_path);
+    let ext = p
+        .extension()
+        .and_then(|e| e.to_str())
+        .unwrap_or("")
+        .to_ascii_lowercase();
+    let stem = p.file_stem().and_then(|s| s.to_str()).unwrap_or("output");
+    let parent = p.parent().unwrap_or(Path::new("."));
+
+    match operation.as_str() {
+        "extract_archive" => {
+            let raw = fs::read(&p).map_err(|e| e.to_string())?;
+            let out_dir = dest_path
+                .map(PathBuf::from)
+                .unwrap_or_else(|| parent.join(format!("{stem}_{ext}")));
+            match ext.as_str() {
+                "pkz" => {
+                    let pkz = PkzArchive::from_bytes(&raw).map_err(|e| e.to_string())?;
+                    let files = pkz
+                        .extract_all(&raw, &out_dir, oodle_opt)
+                        .map_err(|e| e.to_string())?;
+                    Ok(format!(
+                        "Extracted {} PKZ entries to {}",
+                        files.len(),
+                        out_dir.display()
+                    ))
+                }
+                "eff" | "idd" if raw.starts_with(b"EF2\0") || raw.starts_with(b"IDD\0") => {
+                    let eff = EffFile::from_bytes(&raw).map_err(|e| e.to_string())?;
+                    eff.extract_to_dir(&out_dir, &format!(".{ext}"))
+                        .map_err(|e| e.to_string())?;
+                    Ok(format!("Extracted EFF/IDD to {}", out_dir.display()))
+                }
+                "scr" => {
+                    let scr = ScrFile::from_bytes(&raw).map_err(|e| e.to_string())?;
+                    scr.extract_to_dir(&out_dir).map_err(|e| e.to_string())?;
+                    Ok(format!(
+                        "Extracted SCR ({} models) to {}",
+                        scr.models.len(),
+                        out_dir.display()
+                    ))
+                }
+                "wtb" | "wta" | "bntx" => {
+                    let wtp = fs::read(p.with_extension("wtp")).ok();
+                    let wtb =
+                        WtbFile::from_bytes(&raw, wtp.as_deref()).map_err(|e| e.to_string())?;
+                    wtb.extract_to_dir(&out_dir, stem, &format!(".{ext}"))
+                        .map_err(|e| e.to_string())?;
+                    Ok(format!(
+                        "Extracted {} textures to {}",
+                        wtb.entries.len(),
+                        out_dir.display()
+                    ))
+                }
+                _ => {
+                    let dat = DatFile::from_bytes(&raw).map_err(|e| e.to_string())?;
+                    dat.extract_to_dir(&out_dir, &format!(".{ext}"))
+                        .map_err(|e| e.to_string())?;
+                    Ok(format!(
+                        "Extracted {} DAT entries to {}",
+                        dat.entries.len(),
+                        out_dir.display()
+                    ))
+                }
+            }
+        }
+        "repack_folder_dat" => {
+            let (dat, orig_ext) = DatFile::create_from_dir(&p).map_err(|e| e.to_string())?;
+            let out_file = dest_path
+                .map(PathBuf::from)
+                .unwrap_or_else(|| parent.join(format!("{stem}{orig_ext}")));
+            fs::write(&out_file, dat.to_bytes()).map_err(|e| e.to_string())?;
+            Ok(format!("Repacked folder into {}", out_file.display()))
+        }
+        "repack_folder_pkz" => {
+            let mut files = Vec::new();
+            for item in fs::read_dir(&p).map_err(|e| e.to_string())?.flatten() {
+                if item.path().is_file() {
+                    let name = item.file_name().to_string_lossy().into_owned();
+                    let bytes = fs::read(item.path()).map_err(|e| e.to_string())?;
+                    files.push((name, bytes));
+                }
+            }
+            files.sort_by(|a, b| a.0.cmp(&b.0));
+            let pkz_bytes = PkzArchive::build(&files, true).map_err(|e| e.to_string())?;
+            let out_file = dest_path
+                .map(PathBuf::from)
+                .unwrap_or_else(|| parent.join(format!("{stem}.pkz")));
+            fs::write(&out_file, pkz_bytes).map_err(|e| e.to_string())?;
+            Ok(format!(
+                "Packed {} files into {}",
+                files.len(),
+                out_file.display()
+            ))
+        }
+        "convert_wtb_wiiu_pc" => {
+            let raw = fs::read(&p).map_err(|e| e.to_string())?;
+            let wtp = fs::read(p.with_extension("wtp")).ok();
+            let wtb = WtbFile::from_bytes(&raw, wtp.as_deref()).map_err(|e| e.to_string())?;
+            let pc_wtb = wtb.convert_wiiu_to_pc().map_err(|e| e.to_string())?;
+            let (bytes, _) = pc_wtb.to_bytes();
+            let out_file = dest_path
+                .map(PathBuf::from)
+                .unwrap_or_else(|| parent.join(format!("{stem}_pc.wtb")));
+            fs::write(&out_file, bytes).map_err(|e| e.to_string())?;
+            Ok(format!(
+                "Converted Wii U textures to PC WTB: {}",
+                out_file.display()
+            ))
+        }
+        "wmb_export_obj" => {
+            let raw = fs::read(&p).map_err(|e| e.to_string())?;
+            let out_file = dest_path
+                .map(PathBuf::from)
+                .unwrap_or_else(|| p.with_extension("obj"));
+            if raw.starts_with(b"WMB3") || raw.starts_with(b"3BMW") {
+                let wmb3 = Wmb3File::from_bytes(&raw).map_err(|e| e.to_string())?;
+                fs::write(&out_file, wmb3.export_obj()).map_err(|e| e.to_string())?;
+            } else if raw.starts_with(b"JK") && ext == "mdb" {
+                let obj = MdbFile::export_obj(&raw).map_err(|e| e.to_string())?;
+                fs::write(&out_file, obj).map_err(|e| e.to_string())?;
+            } else {
+                let wmb = WmbFile::from_bytes(&raw).map_err(|e| e.to_string())?;
+                fs::write(&out_file, wmb.export_obj()).map_err(|e| e.to_string())?;
+            }
+            Ok(format!("Exported Wavefront OBJ to {}", out_file.display()))
+        }
+        "bxm_decode_xml" => {
+            let raw = fs::read(&p).map_err(|e| e.to_string())?;
+            let bxm = BxmFile::from_bytes(&raw).map_err(|e| e.to_string())?;
+            let out_file = PathBuf::from(format!("{}.xml", p.display()));
+            fs::write(&out_file, bxm.to_xml_string()).map_err(|e| e.to_string())?;
+            Ok(format!("Decoded BXM to {}", out_file.display()))
+        }
+        "bxm_encode_xml" => {
+            let xml = fs::read_to_string(&p).map_err(|e| e.to_string())?;
+            let bxm = BxmFile::from_xml_str(&xml, "BXM").map_err(|e| e.to_string())?;
+            let out_file = p.with_extension("bxm");
+            fs::write(&out_file, bxm.to_bytes(Endian::Big)).map_err(|e| e.to_string())?;
+            Ok(format!("Encoded XML to {}", out_file.display()))
+        }
+        "swap_endian_file" => {
+            let raw = fs::read(&p).map_err(|e| e.to_string())?;
+            let out_bytes = match ext.as_str() {
+                "wmb" => {
+                    let mut wmb = WmbFile::from_bytes(&raw).map_err(|e| e.to_string())?;
+                    let target = wmb.endian.swap();
+                    wmb.to_bytes(target).map_err(|e| e.to_string())?
+                }
+                "clp" => {
+                    let clp = ClpFile::from_bytes(&raw).map_err(|e| e.to_string())?;
+                    clp.to_bytes(clp.endian.swap())
+                }
+                "clh" => {
+                    let clh = ClhFile::from_bytes(&raw).map_err(|e| e.to_string())?;
+                    clh.to_bytes(clh.endian.swap())
+                }
+                "clw" => {
+                    let clw = ClwFile::from_bytes(&raw).map_err(|e| e.to_string())?;
+                    clw.to_bytes(clw.endian.swap())
+                }
+                "mot" => {
+                    let mot = MotFile::from_bytes(&raw).map_err(|e| e.to_string())?;
+                    mot.to_bytes(mot.endian.swap())
+                }
+                "exp" => {
+                    let exp = ExpFile::from_bytes(&raw).map_err(|e| e.to_string())?;
+                    exp.to_bytes(exp.endian().swap())
+                }
+                "scr" => {
+                    let mut scr = ScrFile::from_bytes(&raw).map_err(|e| e.to_string())?;
+                    scr.endian = scr.endian.swap();
+                    scr.to_bytes()
+                }
+                _ => return Err(format!("Endian swap not supported for .{ext}")),
+            };
+            let out_file = parent.join(format!("{stem}_swapped.{ext}"));
+            fs::write(&out_file, out_bytes).map_err(|e| e.to_string())?;
+            Ok(format!("Swapped endianness to {}", out_file.display()))
+        }
+        other => Err(format!("Unknown file operation: {other}")),
+    }
+}
+
+
+pub(crate) fn ensure_not_subpath(src: &Path, dst: &Path) -> Result<(), String> {
+    if !src.is_dir() {
+        return Ok(());
+    }
+    let src_canon = fs::canonicalize(src).map_err(|e| e.to_string())?;
+    let dst_check = if dst.exists() {
+        fs::canonicalize(dst).map_err(|e| e.to_string())?
+    } else if let Some(parent) = dst.parent() {
+        let p_canon = fs::canonicalize(parent).map_err(|e| e.to_string())?;
+        if let Some(fname) = dst.file_name() {
+            p_canon.join(fname)
+        } else {
+            p_canon
+        }
+    } else {
+        dst.to_path_buf()
+    };
+    if dst_check.starts_with(&src_canon) {
+        return Err(format!(
+            "Cannot copy or move folder '{}' into itself ('{}')",
+            src.display(),
+            dst.display()
+        ));
+    }
+    Ok(())
+}
+
+pub(crate) fn copy_dir_recursive(src: &Path, dst: &Path) -> std::io::Result<()> {
+    let src_canon = fs::canonicalize(src)?;
+    fs::create_dir_all(dst)?;
+    let dst_canon = fs::canonicalize(dst)?;
+    if dst_canon.starts_with(&src_canon) {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::InvalidInput,
+            "Destination directory is inside source directory",
+        ));
+    }
+    for entry in fs::read_dir(src)? {
+        let entry = entry?;
+        let ty = entry.file_type()?;
+        if ty.is_symlink() {
+            continue;
+        }
+        let dst_path = dst.join(entry.file_name());
+        if ty.is_dir() {
+            copy_dir_recursive(&entry.path(), &dst_path)?;
+        } else {
+            fs::copy(entry.path(), dst_path)?;
+        }
+    }
+    Ok(())
+}
+
+pub(crate) fn unique_dest_path(dir: &Path, file_name: &str) -> PathBuf {
+    let candidate = dir.join(file_name);
+    if !candidate.exists() {
+        return candidate;
+    }
+    let p = Path::new(file_name);
+    let stem = p.file_stem().and_then(|s| s.to_str()).unwrap_or(file_name);
+    let ext = p.extension().and_then(|e| e.to_str()).unwrap_or("");
+    for i in 1..1000 {
+        let name = if ext.is_empty() {
+            if i == 1 { format!("{stem}_copy") } else { format!("{stem}_copy{i}") }
+        } else if i == 1 {
+            format!("{stem}_copy.{ext}")
+        } else {
+            format!("{stem}_copy{i}.{ext}")
+        };
+        let cand = dir.join(name);
+        if !cand.exists() {
+            return cand;
+        }
+    }
+    candidate
+}
+
+#[tauri::command]
+pub fn fs_batch_operation(
+    operation: String,
+    source_paths: Vec<String>,
+    dest_dir: Option<String>,
+    new_name: Option<String>,
+) -> Result<String, String> {
+    match operation.as_str() {
+        "copy" | "paste_copy" => {
+            let target_dir = PathBuf::from(dest_dir.ok_or("Missing destination directory")?);
+            let mut count = 0usize;
+            for sp in &source_paths {
+                let src_p = Path::new(sp);
+                let Some(fname) = src_p.file_name().and_then(|s| s.to_str()) else {
+                    continue;
+                };
+                let dst_p = unique_dest_path(&target_dir, fname);
+                if src_p.is_dir() {
+                    ensure_not_subpath(src_p, &dst_p)?;
+                    copy_dir_recursive(src_p, &dst_p).map_err(|e| e.to_string())?;
+                } else {
+                    fs::copy(src_p, &dst_p).map_err(|e| e.to_string())?;
+                }
+                count += 1;
+            }
+            Ok(format!("Copied {count} item(s)"))
+        }
+        "move" | "paste_cut" => {
+            let target_dir = PathBuf::from(dest_dir.ok_or("Missing destination directory")?);
+            let mut count = 0usize;
+            for sp in &source_paths {
+                let src_p = Path::new(sp);
+                let Some(fname) = src_p.file_name() else {
+                    continue;
+                };
+                let dst_p = target_dir.join(fname);
+                if src_p == dst_p {
+                    continue;
+                }
+                if dst_p.exists() || dst_p.symlink_metadata().is_ok() {
+                    return Err(format!(
+                        "Cannot move '{}': destination '{}' already exists",
+                        src_p.display(),
+                        dst_p.display()
+                    ));
+                }
+                ensure_not_subpath(src_p, &dst_p)?;
+                if fs::rename(src_p, &dst_p).is_err() {
+                    if src_p.is_dir() {
+                        copy_dir_recursive(src_p, &dst_p).map_err(|e| e.to_string())?;
+                        fs::remove_dir_all(src_p).map_err(|e| e.to_string())?;
+                    } else {
+                        fs::copy(src_p, &dst_p).map_err(|e| e.to_string())?;
+                        fs::remove_file(src_p).map_err(|e| e.to_string())?;
+                    }
+                }
+                count += 1;
+            }
+            Ok(format!("Moved {count} item(s)"))
+        }
+        "duplicate" => {
+            let mut count = 0usize;
+            for sp in &source_paths {
+                let src_p = Path::new(sp);
+                let Some(parent) = src_p.parent() else {
+                    continue;
+                };
+                let Some(fname) = src_p.file_name().and_then(|s| s.to_str()) else {
+                    continue;
+                };
+                let dst_p = unique_dest_path(parent, fname);
+                if src_p.is_dir() {
+                    ensure_not_subpath(src_p, &dst_p)?;
+                    copy_dir_recursive(src_p, &dst_p).map_err(|e| e.to_string())?;
+                } else {
+                    fs::copy(src_p, &dst_p).map_err(|e| e.to_string())?;
+                }
+                count += 1;
+            }
+            Ok(format!("Duplicated {count} item(s)"))
+        }
+        "rename" => {
+            let sp = source_paths.first().ok_or("No source path specified for rename")?;
+            let raw_target_name = new_name.ok_or("Missing new name")?;
+            let target_name =
+                validate_single_entry_name(&raw_target_name).map_err(|e| e.to_string())?;
+            let src_p = Path::new(sp);
+            let parent = src_p.parent().ok_or("Cannot determine parent folder")?;
+            let dst_p = parent.join(&target_name);
+            if dst_p.parent() != Some(parent) {
+                return Err("Invalid rename target path".into());
+            }
+            if src_p == dst_p {
+                return Ok(format!("Renamed to {target_name}"));
+            }
+            if dst_p.exists() || dst_p.symlink_metadata().is_ok() {
+                return Err(format!(
+                    "Cannot rename to '{target_name}': file or folder already exists"
+                ));
+            }
+            fs::rename(src_p, &dst_p).map_err(|e| e.to_string())?;
+            Ok(format!("Renamed to {target_name}"))
+        }
+        "delete" => {
+            let mut count = 0usize;
+            for sp in &source_paths {
+                let src_p = Path::new(sp);
+                if src_p.is_dir() {
+                    fs::remove_dir_all(src_p).map_err(|e| e.to_string())?;
+                } else if src_p.exists() {
+                    fs::remove_file(src_p).map_err(|e| e.to_string())?;
+                }
+                count += 1;
+            }
+            Ok(format!("Deleted {count} item(s)"))
+        }
+        "new_folder" => {
+            let base = PathBuf::from(dest_dir.ok_or("Missing directory path")?);
+            let raw_folder_name = new_name.unwrap_or_else(|| "New Folder".to_string());
+            let folder_name =
+                validate_single_entry_name(&raw_folder_name).map_err(|e| e.to_string())?;
+            let dst_p = unique_dest_path(&base, &folder_name);
+            if dst_p.parent() != Some(base.as_path()) {
+                return Err("Invalid new folder target path".into());
+            }
+            fs::create_dir_all(&dst_p).map_err(|e| e.to_string())?;
+            Ok(format!("Created folder {}", dst_p.display()))
+        }
+        other => Err(format!("Unsupported filesystem batch operation: {other}")),
+    }
+}

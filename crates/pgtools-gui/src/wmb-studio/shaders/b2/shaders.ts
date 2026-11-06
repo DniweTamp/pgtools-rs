@@ -1,7 +1,10 @@
-// [wmb-studio BEGIN phase3]
 import { MaterialDesc, TextureSlotDesc } from "../../contract";
-import { STUDIO_FRAGMENT_HEADER, STUDIO_VERTEX_SHADER } from "../common";
-import { RenderQueueBucket } from "../b1/shaders";
+import {
+  isNeutralLightmapId,
+  RenderQueueBucket,
+  STUDIO_FRAGMENT_HEADER,
+  STUDIO_VERTEX_SHADER,
+} from "../common";
 
 export interface B2SamplerSlotBinding {
   albedo?: TextureSlotDesc;
@@ -38,10 +41,7 @@ export function resolveB2SamplerSlots(mat: MaterialDesc): B2SamplerSlotBinding {
     const u = s.textureId >>> 0;
     const low = s.name.toLowerCase();
     // Exclude neutral white pre_lightmap (0x4E9C16F4 / 0x5864A24F) on Skn02/Skn03/Bgs* so it doesn't force CubemapMask=1 & SpecularMask=1
-    const isLightmapSlot =
-      u === 0x4e9c16f4 ||
-      u === 0x5864a24f ||
-      low.includes("lightmap");
+    const isLightmapSlot = isNeutralLightmapId(u) || low.includes("lightmap");
     if (isLightmapSlot) return false;
     return (
       s.role === "spec" ||
@@ -92,7 +92,7 @@ export function resolveB2SamplerSlots(mat: MaterialDesc): B2SamplerSlotBinding {
  * - `CubemapReflection = CubemapTexture.rgb * CubemapStrength * CubemapMask;`
  * - `color.rgb *= 1.0 + fakeAnisotropic; color.rgb *= 1.0 + CubemapReflection;`
  */
-export const B2_GENERIC_FRAGMENT_SHADER = /* glsl */ `
+const B2_GENERIC_FRAGMENT_SHADER = /* glsl */ `
 ${STUDIO_FRAGMENT_HEADER}
 
 uniform sampler2D uB2AlbedoMap;
@@ -249,4 +249,3 @@ export function getB2ShaderSpec(
     alphaBlendVariant: alphaClip || queue === "blend",
   };
 }
-// [wmb-studio END]

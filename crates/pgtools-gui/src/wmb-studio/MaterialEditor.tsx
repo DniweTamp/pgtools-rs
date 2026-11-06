@@ -1,4 +1,3 @@
-// [wmb-studio BEGIN phase2]
 import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import {
@@ -8,12 +7,13 @@ import {
   TextureSlotDesc,
   WmbSceneManifest,
 } from "./contract";
-import { getActiveDragPayload, parseDragPayload } from "./dnd";
 import {
-  IconChevronRight,
   inferTextureRoles,
   TextureSlotPickerPopover,
 } from "./Pickers";
+import { IconChevronRight } from "../components/Icons";
+import { dwordToFloat, hexToRgbFloats, rgbFloatsToHex } from "../utils/color";
+import { formatHexU8 } from "../utils/format";
 import {
   CorePretextureInfo,
   DecodedWmbMaterial,
@@ -51,36 +51,6 @@ export interface MaterialEditorProps {
   onChangeDebugSlot?: (slot: DebugSlotPreview | null) => void;
 }
 
-function rgbFloatsToHex(r: number, g: number, b: number): string {
-  const clampByte = (v: number) =>
-    Math.max(0, Math.min(255, Math.round(v * 255)));
-  const hr = clampByte(r).toString(16).padStart(2, "0");
-  const hg = clampByte(g).toString(16).padStart(2, "0");
-  const hb = clampByte(b).toString(16).padStart(2, "0");
-  return `#${hr}${hg}${hb}`;
-}
-
-function hexToRgbFloats(hex: string): [number, number, number] {
-  const clean = hex.replace(/^#/, "");
-  if (clean.length !== 6) return [1, 1, 1];
-  const r = parseInt(clean.slice(0, 2), 16) / 255;
-  const g = parseInt(clean.slice(2, 4), 16) / 255;
-  const b = parseInt(clean.slice(4, 6), 16) / 255;
-  return [
-    Number.isFinite(r) ? Number(r.toFixed(4)) : 1,
-    Number.isFinite(g) ? Number(g.toFixed(4)) : 1,
-    Number.isFinite(b) ? Number(b.toFixed(4)) : 1,
-  ];
-}
-
-function dwordToFloat(dword: number): number {
-  const buf = new ArrayBuffer(4);
-  const view = new DataView(buf);
-  view.setUint32(0, dword >>> 0, true);
-  const f = view.getFloat32(0, true);
-  return Number.isFinite(f) ? Number(f.toFixed(4)) : 0;
-}
-
 export const MaterialEditor: React.FC<MaterialEditorProps> = ({
   manifest,
   material,
@@ -109,22 +79,17 @@ export const MaterialEditor: React.FC<MaterialEditorProps> = ({
   const [b2LayoutOverride, setB2LayoutOverride] = useState<boolean>(
     manifest.game === "b2"
   );
-  const [dropHoverSlot, setDropHoverSlot] = useState<number | null>(null);
-
-  // Collapsible card states (all open by default in Material Inspector)
   const [headerOpen, setHeaderOpen] = useState(true);
   const [samplersOpen, setSamplersOpen] = useState(true);
   const [paramsOpen, setParamsOpen] = useState(true);
   const [batchesOpen, setBatchesOpen] = useState(true);
 
-  // Typed vs Raw toggle inside the Parameters section header
   const [paramViewMode, setParamViewMode] = useState<"typed" | "raw">("typed");
 
   useEffect(() => {
     setB2LayoutOverride(manifest.game === "b2");
   }, [manifest.game, manifest.nodeId]);
 
-  // Sync localParams when material prop updates from manifest
   useEffect(() => {
     localParamsRef.current = material.params;
     setLocalParams(material.params);
@@ -142,7 +107,6 @@ export const MaterialEditor: React.FC<MaterialEditorProps> = ({
     };
   }, []);
 
-  // Fetch available shaders, core pretextures, and decoded raw material words via inspect_asset_node
   useEffect(() => {
     let cancelled = false;
     (async () => {
@@ -260,10 +224,7 @@ export const MaterialEditor: React.FC<MaterialEditorProps> = ({
     material.shaderName,
   ]);
 
-  const hexBadge = `0x${material.index
-    .toString(16)
-    .toUpperCase()
-    .padStart(2, "0")}`;
+  const hexBadge = formatHexU8(material.index);
   const shaderBadgeLabel =
     material.shaderName ??
     (material.materialType !== null ? `type ${material.materialType}` : "standard");
@@ -278,33 +239,11 @@ export const MaterialEditor: React.FC<MaterialEditorProps> = ({
 
   const renderSlotRow = (slot: TextureSlotDesc) => {
     const u = slot.textureId >>> 0;
-    const isDropTarget = dropHoverSlot === slot.slot;
 
     return (
       <div
         key={slot.slot}
-        className={`sampler-card ${isDropTarget ? "drop-onto" : ""}`}
-        onDragOver={(e) => {
-          const payload = getActiveDragPayload();
-          if (payload?.kind === "texture") {
-            e.preventDefault();
-            e.stopPropagation();
-            setDropHoverSlot(slot.slot);
-          }
-        }}
-        onDragLeave={() => setDropHoverSlot(null)}
-        onDrop={(e) => {
-          e.preventDefault();
-          e.stopPropagation();
-          setDropHoverSlot(null);
-          const payload = parseDragPayload(e);
-          if (payload?.kind === "texture" && payload.ids[0]) {
-            const rawTid = parseInt(payload.ids[0].replace(/^tex:/, ""), 10);
-            if (!Number.isNaN(rawTid)) {
-              void onCommitMaterialTexture(material.index, slot.slot, rawTid);
-            }
-          }
-        }}
+        className="sampler-card"
       >
         <div className="sampler-card-top">
           <span className="sampler-slot-name">
@@ -383,7 +322,6 @@ export const MaterialEditor: React.FC<MaterialEditorProps> = ({
 
   return (
     <div className="wmb-material-editor">
-      {/* 1. Material Header & Shader Card */}
       <div className="insp-card">
         <div
           className="insp-card-header"
@@ -560,7 +498,6 @@ export const MaterialEditor: React.FC<MaterialEditorProps> = ({
         </div>
       </div>
 
-      {/* 2. Texture Samplers Card */}
       <div className="insp-card">
         <div
           className="insp-card-header"
@@ -606,7 +543,6 @@ export const MaterialEditor: React.FC<MaterialEditorProps> = ({
         </div>
       </div>
 
-      {/* 3. Parameters Card (with Typed | Raw toggle in header, and sliderless Color rows) */}
       <div className="insp-card">
         <div
           className="insp-card-header"
@@ -654,8 +590,7 @@ export const MaterialEditor: React.FC<MaterialEditorProps> = ({
                   <div className="wmb-prop-empty">No uniform parameters.</div>
                 ) : (
                   <div className="param-list-stack">
-                    {/* Color Parameters — Swatch + #HEX + 4 compact R/G/B/A float cells (NO sliders) */}
-                    {colorParams.map((param) => {
+                          {colorParams.map((param) => {
                       const vals = param.values;
                       const r = vals[0] ?? 1;
                       const g = vals[1] ?? 1;
@@ -773,8 +708,7 @@ export const MaterialEditor: React.FC<MaterialEditorProps> = ({
                       );
                     })}
 
-                    {/* Scalar & Vector Parameters */}
-                    {scalarVectorParams.map((param) => {
+                          {scalarVectorParams.map((param) => {
                       const vals = param.values;
                       const isSingle = vals.length === 1;
                       const v0 = vals[0] ?? 0;
@@ -1015,7 +949,6 @@ export const MaterialEditor: React.FC<MaterialEditorProps> = ({
         </div>
       </div>
 
-      {/* 4. Used by Batches Card */}
       <div className="insp-card">
         <div
           className="insp-card-header"
@@ -1062,4 +995,3 @@ export const MaterialEditor: React.FC<MaterialEditorProps> = ({
     </div>
   );
 };
-// [wmb-studio END]

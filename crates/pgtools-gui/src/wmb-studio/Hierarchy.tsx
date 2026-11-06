@@ -1,4 +1,3 @@
-// [wmb-studio BEGIN phase2]
 import React, {
   useCallback,
   useEffect,
@@ -10,12 +9,15 @@ import {
   BatchDesc,
   BoneDesc,
   ClipboardStatus,
+  LegacyActionKind,
   LodDesc,
   MaterialDesc,
+  MaterialShaderStatus,
   MeshGroupDesc,
   TextureRefDesc,
   WmbSceneManifest,
 } from "./contract";
+export type { LegacyActionKind };
 import { canPasteClipboard } from "./clipboard";
 import {
   computeDropPositionAt,
@@ -31,19 +33,15 @@ import {
   isSyntheticTexName,
   MaterialPickerPopover,
 } from "./Pickers";
-import { getBoneSceneId, SceneSelectionItem, SelectionKind } from "./store";
-import { MaterialShaderStatus } from "./viewer/sceneBuilder";
-
-export type LegacyActionKind =
-  | "import_obj"
-  | "export_obj"
-  | "import_gltf"
-  | "export_gltf"
-  | "import_texture"
-  | "export_texture"
-  | "replace_texture"
-  | "bone_preset"
-  | "open_legacy_inspector";
+import {
+  buildBoneHierarchy,
+  getBoneSceneId,
+  getMeshGroupBatchIds,
+  parseTextureSceneId,
+  SceneSelectionItem,
+  SelectionKind,
+} from "./store";
+import { formatHexU8 } from "../utils/format";
 
 export interface HierarchyProps {
   manifest: WmbSceneManifest;
@@ -249,81 +247,7 @@ export const Hierarchy: React.FC<HierarchyProps> = React.memo(function Hierarchy
 
   const textureRoles = useMemo(() => inferTextureRoles(manifest), [manifest]);
 
-  // Build hierarchical bone children map + parent lookup for cycle prevention (B-35: index-keyed)
-  const boneChildrenMap = useMemo(() => {
-    const childrenByParentIdx = new Map<number, Array<{ bone: BoneDesc; idx: number }>>();
-    const indexByGlobalId = new Map<number, number>();
-    const parentIdxByBoneIdx = new Map<number, number>();
-    manifest.bones.forEach((b, idx) => {
-      if (!indexByGlobalId.has(b.globalId)) {
-        indexByGlobalId.set(b.globalId, idx);
-      }
-    });
-
-    for (let i = 0; i < manifest.bones.length; i++) {
-      const b = manifest.bones[i];
-      let parentIdx = b.parent;
-      if (
-        parentIdx >= manifest.bones.length &&
-        indexByGlobalId.has(parentIdx)
-      ) {
-        parentIdx = indexByGlobalId.get(parentIdx)!;
-      }
-      if (parentIdx < 0 || parentIdx >= manifest.bones.length || parentIdx === i) {
-        parentIdx = -1;
-      }
-      parentIdxByBoneIdx.set(i, parentIdx);
-    }
-
-    // Break any pre-existing cycles so every bone is reachable from root (-1)
-    for (let i = 0; i < manifest.bones.length; i++) {
-      let cur = parentIdxByBoneIdx.get(i) ?? -1;
-      const seen = new Set<number>([i]);
-      while (cur >= 0) {
-        if (seen.has(cur)) {
-          parentIdxByBoneIdx.set(i, -1);
-          break;
-        }
-        seen.add(cur);
-        cur = parentIdxByBoneIdx.get(cur) ?? -1;
-      }
-      const finalParent = parentIdxByBoneIdx.get(i) ?? -1;
-      const list = childrenByParentIdx.get(finalParent) ?? [];
-      list.push({ bone: manifest.bones[i], idx: i });
-      childrenByParentIdx.set(finalParent, list);
-    }
-
-    const resolveBoneIdxFromId = (boneSceneId: string): number => {
-      const raw = boneSceneId.replace(/^bone:/, "");
-      if (raw.includes(":")) {
-        const idx = parseInt(raw.split(":")[0], 10);
-        if (!Number.isNaN(idx) && idx >= 0 && idx < manifest.bones.length) {
-          return idx;
-        }
-      }
-      const gid = parseInt(raw, 10);
-      return indexByGlobalId.get(gid) ?? -1;
-    };
-
-    const isBoneDescendantOf = (candidateIdx: number, ancestorIdx: number): boolean => {
-      let cur = candidateIdx;
-      const visited = new Set<number>();
-      while (cur >= 0 && !visited.has(cur)) {
-        if (cur === ancestorIdx) return true;
-        visited.add(cur);
-        cur = parentIdxByBoneIdx.get(cur) ?? -1;
-      }
-      return false;
-    };
-
-    return {
-      childrenByParentIdx,
-      indexByGlobalId,
-      parentIdxByBoneIdx,
-      resolveBoneIdxFromId,
-      isBoneDescendantOf,
-    };
-  }, [manifest.bones]);
+  const boneChildrenMap = useMemo(() => buildBoneHierarchy(manifest.bones), [manifest.bones]);
 
   // Flat list of selectable rows in display order for Shift+click range selection and Up/Down arrows
   const visibleFlatRows = useMemo<FlatTreeRow[]>(() => {
@@ -850,14 +774,14 @@ export const Hierarchy: React.FC<HierarchyProps> = React.memo(function Hierarchy
         return;
       }
 
-      // 3. Texture -> Material (open slot picker menu at drop point)
       if (payload.kind === "texture" && targetKind === "material") {
         const mat = materialById.get(targetId);
-        const rawTid = parseInt(draggedId.replace(/^tex:/, ""), 10);
-        const texRef = manifest.textures.find(
-          (t) => (t.textureId >>> 0) === (rawTid >>> 0)
-        );
-        if (mat && !Number.isNaN(rawTid)) {
+        const rawTid = parseTextureSceneId(draggedId);
+        const texRef =
+          rawTid !== null
+            ? manifest.textures.find((t) => (t.textureId >>> 0) === rawTid)
+            : undefined;
+        if (mat && rawTid !== null) {
           setSlotDropModal({
             x: dropPoint?.x ?? 0,
             y: dropPoint?.y ?? 0,
@@ -2414,7 +2338,7 @@ export const Hierarchy: React.FC<HierarchyProps> = React.memo(function Hierarchy
                   setContextMenu(null);
                   void onMutateOp({
                     op: "delete_items",
-                    items: [bIdx >= 0 ? getBoneSceneId(b, bIdx) : `bone:${b.globalId}`],
+                    items: [getBoneSceneId(b, bIdx >= 0 ? bIdx : 0)],
                   });
                 }}
               >
@@ -2639,4 +2563,3 @@ export const Hierarchy: React.FC<HierarchyProps> = React.memo(function Hierarchy
     </div>
   );
 });
-// [wmb-studio END]

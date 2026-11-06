@@ -1,4 +1,3 @@
-// [wmb-studio BEGIN phase3]
 import { STUDIO_FRAGMENT_HEADER } from "../common";
 
 /**
@@ -29,7 +28,7 @@ vec3 DecodeB3Albedo(vec3 rawRgb) {
  * components (xy = 2.0 * rg - 1.0, z = sqrt(max(0.0, 1.0 - dot(xy, xy)))), regardless of
  * what is packed in the B or A channels (AO, metallic, specular mask, roughness, or 0xFF).
  */
-vec3 DecodeB3NormalTS(vec4 sampleNrm, bool forceRgReconstruct) {
+vec3 DecodeB3NormalTS(vec4 sampleNrm) {
   vec2 xy = sampleNrm.rg * 2.0 - 1.0;
   float z = sqrt(max(0.0, 1.0 - dot(xy, xy)));
   vec3 n = vec3(xy, z);
@@ -49,17 +48,9 @@ vec3 SafeOrthoTangentB3(vec3 N, vec3 tanVec) {
   return normalize(cross(fallbackAxis, N));
 }
 
-vec3 PerturbB3NormalW(vec3 nTS, float strength, vec3 tanW, vec3 nrmW) {
-  vec3 N = normalize(nrmW);
-  vec3 T = SafeOrthoTangentB3(N, tanW);
-  vec3 B = cross(N, T);
-  vec3 scaled = normalize(vec3(nTS.xy * strength, max(nTS.z, 1e-3)));
-  return normalize(T * scaled.x + B * scaled.y + N * scaled.z);
-}
-
-vec3 PerturbB3NormalV(vec3 nTS, float strength, vec3 tanV, vec3 nrmV) {
-  vec3 N = normalize(nrmV);
-  vec3 T = SafeOrthoTangentB3(N, tanV);
+vec3 PerturbB3Normal(vec3 nTS, float strength, vec3 tanVec, vec3 nrmVec) {
+  vec3 N = normalize(nrmVec);
+  vec3 T = SafeOrthoTangentB3(N, tanVec);
   vec3 B = cross(N, T);
   vec3 scaled = normalize(vec3(nTS.xy * strength, max(nTS.z, 1e-3)));
   return normalize(T * scaled.x + B * scaled.y + N * scaled.z);
@@ -252,4 +243,3 @@ vec4 FinishB3Fragment(
   return ApplyStudioPost(vec4(c, clamp(alpha, 0.0, 1.0)), Nw, Nv, posV);
 }
 `;
-// [wmb-studio END]

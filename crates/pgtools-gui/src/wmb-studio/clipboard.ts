@@ -1,41 +1,12 @@
-// [wmb-studio BEGIN phase2]
 import {
   ClipboardStatus,
-  wmbClipboardCopy,
   wmbClipboardStatus,
 } from "./contract";
-import { SceneSelectionItem } from "./store";
 
 export async function refreshClipboardStatus(): Promise<ClipboardStatus | null> {
   try {
     return await wmbClipboardStatus();
   } catch {
-    return null;
-  }
-}
-
-export async function copySceneItemsToClipboard(
-  nodeId: string,
-  items: SceneSelectionItem[],
-  onStatus: (msg: string) => void
-): Promise<ClipboardStatus | null> {
-  const batchIds = items.filter((i) => i.kind === "batch").map((i) => i.id);
-  const matIds = items.filter((i) => i.kind === "material").map((i) => i.id);
-
-  const idsToCopy = batchIds.length > 0 ? batchIds : matIds;
-  if (idsToCopy.length === 0) {
-    onStatus("Select one or more batches or materials to copy.");
-    return null;
-  }
-
-  try {
-    const status = await wmbClipboardCopy(nodeId, idsToCopy);
-    onStatus(
-      `Copied ${status.count} ${status.kind} (${status.game.toUpperCase()}) to clipboard.`
-    );
-    return status;
-  } catch (err) {
-    onStatus(`Clipboard copy failed: ${String(err)}`);
     return null;
   }
 }
@@ -62,4 +33,3 @@ export function canPasteClipboard(
   }
   return { allowed: true };
 }
-// [wmb-studio END]
