@@ -14,6 +14,7 @@ cd /d "%ROOT_DIR%"
 set "GUI_DIR=%ROOT_DIR%\crates\pgtools-gui"
 set "RELEASE_DIR=%ROOT_DIR%\release"
 set "ZIP_PATH=%ROOT_DIR%\PGTools-Studio-Release.zip"
+set "SOURCE_ZIP_PATH=%ROOT_DIR%\PGTools-Studio-Source.zip"
 
 REM ----------------------------------------------------------------------------
 REM 1. Build React + TypeScript Frontend (crates\pgtools-gui\dist)
@@ -78,6 +79,12 @@ REM Create a ready-to-distribute ZIP archive next to the release folder
 if exist "%ZIP_PATH%" del /f /q "%ZIP_PATH%"
 powershell -NoProfile -ExecutionPolicy Bypass -Command "Compress-Archive -Path %RELEASE_DIR%\* -DestinationPath %ZIP_PATH% -Force" >nul 2>&1
 
+REM Create a source archive from the current commit (tracked files only)
+echo       Creating source archive from HEAD...
+if exist "%SOURCE_ZIP_PATH%" del /f /q "%SOURCE_ZIP_PATH%"
+git archive --format=zip --prefix=pgtools-rs/ --output="%SOURCE_ZIP_PATH%" HEAD
+if errorlevel 1 goto :err_git_archive
+
 echo.
 echo ============================================================================
 echo  Release build complete!
@@ -87,6 +94,7 @@ echo     - PGTools-Studio.exe  [Self-contained Tauri v2 GUI executable]
 echo     - pgtools.exe         [Standalone CLI executable]
 echo     - README.md           [Documentation and usage guide]
 if exist "%ZIP_PATH%" echo   Release Zip    : %ZIP_PATH%
+if exist "%SOURCE_ZIP_PATH%" echo   Source Zip     : %SOURCE_ZIP_PATH%
 echo ============================================================================
 endlocal
 exit /b 0
@@ -117,4 +125,8 @@ exit /b 1
 
 :err_copy_cli
 echo [ERROR] Failed to copy pgtools.exe to release folder.
+exit /b 1
+
+:err_git_archive
+echo [ERROR] Failed to create source ZIP with git archive. Ensure Git is installed and the current commit is available.
 exit /b 1

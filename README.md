@@ -8,7 +8,7 @@ A high-performance, self-contained Rust & Tauri v2 suite for inspecting, editing
 
 ## Quick Release Build (`publish_release.bat`)
 
-Run `publish_release.bat` from the repository root on Windows to build and stage a release folder (`release\`) and zip archive (`PGTools-Studio-Release.zip`):
+Run `publish_release.bat` from the repository root on Windows to build and stage a release folder (`release\`), a binary archive (`PGTools-Studio-Release.zip`), and a source archive (`PGTools-Studio-Source.zip`):
 
 ```bat
 .\publish_release.bat
@@ -25,6 +25,7 @@ This script:
 2. Compiles the **self-contained GUI executable** (`cargo build --release --locked -p pgtools-gui --features tauri/custom-protocol`), embedding the entire frontend bundle inside `PGTools-Studio.exe` so no external `dist/` folder is required.
 3. Compiles the **standalone CLI executable** (`cargo build --release --locked -p pgtools-cli` -> `pgtools.exe`).
 4. Packages `PGTools-Studio.exe`, `pgtools.exe`, and `README.md` (plus optional DLLs if `--with-oodle` was passed) into `release\` and `PGTools-Studio-Release.zip`.
+5. Creates `PGTools-Studio-Source.zip` from the current `HEAD` commit using `git archive` (tracked files only).
 
 ## Included Executables
 

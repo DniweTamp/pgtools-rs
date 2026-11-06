@@ -67,6 +67,7 @@ crates/pgtools-gui/src-tauri/gen/schemas/
 /dist/
 /release/
 /*.zip
+/PGTools-Studio-Source.zip
 
 # ---------------------------------------------------------------------------
 # Environment / secrets
