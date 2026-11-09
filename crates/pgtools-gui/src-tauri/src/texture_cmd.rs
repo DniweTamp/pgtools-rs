@@ -2,7 +2,7 @@ use crate::formats_cmd::format_hex_preview;
 use crate::session::{atomic_write_file, lock_session, record_mutation, AppState, DocSnapshot};
 use crate::vfs::{
     build_outline_from_session, detect_file_format_tag, is_bntx_blob, resolve_subblob,
-    split_container_and_leaf, write_back_subblob, AssetTreeNode, DocumentOutline,
+    split_container_and_leaf, write_back_subblob_with_align, AssetTreeNode, DocumentOutline,
 };
 use base64::{engine::general_purpose::STANDARD as BASE64, Engine as _};
 use pgtools_core::{
@@ -939,8 +939,9 @@ pub fn mutate_texture_node(
             } else {
                 raw
             };
+            let dat_align = sess.settings.effective_dat_alignment();
             let next_snap =
-                write_back_subblob(&snap, &container_parts, new_blob, None, oodle_opt)?;
+                write_back_subblob_with_align(&snap, &container_parts, new_blob, None, oodle_opt, dat_align)?;
             sess.invalidate_texture_caches();
             record_mutation(
                 &mut sess,
@@ -1554,12 +1555,14 @@ pub fn mutate_texture_node(
     } else {
         wtb.to_bytes()
     };
-    let next_snap = write_back_subblob(
+    let dat_align = sess.settings.effective_dat_alignment();
+    let next_snap = write_back_subblob_with_align(
         &snap,
         &container_parts,
         new_wtb_bytes,
         new_wtp_bytes,
         oodle_opt,
+        dat_align,
     )?;
     sess.invalidate_texture_caches();
     record_mutation(&mut sess, desc, next_snap);
@@ -1890,8 +1893,9 @@ pub fn run_batch_recompress_action(
             if sub_bytes.starts_with(b"XT1\0") {
                 match recompress_astc_texture_blob_to_bc(&sub_bytes, 0, &cfg, nvtt_opt) {
                     Ok(Some((new_xt1, msg))) => {
+                        let dat_align = sess.settings.effective_dat_alignment();
                         cur_snap =
-                            write_back_subblob(&cur_snap, &c_parts, new_xt1, None, oodle_opt)?;
+                            write_back_subblob_with_align(&cur_snap, &c_parts, new_xt1, None, oodle_opt, dat_align)?;
                         total_conv += 1;
                         log_lines.push(format!("    #0: {msg}"));
                     }
@@ -1925,8 +1929,9 @@ pub fn run_batch_recompress_action(
                     } else {
                         wtb.to_bytes()
                     };
+                    let dat_align = sess.settings.effective_dat_alignment();
                     cur_snap =
-                        write_back_subblob(&cur_snap, &c_parts, new_wta, new_wtp, oodle_opt)?;
+                        write_back_subblob_with_align(&cur_snap, &c_parts, new_wta, new_wtp, oodle_opt, dat_align)?;
                 }
             }
         }
@@ -2131,9 +2136,10 @@ pub fn run_batch_recompress_action(
                 }
             }
             if file_conv > 0 {
-                let _ = atomic_write_file(file, &dat.to_bytes());
+                let dat_align = lock_session(&state).settings.effective_dat_alignment();
+                let _ = atomic_write_file(file, &dat.to_bytes_with_alignment(dat_align));
                 if let Some(dtt_file) = dtt_opt {
-                    let _ = atomic_write_file(&dtt_path, &dtt_file.to_bytes());
+                    let _ = atomic_write_file(&dtt_path, &dtt_file.to_bytes_with_alignment(dat_align));
                 }
             }
         }

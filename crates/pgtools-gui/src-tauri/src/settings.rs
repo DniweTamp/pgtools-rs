@@ -1,5 +1,8 @@
 use crate::session::{lock_session, AppState};
-use pgtools_core::pkz::{clamp_compression_level, OodleLibrary, DEFAULT_ZSTD_LEVEL};
+use pgtools_core::{
+    dat::{DEFAULT_CUSTOM_DAT_ALIGNMENT, MAX_CUSTOM_DAT_ALIGNMENT},
+    pkz::{clamp_compression_level, OodleLibrary, DEFAULT_ZSTD_LEVEL},
+};
 use serde::{Deserialize, Serialize};
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -23,6 +26,8 @@ pub struct StudioSettings {
     pub nvtt_configured: bool,
     pub pkz_default_compression: String,
     pub pkz_default_level: i32,
+    pub force_custom_dat_alignment: bool,
+    pub custom_dat_alignment: usize,
     pub core_dat_b1: String,
     pub core_dat_b2: String,
     pub core_dat_b3: String,
@@ -46,6 +51,14 @@ pub struct OodleValidationReport {
     pub message: String,
 }
 
+pub(crate) fn sanitize_custom_dat_alignment(val: usize) -> usize {
+    if val == 0 {
+        DEFAULT_CUSTOM_DAT_ALIGNMENT
+    } else {
+        val.min(MAX_CUSTOM_DAT_ALIGNMENT)
+    }
+}
+
 impl StudioSettings {
     pub(crate) fn oodle_path(&self) -> Option<&Path> {
         if self.oodle_dll_path.trim().is_empty() {
@@ -63,9 +76,20 @@ impl StudioSettings {
         }
     }
 
+    /// Returns `Some(custom_dat_alignment)` when `force_custom_dat_alignment` is enabled,
+    /// or `None` when the default per-file-type alignment behavior is active.
+    pub(crate) fn effective_dat_alignment(&self) -> Option<usize> {
+        if self.force_custom_dat_alignment {
+            Some(sanitize_custom_dat_alignment(self.custom_dat_alignment))
+        } else {
+            None
+        }
+    }
+
     pub(crate) fn refresh_dll_status(&mut self) {
         self.oodle_configured = check_oodle_dll_configured(&self.oodle_dll_path);
         self.nvtt_configured = check_nvtt_dll_configured(&self.nvtt_dll_path);
+        self.custom_dat_alignment = sanitize_custom_dat_alignment(self.custom_dat_alignment);
     }
 }
 
@@ -87,6 +111,8 @@ impl Default for StudioSettings {
             nvtt_configured: false,
             pkz_default_compression: "ZStandard".to_string(),
             pkz_default_level: DEFAULT_ZSTD_LEVEL,
+            force_custom_dat_alignment: false,
+            custom_dat_alignment: DEFAULT_CUSTOM_DAT_ALIGNMENT,
             core_dat_b1: String::new(),
             core_dat_b2: String::new(),
             core_dat_b3: String::new(),
@@ -188,6 +214,7 @@ pub(crate) fn load_settings_from_disk() -> StudioSettings {
             }
             s.pkz_default_level =
                 clamp_compression_level(&s.pkz_default_compression, s.pkz_default_level);
+            s.custom_dat_alignment = sanitize_custom_dat_alignment(s.custom_dat_alignment);
             s.refresh_dll_status();
             return s;
         }
@@ -216,6 +243,7 @@ pub fn save_studio_settings(
 ) -> Result<StudioSettings, String> {
     settings.oodle_dll_path = validate_optional_dll_setting(&settings.oodle_dll_path)?;
     settings.nvtt_dll_path = validate_optional_dll_setting(&settings.nvtt_dll_path)?;
+    settings.custom_dat_alignment = sanitize_custom_dat_alignment(settings.custom_dat_alignment);
     settings.refresh_dll_status();
     settings.pkz_default_level = clamp_compression_level(
         &settings.pkz_default_compression,

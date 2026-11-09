@@ -1,6 +1,7 @@
 use crate::settings::{load_settings_from_disk, save_settings_to_disk, StudioSettings};
 use crate::vfs::{build_outline_from_session, DocumentOutline};
 use pgtools_core::{
+    dat::DatFile,
     scene::UidMap,
     scene_ops::WmbClipboardData,
     wtb::WtbFile,
@@ -50,6 +51,46 @@ impl DocSnapshot {
             Self::SingleFile(b) => b.len(),
             Self::SplitWtaWtp { wta, wtp } => wta.len() + wtp.len(),
             Self::PairedDatDtt { dat, dtt } => dat.len() + dtt.len(),
+        }
+    }
+
+    /// Apply forced custom DAT save alignment (`Some(align)`) to top-level `DAT` / `PairedDatDtt`
+    /// snapshots at save time. When `custom_align` is `None`, returns `self.clone()` untouched so
+    /// in-memory batch alignments are preserved and clean/already-aligned archives are not re-serialized.
+    pub(crate) fn apply_dat_save_alignment(&self, custom_align: Option<usize>) -> Self {
+        let Some(align) = custom_align else {
+            return self.clone();
+        };
+        match self {
+            Self::SingleFile(bytes) => {
+                if bytes.len() >= 0x20 && (&bytes[0..4] == b"DAT\0" || &bytes[0..4] == b"\0TAD") {
+                    if let Ok(dat) = DatFile::from_bytes(bytes) {
+                        return Self::SingleFile(Arc::new(dat.to_bytes_with_alignment(Some(align))));
+                    }
+                }
+                self.clone()
+            }
+            Self::PairedDatDtt { dat, dtt } => {
+                let next_dat = if dat.len() >= 0x20 && (&dat[0..4] == b"DAT\0" || &dat[0..4] == b"\0TAD") {
+                    DatFile::from_bytes(dat)
+                        .map(|d| Arc::new(d.to_bytes_with_alignment(Some(align))))
+                        .unwrap_or_else(|_| dat.clone())
+                } else {
+                    dat.clone()
+                };
+                let next_dtt = if dtt.len() >= 0x20 && (&dtt[0..4] == b"DAT\0" || &dtt[0..4] == b"\0TAD") {
+                    DatFile::from_bytes(dtt)
+                        .map(|d| Arc::new(d.to_bytes_with_alignment(Some(align))))
+                        .unwrap_or_else(|_| dtt.clone())
+                } else {
+                    dtt.clone()
+                };
+                Self::PairedDatDtt {
+                    dat: next_dat,
+                    dtt: next_dtt,
+                }
+            }
+            Self::SplitWtaWtp { .. } => self.clone(),
         }
     }
 }
@@ -454,7 +495,7 @@ pub fn save_document(
 ) -> Result<DocumentOutline, String> {
     // Snapshot under the lock, then drop it for the duration of disk I/O so other
     // commands (preview, list, undo) are not blocked on large document saves.
-    let (dest, snap, expected_revision) = {
+    let (dest, raw_snap, expected_revision, dat_align) = {
         let sess = lock_session(&state);
         let dest = output_path
             .map(PathBuf::from)
@@ -465,8 +506,15 @@ pub fn save_document(
             .as_ref()
             .ok_or("No active document loaded")?
             .clone();
-        (dest, snap, sess.current_revision)
+        (
+            dest,
+            snap,
+            sess.current_revision,
+            sess.settings.effective_dat_alignment(),
+        )
     };
+
+    let snap = raw_snap.apply_dat_save_alignment(dat_align);
 
     let mut paired_wtp: Option<PathBuf> = None;
     let mut paired_dtt: Option<PathBuf> = None;
@@ -496,6 +544,7 @@ pub fn save_document(
         if let Some(p) = paired_dtt {
             sess.dtt_path = Some(p);
         }
+        sess.current = Some(snap.clone());
         sess.saved_snapshot = Some(snap);
         sess.saved_revision = expected_revision;
         sess.dirty = false;

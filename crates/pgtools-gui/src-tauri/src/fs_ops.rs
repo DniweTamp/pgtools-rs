@@ -1,4 +1,4 @@
-use crate::session::{atomic_write_file, lock_session, AppState};
+use crate::session::{atomic_write_file, lock_session, record_mutation, AppState, DocSnapshot};
 use crate::settings::save_settings_to_disk;
 use crate::vfs::{is_supported_extension, resolve_subblob, split_container_and_leaf};
 use pgtools_core::{
@@ -532,12 +532,23 @@ pub fn run_file_context_operation(
             }
         }
         "repack_folder_dat" => {
+            let dat_align = lock_session(&state).settings.effective_dat_alignment();
             let (dat, orig_ext) = DatFile::create_from_dir(&p).map_err(|e| e.to_string())?;
             let out_file = dest_path
                 .map(PathBuf::from)
                 .unwrap_or_else(|| parent.join(format!("{stem}{orig_ext}")));
-            fs::write(&out_file, dat.to_bytes()).map_err(|e| e.to_string())?;
-            Ok(format!("Repacked folder into {}", out_file.display()))
+            fs::write(&out_file, dat.to_bytes_with_alignment(dat_align))
+                .map_err(|e| e.to_string())?;
+            if let Some(al) = dat_align {
+                Ok(format!(
+                    "Repacked folder into {} (custom alignment: {} B / 0x{:X})",
+                    out_file.display(),
+                    al,
+                    al
+                ))
+            } else {
+                Ok(format!("Repacked folder into {}", out_file.display()))
+            }
         }
         "repack_folder_pkz" => {
             let (default_codec, default_level) = {
@@ -978,4 +989,293 @@ pub fn pack_folder_to_pkz(
         total_raw,
         pkz_bytes.len()
     ))
+}
+
+
+
+
+#[allow(clippy::too_many_arguments)]
+#[tauri::command]
+pub fn run_batch_dat_align_action(
+    source_mode: String,
+    folder_path: Option<String>,
+    file_paths: Option<Vec<String>>,
+    recursive: bool,
+    pair_dtt: bool,
+    custom_align: Option<usize>,
+    per_type_default: bool,
+    align_nested: bool,
+    output_folder: Option<String>,
+    state: State<'_, AppState>,
+) -> Result<crate::texture_cmd::BatchOperationReport, String> {
+    let target_align: Option<usize> = if per_type_default {
+        None
+    } else {
+        let val = custom_align.unwrap_or(pgtools_core::dat::DEFAULT_CUSTOM_DAT_ALIGNMENT);
+        let validated =
+            pgtools_core::dat::validate_custom_dat_alignment(val).map_err(|e| e.to_string())?;
+        Some(validated)
+    };
+
+    let align_label = match target_align {
+        Some(al) => format!("{al} B (0x{al:X})"),
+        None => "per-file-type default".to_string(),
+    };
+
+    if source_mode == "current" {
+        let mut sess = lock_session(&state);
+        let cur_snap = sess.current.clone().ok_or("No active document loaded")?;
+        let oodle_path = sess.settings.oodle_dll_path.clone();
+        let oodle_opt = if oodle_path.is_empty() {
+            None
+        } else {
+            Some(Path::new(oodle_path.as_str()))
+        };
+
+        let mut log_lines = Vec::new();
+        let mut converted = 0usize;
+        let mut skipped = 0usize;
+
+        let next_snap = match &cur_snap {
+            DocSnapshot::SingleFile(bytes) => {
+                if bytes.len() >= 0x20 && (&bytes[0..4] == b"DAT\0" || &bytes[0..4] == b"\0TAD") {
+                    let old_len = bytes.len();
+                    let (realigned, entries, nested_cnt) =
+                        DatFile::realign_bytes(bytes, target_align, align_nested)
+                            .map_err(|e| e.to_string())?;
+                    converted += 1;
+                    let nested_note = if nested_cnt > 0 {
+                        format!(", {nested_cnt} nested .dat")
+                    } else {
+                        String::new()
+                    };
+                    log_lines.push(format!(
+                        "[Document] ({entries} entries{nested_note}): {old_len} B -> {} B [align: {align_label}]",
+                        realigned.len()
+                    ));
+                    DocSnapshot::single(realigned)
+                } else if bytes.len() >= 4 && (&bytes[0..4] == b"pkzl" || &bytes[0..4] == b"PKZL" || &bytes[0..4] == b"PKZB") {
+                    let pkz = PkzArchive::from_bytes(bytes).map_err(|e| e.to_string())?;
+                    let oodle_lib = OodleLibrary::load(oodle_opt).ok();
+                    let mut replacements = std::collections::HashMap::new();
+                    for (idx, desc) in pkz.descriptors.iter().enumerate() {
+                        let ext = Path::new(&desc.name)
+                            .extension()
+                            .and_then(|e| e.to_str())
+                            .unwrap_or("")
+                            .to_ascii_lowercase();
+                        if !pair_dtt && ext == "dtt" {
+                            skipped += 1;
+                            continue;
+                        }
+                        if matches!(ext.as_str(), "dat" | "dtt" | "evn") {
+                            if let Ok(entry_bytes) = pkz.extract_entry_with_lib(bytes, idx, oodle_lib.as_ref()) {
+                                if let Ok((realigned, entries, nested_cnt)) =
+                                    DatFile::realign_bytes(&entry_bytes, target_align, align_nested)
+                                {
+                                    log_lines.push(format!(
+                                        "[PKZ #{}] {} ({entries} entries{}): {} B -> {} B [align: {align_label}]",
+                                        idx,
+                                        desc.name,
+                                        if nested_cnt > 0 { format!(", +{nested_cnt} nested") } else { String::new() },
+                                        entry_bytes.len(),
+                                        realigned.len()
+                                    ));
+                                    replacements.insert(idx, realigned);
+                                    converted += 1;
+                                } else {
+                                    skipped += 1;
+                                }
+                            }
+                        }
+                    }
+                    if replacements.is_empty() {
+                        return Err("No .dat / .dtt / .evn entries found inside active PKZ archive".into());
+                    }
+                    let repacked = pkz
+                        .repack_with_replacements(bytes, &replacements, &[], &[], None, None, oodle_opt)
+                        .map_err(|e| e.to_string())?;
+                    DocSnapshot::single(repacked)
+                } else {
+                    return Err("Active document is not a .dat / .dtt / .evn archive (or .pkz containing .dat files)".into());
+                }
+            }
+            DocSnapshot::PairedDatDtt { dat, dtt } => {
+                let (new_dat, dat_entries, dat_nested) =
+                    DatFile::realign_bytes(dat, target_align, align_nested)
+                        .map_err(|e| e.to_string())?;
+                converted += 1;
+                log_lines.push(format!(
+                    "[Document .dat] ({dat_entries} entries{}): {} B -> {} B [align: {align_label}]",
+                    if dat_nested > 0 { format!(", +{dat_nested} nested") } else { String::new() },
+                    dat.len(),
+                    new_dat.len()
+                ));
+                let new_dtt = if pair_dtt {
+                    let (nd, dtt_entries, dtt_nested) =
+                        DatFile::realign_bytes(dtt, target_align, align_nested)
+                            .map_err(|e| e.to_string())?;
+                    converted += 1;
+                    log_lines.push(format!(
+                        "[Document .dtt] ({dtt_entries} entries{}): {} B -> {} B [align: {align_label}]",
+                        if dtt_nested > 0 { format!(", +{dtt_nested} nested") } else { String::new() },
+                        dtt.len(),
+                        nd.len()
+                    ));
+                    nd
+                } else {
+                    skipped += 1;
+                    dtt.as_ref().clone()
+                };
+                DocSnapshot::paired(new_dat, new_dtt)
+            }
+            DocSnapshot::SplitWtaWtp { .. } => {
+                return Err("Active document is a WTA/WTP texture bank, not a DAT archive".into());
+            }
+        };
+
+        sess.invalidate_texture_caches();
+        record_mutation(
+            &mut sess,
+            format!("Batch DAT align ({align_label})"),
+            next_snap,
+        );
+        let updated_outline = Some( crate::vfs::build_outline_from_session(&sess)? );
+        log_lines.push(format!(
+            "Done: re-aligned {converted} archive(s) in current document to {align_label}."
+        ));
+        return Ok(crate::texture_cmd::BatchOperationReport {
+            files_processed: converted + skipped,
+            converted,
+            skipped,
+            log_lines,
+            updated_outline,
+        });
+    }
+
+    let out_root_opt = output_folder
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty())
+        .map(PathBuf::from);
+
+    let targets: Vec<(PathBuf, Option<PathBuf>)> = if source_mode == "files" {
+        let raw_list = file_paths.unwrap_or_default();
+        if raw_list.is_empty() {
+            return Err("No target .dat / .dtt / .evn files selected".into());
+        }
+        let path_vec: Vec<PathBuf> = raw_list
+            .into_iter()
+            .map(|s| PathBuf::from(s.trim()))
+            .filter(|p| p.is_file())
+            .collect();
+        pgtools_core::dat::collect_dat_targets(&path_vec, false, pair_dtt, false, out_root_opt.as_deref())
+    } else {
+        let folder_str = folder_path.ok_or("Missing source folder path")?;
+        let root_dir = PathBuf::from(folder_str.trim());
+        if !root_dir.is_dir() {
+            return Err(format!("Folder does not exist: {}", root_dir.display()));
+        }
+        if let Some(ref out_root) = out_root_opt {
+            let root_canon = fs::canonicalize(&root_dir).unwrap_or_else(|_| root_dir.clone());
+            let out_canon = if out_root.exists() {
+                fs::canonicalize(out_root).unwrap_or_else(|_| out_root.clone())
+            } else {
+                out_root.clone()
+            };
+            if root_canon == out_canon {
+                return Err(
+                    "Custom output folder cannot be the same as the source folder (select 'Overwrite existing files' or choose a different output folder)"
+                        .into(),
+                );
+            }
+        }
+        pgtools_core::dat::collect_dat_targets(
+            std::slice::from_ref(&root_dir),
+            recursive,
+            pair_dtt,
+            false,
+            out_root_opt.as_deref(),
+        )
+    };
+
+    if let Some(ref out_root) = out_root_opt {
+        fs::create_dir_all(out_root).map_err(|e| e.to_string())?;
+    }
+
+    let mut converted = 0usize;
+    let mut skipped = 0usize;
+    let mut log_lines = Vec::new();
+
+    for (idx, (file_path, base_root)) in targets.iter().enumerate() {
+        let fname = file_path
+            .file_name()
+            .and_then(|s| s.to_str())
+            .unwrap_or("archive.dat");
+        let Ok(raw) = fs::read(file_path) else {
+            skipped += 1;
+            log_lines.push(format!("[{}/{}] {fname}: failed to read file", idx + 1, targets.len()));
+            continue;
+        };
+        let old_len = raw.len();
+        match DatFile::realign_bytes(&raw, target_align, align_nested) {
+            Ok((realigned, entries, nested_cnt)) => {
+                let dest_file = if let Some(ref out_root) = out_root_opt {
+                    let rel = if let Some(root) = base_root {
+                        file_path
+                            .strip_prefix(root)
+                            .map(|p| p.to_path_buf())
+                            .unwrap_or_else(|_| PathBuf::from(fname))
+                    } else {
+                        PathBuf::from(fname)
+                    };
+                    out_root.join(rel)
+                } else {
+                    file_path.clone()
+                };
+                match atomic_write_file(&dest_file, &realigned) {
+                    Ok(()) => {
+                        converted += 1;
+                        let delta = (realigned.len() as isize) - (old_len as isize);
+                        let delta_str = if delta >= 0 {
+                            format!("+{delta} B")
+                        } else {
+                            format!("{delta} B")
+                        };
+                        let nested_str = if nested_cnt > 0 {
+                            format!(", +{nested_cnt} nested .dat")
+                        } else {
+                            String::new()
+                        };
+                        log_lines.push(format!(
+                            "[{}/{}] {fname} ({entries} entries{nested_str}): {old_len} B -> {} B ({delta_str}) [align: {align_label}]",
+                            idx + 1,
+                            targets.len(),
+                            realigned.len()
+                        ));
+                    }
+                    Err(err) => {
+                        skipped += 1;
+                        log_lines.push(format!("[{}/{}] {fname}: write error ({err})", idx + 1, targets.len()));
+                    }
+                }
+            }
+            Err(err) => {
+                skipped += 1;
+                log_lines.push(format!("[{}/{}] {fname}: skipped ({err})", idx + 1, targets.len()));
+            }
+        }
+    }
+
+    log_lines.push(format!(
+        "Done: scanned {} archive(s), re-aligned {converted}, skipped {skipped} (alignment: {align_label}).",
+        targets.len()
+    ));
+
+    Ok(crate::texture_cmd::BatchOperationReport {
+        files_processed: targets.len(),
+        converted,
+        skipped,
+        log_lines,
+        updated_outline: None,
+    })
 }

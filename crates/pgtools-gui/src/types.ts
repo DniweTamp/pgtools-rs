@@ -14,6 +14,8 @@ export interface StudioSettings {
   nvtt_configured?: boolean;
   pkz_default_compression?: string;
   pkz_default_level?: number;
+  force_custom_dat_alignment?: boolean;
+  custom_dat_alignment?: number;
   core_dat_b1: string;
   core_dat_b2: string;
   core_dat_b3: string;

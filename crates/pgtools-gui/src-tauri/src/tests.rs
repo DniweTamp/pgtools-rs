@@ -362,3 +362,61 @@ fn switch_xt1_flags_and_batch_replace_stem_parsing() {
     let parsed = WtbFile::from_bytes(&bytes, None).expect("parse empty WTB");
     assert_eq!(parsed.entries.len(), 0);
 }
+
+
+#[test]
+fn dat_custom_alignment_settings_and_snapshot_override() {
+    use crate::settings::StudioSettings;
+    use crate::vfs::write_back_subblob_with_align;
+    use pgtools_core::dat::{DatFile, DEFAULT_CUSTOM_DAT_ALIGNMENT};
+
+    let def_settings = StudioSettings::default();
+    assert!(!def_settings.force_custom_dat_alignment);
+    assert_eq!(def_settings.custom_dat_alignment, DEFAULT_CUSTOM_DAT_ALIGNMENT);
+    assert_eq!(def_settings.effective_dat_alignment(), None);
+
+    let mut forced_settings = StudioSettings::default();
+    forced_settings.force_custom_dat_alignment = true;
+    assert_eq!(
+        forced_settings.effective_dat_alignment(),
+        Some(DEFAULT_CUSTOM_DAT_ALIGNMENT)
+    );
+
+    let mut dat = DatFile::new(pgtools_core::io::Endian::Little);
+    dat.push("pl0010.wmb", vec![0xAA; 120]).unwrap();
+    dat.push("pl0010.wta", vec![0xBB; 60]).unwrap();
+    let snap = DocSnapshot::single(dat.to_bytes());
+
+    let aligned_snap =
+        snap.apply_dat_save_alignment(Some(DEFAULT_CUSTOM_DAT_ALIGNMENT));
+    // Saving when custom_align is None must preserve existing in-memory custom alignment
+    let preserved_snap = aligned_snap.apply_dat_save_alignment(None);
+    if let DocSnapshot::SingleFile(b) = &preserved_snap {
+        let offs = DatFile::read_entry_offsets(b).unwrap();
+        assert_eq!(offs[0] % DEFAULT_CUSTOM_DAT_ALIGNMENT, 0);
+        assert_eq!(offs[1] % DEFAULT_CUSTOM_DAT_ALIGNMENT, 0);
+    }
+    if let DocSnapshot::SingleFile(b) = &aligned_snap {
+        let offs = DatFile::read_entry_offsets(b).unwrap();
+        assert_eq!(offs[0] % DEFAULT_CUSTOM_DAT_ALIGNMENT, 0);
+        assert_eq!(offs[1] % DEFAULT_CUSTOM_DAT_ALIGNMENT, 0);
+        assert_eq!(b.len() % DEFAULT_CUSTOM_DAT_ALIGNMENT, 0);
+    } else {
+        panic!("expected SingleFile snapshot");
+    }
+
+    let wb_snap = write_back_subblob_with_align(
+        &snap,
+        &["dat:0"],
+        vec![0xCC; 200],
+        None,
+        None,
+        Some(DEFAULT_CUSTOM_DAT_ALIGNMENT),
+    )
+    .expect("write_back_subblob_with_align");
+    if let DocSnapshot::SingleFile(b) = &wb_snap {
+        let offs = DatFile::read_entry_offsets(b).unwrap();
+        assert_eq!(offs[0] % DEFAULT_CUSTOM_DAT_ALIGNMENT, 0);
+        assert_eq!(offs[1] % DEFAULT_CUSTOM_DAT_ALIGNMENT, 0);
+    }
+}

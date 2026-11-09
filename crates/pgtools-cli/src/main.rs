@@ -2,7 +2,7 @@
 //!
 //! Provides clean subcommands for every format operation (`dat`, `pkz`, `eff`, `scr`, `wtx`, `wtb`,
 //! `wmb`, `mot`, `exp`, `bxm`, `cloth`, `inspect`) AND supports busybox-style `argv[0]` multicall
-//! dispatch so symlinking `dat_extractor`, `dat_creator`, `bxm_decoder`, `wmb_cleanup`, etc. to
+//! dispatch so symlinking `dat_extractor`, `dat_creator`, `dat_align`, `bxm_decoder`, `wmb_cleanup`, etc. to
 //! `pgtools` works as a drop-in replacement for existing batch scripts.
 
 use anyhow::{Context, Result};
@@ -10,15 +10,15 @@ use clap::{Parser, Subcommand};
 use pgtools_core::{
     bxm::BxmFile,
     cloth::{ClhFile, ClpFile, ClwFile},
-    dat::DatFile,
+    dat::{collect_dat_targets, parse_dat_alignment, DatFile, DEFAULT_CUSTOM_DAT_ALIGNMENT},
+    demo::build_demo_dat,
     eff::EffFile,
     exp::ExpFile,
     io::Endian,
     mot::MotFile,
     pkz::PkzArchive,
-    scr::ScrFile,
-    demo::build_demo_dat,
     scene::{build_wmb3_scene, build_wmb_scene, fnv1a_64_hex, TextureRefDesc, UidMap},
+    scr::ScrFile,
     texture_conv::decode_dds_to_rgba8,
     wmb::WmbFile,
     wmb3::Wmb3File,
@@ -50,9 +50,60 @@ enum Commands {
     },
     /// Repack an extracted directory into a .dat / .dtt archive (replaces `dat_creator`)
     DatCreate {
-        input_dir: PathBuf,
+        input_dir: Option<PathBuf>,
         #[arg(short, long)]
         output: Option<PathBuf>,
+        /// Override per-file-type alignment with a custom byte alignment (defaults to 2048 if passed without a value; accepts decimal like 2048, hex like 0x800, or 'default')
+        #[arg(
+            short,
+            long,
+            num_args = 0..=1,
+            default_missing_value = "2048"
+        )]
+        align: Option<String>,
+    },
+    /// Re-align one or more .dat / .dtt / .evn archives or folders (custom override defaults to 2048; replaces `dat_align`)
+    DatAlign {
+        /// One or more .dat / .dtt / .evn files or folders to re-align
+        #[arg(required = true)]
+        targets: Vec<PathBuf>,
+        /// Custom byte alignment override (defaults to 2048; accepts decimal like 2048, hex like 0x800, or 'default' for per-file-type alignment)
+        #[arg(short, long, default_value = "2048")]
+        align: String,
+        /// Optional output file (when a single input file is given) or output directory (defaults to rewriting in place)
+        #[arg(short, long)]
+        output: Option<PathBuf>,
+        /// Recurse into subdirectories when a target is a folder (accepts true/false, or use --no-recursive)
+        #[arg(
+            short,
+            long,
+            default_value_t = true,
+            num_args = 0..=1,
+            default_missing_value = "true",
+            action = clap::ArgAction::Set
+        )]
+        recursive: bool,
+        /// Do not recurse into subdirectories when a target is a folder
+        #[arg(long, default_value_t = false)]
+        no_recursive: bool,
+        /// Also re-align nested .dat / .dtt archives stored inside outer DAT containers
+        #[arg(long, default_value_t = false)]
+        nested: bool,
+        /// Restore standard per-file-type alignment (.dat=0x2000, .wmb/.wtb/.wtp/.exp/.eff/.sdx=0x1000, .wta/.sop/.bxm=0x40, *=0x10)
+        #[arg(long, default_value_t = false)]
+        per_type_default: bool,
+        /// Automatically include sibling .dtt archives when a .dat file is specified (accepts true/false, or use --no-pair-dtt)
+        #[arg(
+            long,
+            default_value_t = true,
+            num_args = 0..=1,
+            default_missing_value = "true",
+            action = clap::ArgAction::Set
+        )]
+        pair_dtt: bool,
+        /// Do not automatically include sibling .dtt archives
+        #[arg(long, default_value_t = false)]
+        no_pair_dtt: bool,
     },
     /// List files inside a .dat / .dtt archive or directory (replaces `dat_ls`)
     DatLs {
@@ -279,7 +330,7 @@ fn load_bone_map_from_path_or_dat(path: &Path) -> Result<std::collections::BTree
     }
 }
 
-/// Resolve busybox-style `argv[0]` symlink/binary names (`dat_extractor`, `dat_creator`,
+/// Resolve busybox-style `argv[0]` symlink/binary names (`dat_extractor`, `dat_creator`, `dat_align`,
 /// `bxm_decoder`, `wmb_cleanup`, etc.) into canonical `pgtools <subcommand>` arguments.
 fn resolve_multicall_args() -> Vec<std::ffi::OsString> {
     let args: Vec<std::ffi::OsString> = std::env::args_os().collect();
@@ -296,6 +347,7 @@ fn resolve_multicall_args() -> Vec<std::ffi::OsString> {
     let mapped: Option<&[&str]> = match bin_stem.as_str() {
         "dat_extractor" => Some(&["dat-extract"]),
         "dat_creator" => Some(&["dat-create"]),
+        "dat_align" => Some(&["dat-align"]),
         "dat_ls" => Some(&["dat-ls"]),
         "pkz_extractor" => Some(&["pkz-extract"]),
         "pkz_creator" => Some(&["pkz-create"]),
@@ -365,7 +417,18 @@ fn main() -> Result<()> {
                 println!("Extracted {} files to {}", dat.entries.len(), dest.display());
             }
         }
-        Commands::DatCreate { input_dir, output } => {
+        Commands::DatCreate {
+            input_dir,
+            output,
+            align,
+        } => {
+            // Handle `pgtools dat-create --align <input_dir>` where clap assigns `<input_dir>` to `align`
+            let (input_dir, custom_align) = match (input_dir, align) {
+                (Some(dir), Some(ref s)) => (dir, parse_dat_alignment(s)?),
+                (Some(dir), None) => (dir, None),
+                (None, Some(s)) => (PathBuf::from(s), Some(DEFAULT_CUSTOM_DAT_ALIGNMENT)),
+                (None, None) => anyhow::bail!("Missing required <INPUT_DIR> argument for dat-create"),
+            };
             let (dat, ext) = DatFile::create_from_dir(&input_dir)?;
             let out_path = if let Some(o) = output {
                 o
@@ -380,8 +443,135 @@ fn main() -> Result<()> {
                 let base = dir_name.trim_end_matches(&suffix);
                 out_dir.join(format!("{base}{ext}"))
             };
-            fs::write(&out_path, dat.to_bytes())?;
-            println!("Created DAT archive at {}", out_path.display());
+            let bytes = dat.to_bytes_with_alignment(custom_align);
+            fs::write(&out_path, bytes)?;
+            if let Some(al) = custom_align {
+                println!(
+                    "Created DAT archive at {} (custom alignment: {} B / 0x{:X})",
+                    out_path.display(),
+                    al,
+                    al
+                );
+            } else {
+                println!("Created DAT archive at {}", out_path.display());
+            }
+        }
+        Commands::DatAlign {
+            targets,
+            align,
+            output,
+            recursive,
+            no_recursive,
+            nested,
+            per_type_default,
+            pair_dtt,
+            no_pair_dtt,
+        } => {
+            let effective_recursive = recursive && !no_recursive;
+            let effective_pair_dtt = pair_dtt && !no_pair_dtt;
+            let custom_align = if per_type_default {
+                None
+            } else if align.trim().is_empty() {
+                Some(DEFAULT_CUSTOM_DAT_ALIGNMENT)
+            } else {
+                parse_dat_alignment(&align)?
+            };
+            let align_label = match custom_align {
+                Some(al) => format!("{al} B / 0x{al:X}"),
+                None => "per-file-type default".to_string(),
+            };
+
+            let single_file_output = targets.len() == 1
+                && targets[0].is_file()
+                && output
+                    .as_ref()
+                    .and_then(|o| o.extension())
+                    .is_some();
+
+            let exclude_dir = if !single_file_output {
+                output.as_deref()
+            } else {
+                None
+            };
+            let files = collect_dat_targets(
+                &targets,
+                effective_recursive,
+                effective_pair_dtt,
+                single_file_output,
+                exclude_dir,
+            );
+            if files.is_empty() {
+                anyhow::bail!("No .dat, .dtt, or .evn files found in specified target(s)");
+            }
+
+            let mut processed = 0usize;
+            let mut total_nested = 0usize;
+            for (idx, (file_path, base_root)) in files.iter().enumerate() {
+                let raw = fs::read(file_path)
+                    .with_context(|| format!("Failed to read {}", file_path.display()))?;
+                let old_len = raw.len();
+                let (realigned, entry_count, nested_count) =
+                    DatFile::realign_bytes(&raw, custom_align, nested)
+                        .with_context(|| format!("Failed to re-align {}", file_path.display()))?;
+                let new_len = realigned.len();
+
+                let dest_path = if let Some(ref out) = output {
+                    if single_file_output && files.len() == 1 {
+                        if let Some(p) = out.parent() {
+                            fs::create_dir_all(p)?;
+                        }
+                        out.clone()
+                    } else {
+                        let rel = if let Some(root) = base_root {
+                            file_path
+                                .strip_prefix(root)
+                                .map(|p| p.to_path_buf())
+                                .unwrap_or_else(|_| {
+                                    PathBuf::from(file_path.file_name().unwrap_or_default())
+                                })
+                        } else {
+                            PathBuf::from(file_path.file_name().unwrap_or_default())
+                        };
+                        let dst = out.join(rel);
+                        if let Some(p) = dst.parent() {
+                            fs::create_dir_all(p)?;
+                        }
+                        dst
+                    }
+                } else {
+                    file_path.clone()
+                };
+
+                fs::write(&dest_path, &realigned)
+                    .with_context(|| format!("Failed to write {}", dest_path.display()))?;
+                processed += 1;
+                total_nested += nested_count;
+
+                let nested_note = if nested_count > 0 {
+                    format!(", {nested_count} nested .dat re-aligned")
+                } else {
+                    String::new()
+                };
+                println!(
+                    "[{}/{}] {} ({} entries{}): {} B -> {} B (align: {})",
+                    idx + 1,
+                    files.len(),
+                    dest_path.display(),
+                    entry_count,
+                    nested_note,
+                    old_len,
+                    new_len,
+                    align_label
+                );
+            }
+
+            if total_nested > 0 {
+                println!(
+                    "Re-aligned {processed} DAT archive(s) and {total_nested} nested DAT entry(s) (alignment: {align_label})."
+                );
+            } else {
+                println!("Re-aligned {processed} DAT archive(s) (alignment: {align_label}).");
+            }
         }
         Commands::DatLs { target, yaml } => {
             let mut list = Vec::new();

@@ -31,6 +31,11 @@ pub mod wmb;
 pub mod wmb3;
 pub mod wtb;
 
+pub use dat::{
+    collect_dat_targets, dat_alignment_for_ext, parse_dat_alignment, validate_custom_dat_alignment,
+    DatEntry, DatFile, DatHashMap, DEFAULT_CUSTOM_DAT_ALIGNMENT, MAX_CUSTOM_DAT_ALIGNMENT,
+};
+
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 

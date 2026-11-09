@@ -141,6 +141,7 @@ fn main() {
             formats_cmd::mutate_cloth_node,
             vfs::mutate_container_node,
             fs_ops::run_file_context_operation,
+            fs_ops::run_batch_dat_align_action,
             fs_ops::pack_folder_to_pkz,
             fs_ops::fs_batch_operation,
             wmb_scene::get_wmb_scene,

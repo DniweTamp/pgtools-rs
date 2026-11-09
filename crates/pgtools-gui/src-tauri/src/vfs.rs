@@ -1095,12 +1095,24 @@ pub(crate) fn update_matching_wtp_in_dat(
 
 /// Replace a modified child byte buffer back up the entire nested container hierarchy
 /// (`PKZ <-> DAT/DTT <-> EFF/IDD <-> SCR <-> WTB/WMB/WMB3/EST/BXM/CSV`) and return the updated `DocSnapshot`.
+#[cfg(test)]
 pub(crate) fn write_back_subblob(
     snap: &DocSnapshot,
     container_parts: &[&str],
     new_bytes: Vec<u8>,
     new_wtp: Option<Vec<u8>>,
     oodle_dll: Option<&Path>,
+) -> Result<DocSnapshot, String> {
+    write_back_subblob_with_align(snap, container_parts, new_bytes, new_wtp, oodle_dll, None)
+}
+
+pub(crate) fn write_back_subblob_with_align(
+    snap: &DocSnapshot,
+    container_parts: &[&str],
+    new_bytes: Vec<u8>,
+    new_wtp: Option<Vec<u8>>,
+    oodle_dll: Option<&Path>,
+    dat_align: Option<usize>,
 ) -> Result<DocSnapshot, String> {
     if container_parts.is_empty() {
         return Ok(match (snap, new_wtp) {
@@ -1139,12 +1151,13 @@ pub(crate) fn write_back_subblob(
                     .data
                     .clone();
                 let entry_name = parsed_dat.entries[entry_idx].name.clone();
-                let updated_child = write_back_subblob(
+                let updated_child = write_back_subblob_with_align(
                     &DocSnapshot::single(child_orig),
                     &rest[1..],
                     new_bytes.clone(),
                     new_wtp.clone(),
                     oodle_dll,
+                    dat_align,
                 )?;
                 if let DocSnapshot::SingleFile(cb) = updated_child {
                     parsed_dat.entries[entry_idx].data = cb.as_ref().clone();
@@ -1168,9 +1181,9 @@ pub(crate) fn write_back_subblob(
                     }
                 }
                 return Ok(DocSnapshot::PairedDatDtt {
-                    dat: Arc::new(parsed_dat.to_bytes()),
+                    dat: Arc::new(parsed_dat.to_bytes_with_alignment(dat_align)),
                     dtt: if dtt_modified {
-                        Arc::new(parsed_dtt.to_bytes())
+                        Arc::new(parsed_dtt.to_bytes_with_alignment(dat_align))
                     } else {
                         dtt.clone()
                     },
@@ -1187,12 +1200,13 @@ pub(crate) fn write_back_subblob(
                     dtt: Arc::new(new_bytes),
                 });
             }
-            let updated_dtt = write_back_subblob(
+            let updated_dtt = write_back_subblob_with_align(
                 &DocSnapshot::SingleFile(dtt.clone()),
                 rest,
                 new_bytes.clone(),
                 new_wtp.clone(),
                 oodle_dll,
+                dat_align,
             )?;
             if let DocSnapshot::SingleFile(new_dtt_bytes) = updated_dtt {
                 return Ok(DocSnapshot::PairedDatDtt {
@@ -1223,12 +1237,13 @@ pub(crate) fn write_back_subblob(
             .name
             .clone();
         let child_orig = dat.entries[entry_idx].data.clone();
-        let updated_child = write_back_subblob(
+        let updated_child = write_back_subblob_with_align(
             &DocSnapshot::single(child_orig),
             rest,
             new_bytes.clone(),
             new_wtp.clone(),
             oodle_dll,
+            dat_align,
         )?;
         if let DocSnapshot::SingleFile(cb) = updated_child {
             dat.entries[entry_idx].data = cb.as_ref().clone();
@@ -1245,7 +1260,7 @@ pub(crate) fn write_back_subblob(
                                 &mut parsed_dtt,
                                 &wtp_bytes,
                             ) {
-                                updated_dtt_bytes = Some(Arc::new(parsed_dtt.to_bytes()));
+                                updated_dtt_bytes = Some(Arc::new(parsed_dtt.to_bytes_with_alignment(dat_align)));
                             }
                         }
                     }
@@ -1254,10 +1269,10 @@ pub(crate) fn write_back_subblob(
         }
         return Ok(match snap {
             DocSnapshot::PairedDatDtt { dtt, .. } => DocSnapshot::PairedDatDtt {
-                dat: Arc::new(dat.to_bytes()),
+                dat: Arc::new(dat.to_bytes_with_alignment(dat_align)),
                 dtt: updated_dtt_bytes.unwrap_or_else(|| dtt.clone()),
             },
-            _ => DocSnapshot::single(dat.to_bytes()),
+            _ => DocSnapshot::single(dat.to_bytes_with_alignment(dat_align)),
         });
     }
 
@@ -1283,12 +1298,13 @@ pub(crate) fn write_back_subblob(
                 child_parts.push("root:dat");
                 child_parts.extend_from_slice(rest);
                 let paired_snap = DocSnapshot::paired(child_orig.clone(), dtt_orig.clone());
-                let updated_paired = write_back_subblob(
+                let updated_paired = write_back_subblob_with_align(
                     &paired_snap,
                     &child_parts,
                     new_bytes.clone(),
                     new_wtp.clone(),
                     oodle_dll,
+                    dat_align,
                 )?;
                 if let DocSnapshot::PairedDatDtt {
                     dat: new_dat,
@@ -1316,12 +1332,13 @@ pub(crate) fn write_back_subblob(
             }
         }
 
-        let updated_child = write_back_subblob(
+        let updated_child = write_back_subblob_with_align(
             &DocSnapshot::single(child_orig),
             rest,
             new_bytes.clone(),
             new_wtp.clone(),
             oodle_dll,
+            dat_align,
         )?;
         if let DocSnapshot::SingleFile(cb) = updated_child {
             let mut replacements = HashMap::new();
@@ -1354,12 +1371,13 @@ pub(crate) fn write_back_subblob(
                     .ok_or("EFF entry out of bounds")?
                     .data
                     .clone();
-                let updated_child = write_back_subblob(
+                let updated_child = write_back_subblob_with_align(
                     &DocSnapshot::single(child_orig),
                     &rest[1..],
                     new_bytes.clone(),
                     new_wtp.clone(),
                     oodle_dll,
+                    dat_align,
                 )?;
                 if let DocSnapshot::SingleFile(cb) = updated_child {
                     eff.directories[d_idx].files[f_idx].data = cb.as_ref().clone();
@@ -1379,12 +1397,13 @@ pub(crate) fn write_back_subblob(
             .get(m_idx)
             .ok_or("SCR model index out of bounds")?
             .clone();
-        let updated_child = write_back_subblob(
+        let updated_child = write_back_subblob_with_align(
             &DocSnapshot::single(child_orig),
             rest,
             new_bytes.clone(),
             None,
             oodle_dll,
+            dat_align,
         )?;
         if let DocSnapshot::SingleFile(cb) = updated_child {
             scr.models[m_idx] = cb.as_ref().clone();
@@ -1827,6 +1846,7 @@ pub fn mutate_container_node(
     let snap = sess.current.clone().ok_or("No active document loaded")?;
     let oodle_settings = sess.settings.clone();
     let oodle_opt = oodle_settings.oodle_path();
+    let dat_align = oodle_settings.effective_dat_alignment();
     let payload_val = payload.unwrap_or(serde_json::Value::Null);
 
     match action.as_str() {
@@ -1849,7 +1869,7 @@ pub fn mutate_container_node(
             let mut bxm = BxmFile::from_xml_str(&xml_str, &orig_tag).map_err(|e| e.to_string())?;
             bxm.flags = orig_flags;
             let new_bytes = bxm.to_bytes(Endian::Big);
-            let next_snap = write_back_subblob(&snap, &container_parts, new_bytes, None, oodle_opt)?;
+            let next_snap = write_back_subblob_with_align(&snap, &container_parts, new_bytes, None, oodle_opt, dat_align)?;
             record_mutation(&mut sess, format!("Import XML into {node_id}"), next_snap);
             build_outline_from_session(&sess)
         }
@@ -1955,7 +1975,7 @@ pub fn mutate_container_node(
                     oodle_opt,
                 )
                 .map_err(|e| e.to_string())?;
-            let next_snap = write_back_subblob(&snap, &container_parts, repacked, None, oodle_opt)?;
+            let next_snap = write_back_subblob_with_align(&snap, &container_parts, repacked, None, oodle_opt, dat_align)?;
             if let Some(lvl) = requested_level {
                 sess.settings.pkz_default_compression = requested_codec.to_string();
                 sess.settings.pkz_default_level = lvl;
@@ -2008,7 +2028,7 @@ pub fn mutate_container_node(
                 folder_prefix.as_deref(),
             )?;
             let next_snap =
-                write_back_subblob(&snap, &container_parts, reverted_bytes, None, oodle_opt)?;
+                write_back_subblob_with_align(&snap, &container_parts, reverted_bytes, None, oodle_opt, dat_align)?;
             sess.invalidate_texture_caches();
             record_mutation(
                 &mut sess,
@@ -2329,7 +2349,7 @@ pub fn mutate_container_node(
                     ),
                 )
             };
-            let next_snap = write_back_subblob(&snap, &container_parts, repacked, None, oodle_opt)?;
+            let next_snap = write_back_subblob_with_align(&snap, &container_parts, repacked, None, oodle_opt, dat_align)?;
             sess.invalidate_texture_caches();
             record_mutation(&mut sess, desc, next_snap);
             build_outline_from_session(&sess)
@@ -2421,12 +2441,13 @@ pub fn mutate_container_node(
                             )
                             .map_err(|e| e.to_string())?;
                         container_parts.pop();
-                        let next_snap = write_back_subblob(
+                        let next_snap = write_back_subblob_with_align(
                             &snap,
                             &container_parts,
                             repacked,
                             None,
                             oodle_opt,
+                            dat_align,
                         )?;
                         sess.invalidate_texture_caches();
                         record_mutation(&mut sess, format!("Replace {entry_name}"), next_snap);
@@ -2436,7 +2457,7 @@ pub fn mutate_container_node(
             }
 
             let next_snap =
-                write_back_subblob(&snap, &container_parts, new_bytes, None, oodle_opt)?;
+                write_back_subblob_with_align(&snap, &container_parts, new_bytes, None, oodle_opt, dat_align)?;
             sess.invalidate_texture_caches();
             record_mutation(&mut sess, format!("Replace {node_id}"), next_snap);
             build_outline_from_session(&sess)
@@ -2548,7 +2569,7 @@ pub fn mutate_container_node(
                         dat.push(fname, data).map_err(|e| e.to_string())?;
                     }
                     (
-                        dat.to_bytes(),
+                        dat.to_bytes_with_alignment(dat_align),
                         format!("Add {} file(s) to DAT", paths.len()),
                     )
                 }
@@ -2744,12 +2765,13 @@ pub fn mutate_container_node(
                 other => return Err(format!("Cannot add files to container of type {other}")),
             };
 
-            let next_snap = write_back_subblob(
+            let next_snap = write_back_subblob_with_align(
                 &snap,
                 &container_parts,
                 new_container_bytes,
                 None,
                 oodle_opt,
+                dat_align,
             )?;
             sess.invalidate_texture_caches();
             record_mutation(&mut sess, desc, next_snap);
@@ -2776,7 +2798,7 @@ pub fn mutate_container_node(
                 )
                 .map_err(|e| e.to_string())?;
             let next_snap =
-                write_back_subblob(&snap, &container_parts, repacked, None, oodle_opt)?;
+                write_back_subblob_with_align(&snap, &container_parts, repacked, None, oodle_opt, dat_align)?;
             sess.invalidate_texture_caches();
             record_mutation(
                 &mut sess,
@@ -2862,7 +2884,10 @@ pub fn mutate_container_node(
                     match action.as_str() {
                         "remove_entry" => {
                             let removed = dat.entries.remove(idx);
-                            (dat.to_bytes(), format!("Remove {} from DAT", removed.name))
+                            (
+                                dat.to_bytes_with_alignment(dat_align),
+                                format!("Remove {} from DAT", removed.name),
+                            )
                         }
                         "rename_entry" => {
                             let new_name = payload_val
@@ -2878,7 +2903,10 @@ pub fn mutate_container_node(
                                 .to_string();
                             dat.entries[idx].name = new_name.clone();
                             dat.entries[idx].extension = ext;
-                            (dat.to_bytes(), format!("Rename DAT entry to {new_name}"))
+                            (
+                                dat.to_bytes_with_alignment(dat_align),
+                                format!("Rename DAT entry to {new_name}"),
+                            )
                         }
                         "reorder_entry" => {
                             let to_idx =
@@ -2886,7 +2914,7 @@ pub fn mutate_container_node(
                             let item = dat.entries.remove(idx);
                             dat.entries.insert(to_idx, item);
                             (
-                                dat.to_bytes(),
+                                dat.to_bytes_with_alignment(dat_align),
                                 format!("Reorder DAT entry #{idx} -> #{to_idx}"),
                             )
                         }
@@ -3015,12 +3043,13 @@ pub fn mutate_container_node(
                     return Err(format!("Unsupported entry segment '{last_seg}' for {action}"));
                 };
 
-            let next_snap = write_back_subblob(
+            let next_snap = write_back_subblob_with_align(
                 &snap,
                 &container_parts,
                 new_parent_bytes,
                 None,
                 oodle_opt,
+                dat_align,
             )?;
             sess.invalidate_texture_caches();
             record_mutation(&mut sess, desc, next_snap);

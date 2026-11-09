@@ -32,8 +32,10 @@ import {
 } from "./bxm/xml";
 import { TextureImportModal } from "./editors/TextureEditor";
 import {
+  BatchDatAlignModal,
   BatchRecompressModal,
   BatchReplaceModal,
+  DatAlignmentSettingsModal,
   ExportTexturesModal,
   NewBankModal,
 } from "./modals/TextureBatchModals";
@@ -79,6 +81,8 @@ export default function App() {
     nvttConfigured,
     pkzDefaultCompression,
     pkzDefaultLevel,
+    forceCustomDatAlignment,
+    customDatAlignment,
     coreDatB1,
     coreDatB2,
     coreDatB3,
@@ -102,6 +106,8 @@ export default function App() {
     setNvttConfigured,
     setPkzDefaultCompression,
     setPkzDefaultLevel,
+    setForceCustomDatAlignment,
+    setCustomDatAlignment,
     setCoreDatB1,
     setCoreDatB2,
     setCoreDatB3,
@@ -129,6 +135,8 @@ export default function App() {
   const [coreDatModalOpen, setCoreDatModalOpen] = useState<boolean>(false);
   const [batchReplaceNodeId, setBatchReplaceNodeId] = useState<string | null>(null);
   const [batchRecompressOpen, setBatchRecompressOpen] = useState<boolean>(false);
+  const [batchDatAlignOpen, setBatchDatAlignOpen] = useState<boolean>(false);
+  const [datAlignSettingsOpen, setDatAlignSettingsOpen] = useState<boolean>(false);
   const [exportFolderModalOpen, setExportFolderModalOpen] = useState<boolean>(false);
   const [newBankModalOpen, setNewBankModalOpen] = useState<boolean>(false);
   const [pkzCompModal, setPkzCompModal] = useState<PkzCompressionModalState | null>(null);
@@ -532,6 +540,8 @@ export default function App() {
     nvttDllPath,
     pkzDefaultCompression,
     pkzDefaultLevel,
+    forceCustomDatAlignment,
+    customDatAlignment,
     coreDatB1,
     coreDatB2,
     coreDatB3,
@@ -1857,6 +1867,15 @@ export default function App() {
               >
                 <span>Batch recompress (ASTC to BC)...</span>
               </button>
+              <button
+                className="context-menu-item"
+                onClick={() => {
+                  setActiveTopMenu(null);
+                  setBatchDatAlignOpen(true);
+                }}
+              >
+                <span>Batch DAT custom align...</span>
+              </button>
               <div className="context-menu-sep" />
               <button
                 className="context-menu-item"
@@ -1910,6 +1929,27 @@ export default function App() {
                 )}
               </button>
               <div className="context-menu-sep" />
+              <button
+                className="context-menu-item"
+                title={
+                  forceCustomDatAlignment
+                    ? `Forcing custom DAT alignment: ${customDatAlignment} B (0x${customDatAlignment
+                        .toString(16)
+                        .toUpperCase()})`
+                    : `Default per-file-type alignment (Custom override preset: ${customDatAlignment} B)`
+                }
+                onClick={() => {
+                  setActiveTopMenu(null);
+                  setDatAlignSettingsOpen(true);
+                }}
+              >
+                <span>Configure DAT save alignment...</span>
+                {forceCustomDatAlignment && (
+                  <span className="menu-check-badge" aria-label="Custom DAT alignment active">
+                    <IconCheck />
+                  </span>
+                )}
+              </button>
               <button
                 className="context-menu-item"
                 onClick={() => {
@@ -2317,6 +2357,15 @@ export default function App() {
           {statusLeft}
         </div>
         <div className="status-right">
+          {forceCustomDatAlignment && (
+            <span
+              className="mono"
+              style={{ color: "var(--brush-accent)", fontWeight: 600 }}
+              title="Forced custom byte alignment on DAT save is enabled"
+            >
+              DAT Align: {customDatAlignment} B (0x{customDatAlignment.toString(16).toUpperCase()})
+            </span>
+          )}
           {activeTexture && <span title="Preview zoom">{Math.round(zoom * 100)}%</span>}
           <span>{outline ? outline.summary_right : "PGTools Studio"}</span>
         </div>
@@ -2426,6 +2475,44 @@ export default function App() {
             void selectAndInspectNode(selectedNodeId);
             setStatusLeft(statusMsg);
           }}
+        />
+      )}
+
+      {batchDatAlignOpen && (
+        <BatchDatAlignModal
+          hasOpenDocument={Boolean(outline)}
+          defaultFolder={currentDir}
+          onClose={() => setBatchDatAlignOpen(false)}
+          onOutlineUpdated={(updated, statusMsg) => {
+            setOutline(updated);
+            setWmbDocGeneration((g) => g + 1);
+            void selectAndInspectNode(selectedNodeId);
+            setStatusLeft(statusMsg);
+          }}
+          onDirectoryMutated={() => {
+            void loadDirectory(currentDirRef.current);
+          }}
+        />
+      )}
+
+      {datAlignSettingsOpen && (
+        <DatAlignmentSettingsModal
+          forceCustomDatAlignment={forceCustomDatAlignment}
+          customDatAlignment={customDatAlignment}
+          onChangeForceCustomDatAlignment={(val) => {
+            setForceCustomDatAlignment(val);
+            setStatusLeft(
+              val
+                ? `Enabled forced custom alignment on DAT save (${customDatAlignment} B / 0x${customDatAlignment
+                    .toString(16)
+                    .toUpperCase()})`
+                : "Restored default per-file-type alignment on DAT save"
+            );
+          }}
+          onChangeCustomDatAlignment={(val) => {
+            setCustomDatAlignment(val);
+          }}
+          onClose={() => setDatAlignSettingsOpen(false)}
         />
       )}
 

@@ -33,19 +33,24 @@ This script:
 * **Unified 3-Pane Studio Layout**:
   * **Asset Browser (Top-Left)** & **File Browser (Bottom-Left)**: Sort by `Name`, `Type`, `Modified`, or `Size`, filter by glob pattern or `Supported Only` (on by default), and right-click or drag-and-drop to add, remove, rename, reorder, replace, or extract files.
   * **Automatic `DAT` + `DTT` & `WTA` + `WTP` Pairing**: Opening either `.dat` or `.dtt` automatically loads its sibling archive, pairs `.wta` headers with `.wtp` payloads, and saves both containers atomically on `Ctrl+S`.
+  * **Custom `DAT` Alignment & Batch `DAT` Custom Align (`Tools → Batch DAT custom align...` & `Tools → Configure DAT save alignment...`)**:
+    * Preserves per-file-type alignment by default (`.dat` = `0x2000`, `.wmb`/`.wtb`/`.wtp`/`.exp`/`.eff`/`.sdx` = `0x1000`, `.wta`/`.sop`/`.bxm` = `0x40`, others = `0x10`).
+    * Optional **Force custom alignment on DAT save** setting (persisted in `pgtools_settings.json` and configurable from **Tools → Configure DAT save alignment...**), defaulting custom overrides to `2048` (`0x800`) before the user changes it.
+    * **Batch DAT Custom Align** dialog (**Tools → Batch DAT custom align...**) re-aligns the active document (with full Undo/Redo), an entire folder (recursively), or selected `.dat`/`.dtt`/`.evn` files using any custom byte alignment (default `2048`) or restores per-file-type defaults.
   * **Deep Nested Container Editing (`PKZ ↔ DAT/DTT ↔ EFF/IDD ↔ SCR ↔ Leaf`)**: Inspect and modify sub-files at any nesting depth (such as `.est` particle records inside `.eff` inside `.dat`, or `.wtb`/`.wmb` inside `.dat` inside `.pkz`) and commit changes directly back up the container chain.
   * **Game-Aware Texture Pipeline (`WTB`, `WTA`/`WTP`, `XT1`, `BNTX`, Wii U `GTX`, PC `DDS`)**:
     * Full `XT1` decoding & encoding parity with `XT1 Studio` (Tegra X1 GOB swizzling, `0x403` wide-pitch & single-mip ASTC pitch recovery, all 14 ASTC LDR footprints `4x4`..`12x12`, `Solidify` multi-source BFS alpha edge bleeding, and box mipmap chain generation).
     * Native Nintendo Switch `.bntx` (`BNTX` / `NX  ` / `BRTI`) and Wii U `.gtx` (`GX2` AddrLib MicroTiled/MacroTiled) decoding and export.
   * **Structured Editors (No Raw JSON Dumps)**: Dedicated editable tables and inspectors for `WMB1`/`WMB2`/`WMB3` (materials, shaders, samplers, batches, skeleton bones, header flags & bounding box), `EST` particle emitters, `CSV` tables, `BXM` binary XML, `CLP`/`CLH`/`CLW` cloth physics, `MOT` animations, `EXP` constraints, `COS` costume palettes, `ATT`, `OBI`, `MSQ`, and `COL`.
-  * **Persistent Settings**: Saves theme (`Dark`/`Light`), recent files, last directory, splitter sizes, file filters, and external `oo2core_*.dll` path to `%APPDATA%\pgtools-studio\pgtools_settings.json`.
+  * **Persistent Settings**: Saves theme (`Dark`/`Light`), recent files, last directory, splitter sizes, file filters, DAT alignment preferences, and external `oo2core_*.dll` / `nvtt*.dll` paths to `%APPDATA%\pgtools-studio\pgtools_settings.json`.
 
 ### 2. `pgtools.exe` (Command-Line Interface)
 Run `pgtools.exe --help` for full CLI usage:
 
 ```bat
 pgtools.exe dat-extract <files...> [-o <output_dir>]
-pgtools.exe dat-create <input_dir> [-o <output.dat>]
+pgtools.exe dat-create <input_dir> [-o <output.dat>] [--align [2048]]
+pgtools.exe dat-align <files_or_folders...> [--align <2048|0x800|default>] [--nested] [--per-type-default] [-o <output>]
 pgtools.exe dat-ls <file.dat> [--yaml]
 pgtools.exe pkz-extract <files...> [-o <output_dir>] [--oodle-dll <oo2core_8_win64.dll>]
 pgtools.exe pkz-create <input_dir> -o <output.pkz> [--zstd]

@@ -2,6 +2,37 @@ import React, { useCallback, useEffect, useRef, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { FileSortCol, StudioSettings, ThemeMode } from "../types";
 
+export const DEFAULT_CUSTOM_DAT_ALIGNMENT = 2048;
+export const MAX_CUSTOM_DAT_ALIGNMENT = 1048576;
+
+export function sanitizeCustomDatAlignment(val?: number | null): number {
+  if (typeof val !== "number" || !Number.isFinite(val) || val <= 0) {
+    return DEFAULT_CUSTOM_DAT_ALIGNMENT;
+  }
+  return Math.max(1, Math.min(MAX_CUSTOM_DAT_ALIGNMENT, Math.round(val)));
+}
+
+export function parseCustomDatAlignmentInput(raw: string | number): number | null {
+  if (typeof raw === "number") {
+    if (!Number.isFinite(raw) || raw <= 0 || raw > MAX_CUSTOM_DAT_ALIGNMENT) return null;
+    return Math.round(raw);
+  }
+  const trimmed = (raw ?? "").trim().toLowerCase().replace(/_/g, "");
+  if (!trimmed) return null;
+  let num = NaN;
+  if (trimmed.startsWith("0x")) {
+    if (/^0x[0-9a-f]+$/.test(trimmed)) {
+      num = parseInt(trimmed.slice(2), 16);
+    }
+  } else if (/^\d+$/.test(trimmed)) {
+    num = parseInt(trimmed, 10);
+  }
+  if (!Number.isFinite(num) || num <= 0 || num > MAX_CUSTOM_DAT_ALIGNMENT) {
+    return null;
+  }
+  return num;
+}
+
 export interface StudioSettingsState {
   settingsLoaded: boolean;
   theme: ThemeMode;
@@ -14,6 +45,8 @@ export interface StudioSettingsState {
   nvttConfigured: boolean;
   pkzDefaultCompression: "None" | "ZStandard" | "OodleKraken";
   pkzDefaultLevel: number;
+  forceCustomDatAlignment: boolean;
+  customDatAlignment: number;
   coreDatB1: string;
   coreDatB2: string;
   coreDatB3: string;
@@ -43,6 +76,8 @@ export interface StudioSettingsApi extends StudioSettingsState {
     React.SetStateAction<"None" | "ZStandard" | "OodleKraken">
   >;
   setPkzDefaultLevel: React.Dispatch<React.SetStateAction<number>>;
+  setForceCustomDatAlignment: React.Dispatch<React.SetStateAction<boolean>>;
+  setCustomDatAlignment: React.Dispatch<React.SetStateAction<number>>;
   setCoreDatB1: React.Dispatch<React.SetStateAction<string>>;
   setCoreDatB2: React.Dispatch<React.SetStateAction<string>>;
   setCoreDatB3: React.Dispatch<React.SetStateAction<string>>;
@@ -102,6 +137,10 @@ export function useStudioSettings(): StudioSettingsApi {
     "None" | "ZStandard" | "OodleKraken"
   >("ZStandard");
   const [pkzDefaultLevel, setPkzDefaultLevel] = useState<number>(3);
+  const [forceCustomDatAlignment, setForceCustomDatAlignment] = useState<boolean>(false);
+  const [customDatAlignment, setCustomDatAlignment] = useState<number>(
+    DEFAULT_CUSTOM_DAT_ALIGNMENT
+  );
   const [coreDatB1, setCoreDatB1] = useState("");
   const [coreDatB2, setCoreDatB2] = useState("");
   const [coreDatB3, setCoreDatB3] = useState("");
@@ -131,6 +170,8 @@ export function useStudioSettings(): StudioSettingsApi {
     nvttDllPath,
     pkzDefaultCompression,
     pkzDefaultLevel,
+    forceCustomDatAlignment,
+    customDatAlignment,
     coreDatB1,
     coreDatB2,
     coreDatB3,
@@ -154,6 +195,8 @@ export function useStudioSettings(): StudioSettingsApi {
     nvttDllPath,
     pkzDefaultCompression,
     pkzDefaultLevel,
+    forceCustomDatAlignment,
+    customDatAlignment,
     coreDatB1,
     coreDatB2,
     coreDatB3,
@@ -185,6 +228,8 @@ export function useStudioSettings(): StudioSettingsApi {
     const normCodec = normalizePkzCodec(s.pkz_default_compression);
     setPkzDefaultCompression(normCodec);
     setPkzDefaultLevel(clampPkzLevel(normCodec, s.pkz_default_level ?? 3));
+    setForceCustomDatAlignment(Boolean(s.force_custom_dat_alignment ?? false));
+    setCustomDatAlignment(sanitizeCustomDatAlignment(s.custom_dat_alignment));
     setCoreDatB1(s.core_dat_b1 ?? "");
     setCoreDatB2(s.core_dat_b2 ?? "");
     setCoreDatB3(s.core_dat_b3 ?? "");
@@ -225,6 +270,8 @@ export function useStudioSettings(): StudioSettingsApi {
         nvtt_dll_path: s.nvttDllPath,
         pkz_default_compression: s.pkzDefaultCompression,
         pkz_default_level: s.pkzDefaultLevel,
+        force_custom_dat_alignment: s.forceCustomDatAlignment,
+        custom_dat_alignment: sanitizeCustomDatAlignment(s.customDatAlignment),
         core_dat_b1: s.coreDatB1,
         core_dat_b2: s.coreDatB2,
         core_dat_b3: s.coreDatB3,
@@ -240,10 +287,6 @@ export function useStudioSettings(): StudioSettingsApi {
     []
   );
 
-  // Debounced persistence. Caller must pass currentDir when the effect runs;
-  // we re-run whenever any of the tracked preference fields change.
-  // The actual save effect lives in App so it can close over currentDir.
-
   return {
     settingsLoaded,
     theme,
@@ -256,6 +299,8 @@ export function useStudioSettings(): StudioSettingsApi {
     nvttConfigured,
     pkzDefaultCompression,
     pkzDefaultLevel,
+    forceCustomDatAlignment,
+    customDatAlignment,
     coreDatB1,
     coreDatB2,
     coreDatB3,
@@ -279,6 +324,8 @@ export function useStudioSettings(): StudioSettingsApi {
     setNvttConfigured,
     setPkzDefaultCompression,
     setPkzDefaultLevel,
+    setForceCustomDatAlignment,
+    setCustomDatAlignment,
     setCoreDatB1,
     setCoreDatB2,
     setCoreDatB3,

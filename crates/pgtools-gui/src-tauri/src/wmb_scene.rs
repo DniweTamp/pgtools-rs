@@ -3,7 +3,7 @@ use crate::session::{
 };
 use crate::vfs::{
     build_outline_from_session, detect_file_format_tag, find_paired_wtp_bytes, is_bntx_blob,
-    resolve_subblob, split_container_and_leaf, write_back_subblob, DocumentOutline,
+    resolve_subblob, split_container_and_leaf, write_back_subblob_with_align, DocumentOutline,
 };
 use base64::{engine::general_purpose::STANDARD as BASE64, Engine as _};
 use pgtools_core::{
@@ -2519,8 +2519,9 @@ pub fn mutate_wmb_node(
         let new_wmb3_bytes = wmb3.to_bytes().map_err(|e| e.to_string())?;
         let _ = Wmb3File::from_bytes(&new_wmb3_bytes)
             .map_err(|e| format!("WMB3 round-trip verification failed: {e}"))?;
+        let dat_align = sess.settings.effective_dat_alignment();
         let next_snap =
-            write_back_subblob(&snap, &container_parts, new_wmb3_bytes, None, oodle_opt)?;
+            write_back_subblob_with_align(&snap, &container_parts, new_wmb3_bytes, None, oodle_opt, dat_align)?;
 
         sess.committed_uid_maps
             .entry(container_id.clone())
@@ -3265,7 +3266,8 @@ pub fn mutate_wmb_node(
     let new_wmb_bytes = wmb.to_bytes(target_endian).map_err(|e| e.to_string())?;
     let _ = WmbFile::from_bytes(&new_wmb_bytes)
         .map_err(|e| format!("WMB round-trip verification failed: {e}"))?;
-    let next_snap = write_back_subblob(&snap, &container_parts, new_wmb_bytes, None, oodle_opt)?;
+    let dat_align = sess.settings.effective_dat_alignment();
+    let next_snap = write_back_subblob_with_align(&snap, &container_parts, new_wmb_bytes, None, oodle_opt, dat_align)?;
 
     sess.committed_uid_maps
         .entry(container_id.clone())

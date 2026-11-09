@@ -2,7 +2,7 @@ use crate::session::{lock_session, record_mutation, AppState};
 use crate::texture_cmd::build_texture_node_view;
 use crate::vfs::{
     build_outline_from_session, compute_pkz_modified_map, detect_file_format_tag, resolve_subblob,
-    split_container_and_leaf, write_back_subblob, DocumentOutline,
+    split_container_and_leaf, write_back_subblob_with_align, DocumentOutline,
 };
 use crate::wmb_scene::{build_wmb1_section_view, build_wmb3_section_view};
 use pgtools_core::{
@@ -655,8 +655,9 @@ pub fn mutate_bxm_node(
         .unwrap_or(0);
     let mut bxm = BxmFile::from_xml_str(&xml_content, &tag).map_err(|e| e.to_string())?;
     bxm.flags = orig_flags;
+    let dat_align = sess.settings.effective_dat_alignment();
     let new_bytes = bxm.to_bytes(Endian::Big);
-    let next_snap = write_back_subblob(&snap, &container_parts, new_bytes, None, oodle_opt)?;
+    let next_snap = write_back_subblob_with_align(&snap, &container_parts, new_bytes, None, oodle_opt, dat_align)?;
     record_mutation(&mut sess, "Edit BXM XML Tree", next_snap);
     build_outline_from_session(&sess)
 }
@@ -782,7 +783,8 @@ pub fn mutate_struct_node(
         other => return Err(format!("Unsupported struct_kind for mutation: {other}")),
     };
 
-    let next_snap = write_back_subblob(&snap, &container_parts, new_bytes, None, oodle_opt)?;
+    let dat_align = sess.settings.effective_dat_alignment();
+    let next_snap = write_back_subblob_with_align(&snap, &container_parts, new_bytes, None, oodle_opt, dat_align)?;
     record_mutation(&mut sess, desc, next_snap);
     build_outline_from_session(&sess)
 }
@@ -888,7 +890,8 @@ pub fn mutate_cloth_node(
         (clw.to_bytes(endian), d)
     };
 
-    let next_snap = write_back_subblob(&snap, &container_parts, new_bytes, None, oodle_opt)?;
+    let dat_align = sess.settings.effective_dat_alignment();
+    let next_snap = write_back_subblob_with_align(&snap, &container_parts, new_bytes, None, oodle_opt, dat_align)?;
     record_mutation(&mut sess, desc, next_snap);
     build_outline_from_session(&sess)
 }
