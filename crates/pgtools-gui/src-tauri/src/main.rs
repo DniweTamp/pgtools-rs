@@ -111,6 +111,7 @@ fn main() {
         .invoke_handler(tauri::generate_handler![
             settings::get_studio_settings,
             settings::save_studio_settings,
+            settings::validate_oodle_dll,
             fs_ops::pick_file_dialog,
             fs_ops::pick_multiple_files_dialog,
             fs_ops::save_file_dialog,
@@ -133,6 +134,7 @@ fn main() {
             formats_cmd::mutate_cloth_node,
             vfs::mutate_container_node,
             fs_ops::run_file_context_operation,
+            fs_ops::pack_folder_to_pkz,
             fs_ops::fs_batch_operation,
             wmb_scene::get_wmb_scene,
             wmb_scene::get_wmb_texture,

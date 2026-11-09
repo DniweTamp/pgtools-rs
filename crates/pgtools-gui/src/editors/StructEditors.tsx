@@ -1,6 +1,6 @@
 import React from "react";
 import { invoke } from "@tauri-apps/api/core";
-import { ContextMenuState, MenuItemSpec, NodeInspectPayload } from "../types";
+import { ContextMenuState, MenuItemSpec, NodeInspectPayload, PkzSortCol } from "../types";
 import { hexToRgbFloat, rgbFloatToHex } from "../utils/color";
 import { formatBytes } from "../utils/format";
 import { EditableNumberCell } from "../components/EditableNumberCell";
@@ -10,6 +10,7 @@ export interface StructCenterViewProps {
   nodePayload: NodeInspectPayload;
   setNodePayload: React.Dispatch<React.SetStateAction<NodeInspectPayload | null>>;
   centerTab: string;
+  assetSearch: string;
   csvHeadersDraft: string[];
   setCsvHeadersDraft: React.Dispatch<React.SetStateAction<string[]>>;
   csvRowsDraft: string[][];
@@ -22,9 +23,26 @@ export interface StructCenterViewProps {
   setSelectedMotTrackIdx: React.Dispatch<React.SetStateAction<number>>;
   pkzBulkCodec: string;
   setPkzBulkCodec: React.Dispatch<React.SetStateAction<string>>;
+  pkzSortCol: PkzSortCol;
+  pkzSortAsc: boolean;
+  togglePkzSort: (col: PkzSortCol) => void;
+  pkzSelectedIndices: number[];
+  setPkzSelectedIndices: React.Dispatch<React.SetStateAction<number[]>>;
+  pkzAnchorIndex: number | null;
+  setPkzAnchorIndex: React.Dispatch<React.SetStateAction<number | null>>;
   runStructMutation: (nodeId: string, structKind: string, updatedData: any) => Promise<void>;
   runClothMutation: (nodeId: string, operation: string, preset?: string, updatedJson?: any) => Promise<void>;
   runContainerMutation: (nodeId: string, action: string, targetPath?: string, payload?: any) => Promise<void>;
+  openPkzCompressionModal: (
+    title: string,
+    subtitle: string,
+    initialCodec: string | undefined,
+    onConfirm: (
+      compression: "None" | "ZStandard" | "OodleKraken",
+      level: number,
+      forceCompression: boolean
+    ) => Promise<void> | void
+  ) => void;
   selectAndInspectNode: (nodeId: string) => Promise<void>;
   handlePickOodleDll: () => Promise<void>;
   loadDirectory: (target?: string) => Promise<void>;
@@ -39,6 +57,7 @@ export const StructCenterView: React.FC<StructCenterViewProps> = ({
   nodePayload,
   setNodePayload,
   centerTab,
+  assetSearch,
   csvHeadersDraft,
   setCsvHeadersDraft,
   csvRowsDraft,
@@ -51,9 +70,17 @@ export const StructCenterView: React.FC<StructCenterViewProps> = ({
   setSelectedMotTrackIdx,
   pkzBulkCodec,
   setPkzBulkCodec,
+  pkzSortCol,
+  pkzSortAsc,
+  togglePkzSort,
+  pkzSelectedIndices,
+  setPkzSelectedIndices,
+  pkzAnchorIndex,
+  setPkzAnchorIndex,
   runStructMutation,
   runClothMutation,
   runContainerMutation,
+  openPkzCompressionModal,
   selectAndInspectNode,
   handlePickOodleDll,
   loadDirectory,
@@ -1783,200 +1810,681 @@ export const StructCenterView: React.FC<StructCenterViewProps> = ({
                   </div>
                 )}
 
-                <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", flexWrap: "wrap", gap: 10, marginBottom: 10 }}>
-                  <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
-                    <span style={{ fontWeight: 600, color: "var(--brush-heading)" }}>
-                      {nodePayload.title} ({nodePayload.format} · {formatBytes(nodePayload.size_bytes)})
-                    </span>
-                    {nodePayload.folder_prefix && (
-                      <button
-                        className="pill-button"
-                        style={{ height: 24, padding: "0 8px", fontSize: 11 }}
-                        onClick={() => {
-                          const rootId = nodePayload.node_id.includes("/pkzfolder:")
-                            ? nodePayload.node_id.split("/pkzfolder:")[0]
-                            : "root";
-                          selectAndInspectNode(rootId);
+                {(() => {
+                  const baseContainerId = nodePayload.node_id.includes("/pkzfolder:")
+                    ? nodePayload.node_id.split("/pkzfolder:")[0]
+                    : nodePayload.node_id.startsWith("pkzfolder:")
+                    ? "root"
+                    : nodePayload.node_id;
+                  const prefix =
+                    baseContainerId === "root" || !baseContainerId ? "" : `${baseContainerId}/`;
+                  const stagedCount = Number(nodePayload.pkz_info?.staged_count ?? 0);
+                  const searchLow = assetSearch.trim().toLowerCase();
+
+                  const rawEntries: any[] = Array.isArray(nodePayload.entries)
+                    ? nodePayload.entries
+                    : [];
+                  const filteredEntries = rawEntries.filter((e: any) => {
+                    if (nodePayload.folder_prefix) {
+                      const norm = String(e.name || "")
+                        .replace(/\\/g, "/")
+                        .replace(/^\/+/, "");
+                      const fp = String(nodePayload.folder_prefix).replace(/^\/+|\/+$/g, "");
+                      if (
+                        norm.toLowerCase() !== fp.toLowerCase() &&
+                        !norm.toLowerCase().startsWith(`${fp.toLowerCase()}/`)
+                      ) {
+                        return false;
+                      }
+                    }
+                    if (searchLow) {
+                      const nameMatch = String(e.name || "")
+                        .toLowerCase()
+                        .includes(searchLow);
+                      const fmtMatch = String(e.format || e.extension || "")
+                        .toLowerCase()
+                        .includes(searchLow);
+                      const compMatch = String(e.compression || "")
+                        .toLowerCase()
+                        .includes(searchLow);
+                      if (!nameMatch && !fmtMatch && !compMatch) return false;
+                    }
+                    return true;
+                  });
+
+                  const sortedEntries =
+                    nodePayload.format === "PKZ" && pkzSortCol !== "pkz_order"
+                      ? [...filteredEntries].sort((a, b) => {
+                          let cmp = 0;
+                          if (pkzSortCol === "size") {
+                            cmp = Number(a.size ?? 0) - Number(b.size ?? 0);
+                          } else if (pkzSortCol === "format") {
+                            cmp = String(a.format ?? "").localeCompare(
+                              String(b.format ?? ""),
+                              undefined,
+                              { sensitivity: "base" }
+                            );
+                          } else if (pkzSortCol === "compression") {
+                            cmp = String(a.compression ?? "").localeCompare(
+                              String(b.compression ?? ""),
+                              undefined,
+                              { sensitivity: "base" }
+                            );
+                          }
+                          if (cmp === 0) {
+                            cmp = String(a.name ?? "").localeCompare(
+                              String(b.name ?? ""),
+                              undefined,
+                              { sensitivity: "base" }
+                            );
+                          }
+                          return pkzSortAsc ? cmp : -cmp;
+                        })
+                      : filteredEntries;
+
+                  const selectedModifiedCount = pkzSelectedIndices.filter((idx) => {
+                    const found = rawEntries.find((r) => r.index === idx);
+                    return Boolean(found?.modified);
+                  }).length;
+
+                  const sortArrow = (col: PkzSortCol) =>
+                    pkzSortCol === col ? (pkzSortAsc ? " ▲" : " ▼") : "";
+
+                  return (
+                    <>
+                      <div
+                        style={{
+                          display: "flex",
+                          justifyContent: "space-between",
+                          alignItems: "center",
+                          flexWrap: "wrap",
+                          gap: 10,
+                          marginBottom: 10,
                         }}
                       >
-                        ✕ Clear Folder Filter ({nodePayload.folder_prefix}/)
-                      </button>
-                    )}
-                  </div>
-                  <div style={{ display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap" }}>
-                    {nodePayload.format === "PKZ" && (
-                      <div style={{ display: "inline-flex", alignItems: "center", gap: 6 }}>
-                        <span style={{ color: "var(--brush-muted)", fontSize: 11.5 }}>Set All Codec:</span>
-                        <select
-                          className="pill-select mono"
-                          style={{ height: 28, fontSize: 11.5 }}
-                          value={pkzBulkCodec}
-                          onChange={(e) => setPkzBulkCodec(e.target.value)}
-                        >
-                          <option value="ZStandard">ZStandard</option>
-                          <option value="OodleKraken">OodleKraken</option>
-                          <option value="None">None (Uncompressed)</option>
-                        </select>
-                        <button
-                          className="pill-button"
-                          style={{ height: 28 }}
-                          onClick={() =>
-                            runContainerMutation(
-                              nodePayload.node_id,
-                              "set_pkz_compression",
-                              pkzBulkCodec,
-                              { compression: pkzBulkCodec }
-                            )
-                          }
-                        >
-                          Apply All
-                        </button>
-                      </div>
-                    )}
-                    <button
-                      className="pill-button"
-                      onClick={async () => {
-                        const paths = await invoke<string[]>("pick_multiple_files_dialog", {
-                          title: "Add File(s) to Container",
-                          extensions: null,
-                        });
-                        if (paths && paths.length > 0) {
-                          await runContainerMutation(nodePayload.node_id, "add_files", "", {
-                            paths,
-                            folder_prefix: nodePayload.folder_prefix ?? null,
-                          });
-                        }
-                      }}
-                    >
-                      + Add File(s)...
-                    </button>
-                    <button
-                      className="pill-button accent"
-                      onClick={async () => {
-                        const folder = await invoke<string | null>("pick_folder_dialog", {
-                          title: "Extract All Entries to Folder",
-                        });
-                        if (folder) {
-                          await runContainerMutation(nodePayload.node_id, "extract_all", folder);
-                          setStatusLeft(`Extracted all entries to ${folder}`);
-                          loadDirectory(currentDirRef.current);
-                        }
-                      }}
-                    >
-                      Extract All...
-                    </button>
-                  </div>
-                </div>
+                        <div style={{ display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap" }}>
+                          <span style={{ fontWeight: 600, color: "var(--brush-heading)" }}>
+                            {nodePayload.title} ({nodePayload.format} ·{" "}
+                            {formatBytes(nodePayload.size_bytes)})
+                          </span>
+                          {nodePayload.format === "PKZ" && (
+                            <span style={{ fontSize: 11.5, color: "var(--brush-muted)" }}>
+                              {sortedEntries.length} of {rawEntries.length} entries shown
+                              {pkzSortCol === "pkz_order"
+                                ? " · PKZ order"
+                                : ` · sorted by ${pkzSortCol} (${pkzSortAsc ? "asc" : "desc"})`}
+                            </span>
+                          )}
+                          {stagedCount > 0 && (
+                            <span
+                              style={{
+                                fontSize: 11.5,
+                                fontWeight: 600,
+                                color: "var(--brush-accent)",
+                              }}
+                            >
+                              ● {stagedCount} staged change(s) — not saved
+                            </span>
+                          )}
+                          {stagedCount > 0 && (
+                            <button
+                              className="pill-button"
+                              style={{ height: 24, padding: "0 8px", fontSize: 11 }}
+                              onClick={() =>
+                                runContainerMutation(baseContainerId, "revert_pkz_entries", "", {
+                                  folder_prefix: nodePayload.folder_prefix ?? null,
+                                })
+                              }
+                              title="Undo staged changes and restore saved PKZ state"
+                            >
+                              ↺ Revert {nodePayload.folder_prefix ? "Folder" : "All"}
+                            </button>
+                          )}
+                          {nodePayload.folder_prefix && (
+                            <button
+                              className="pill-button"
+                              style={{ height: 24, padding: "0 8px", fontSize: 11 }}
+                              onClick={() => {
+                                selectAndInspectNode(baseContainerId || "root");
+                              }}
+                            >
+                              ✕ Clear Folder Filter ({nodePayload.folder_prefix}/)
+                            </button>
+                          )}
+                        </div>
 
-                {Array.isArray(nodePayload.entries) && nodePayload.entries.length > 0 ? (
-                  <table className="struct-table">
-                    <thead>
-                      <tr>
-                        <th style={{ width: 55 }}>#</th>
-                        <th>Entry Name</th>
-                        <th>Type / Compression Codec</th>
-                        <th style={{ textAlign: "right" }}>Size</th>
-                        <th style={{ width: 170, textAlign: "right" }}>Actions</th>
-                      </tr>
-                    </thead>
-                    <tbody>
-                      {nodePayload.entries
-                        .filter((e: any) => {
-                          if (!nodePayload.folder_prefix) return true;
-                          const norm = String(e.name || "").replace(/\\/g, "/").replace(/^\/+/, "");
-                          const fp = String(nodePayload.folder_prefix).replace(/^\/+|\/+$/g, "");
-                          return norm === fp || norm.startsWith(`${fp}/`);
-                        })
-                        .map((e: any, ei: number) => {
-                        const baseContainerId = nodePayload.node_id.includes("/pkzfolder:")
-                          ? nodePayload.node_id.split("/pkzfolder:")[0]
-                          : nodePayload.node_id.startsWith("pkzfolder:")
-                          ? "root"
-                          : nodePayload.node_id;
-                        const prefix =
-                          baseContainerId === "root" || !baseContainerId
-                            ? ""
-                            : `${baseContainerId}/`;
-                        const childNodeId =
-                          nodePayload.format === "PKZ"
-                            ? `${prefix}pkz:${e.index}`
-                            : nodePayload.format === "EFF"
-                            ? `${prefix}effdir:${e.dir_index}/efffile:${e.index}`
-                            : `${prefix}dat:${e.index}`;
-                        return (
-                          <tr key={ei}>
-                            <td className="mono">#{e.index}</td>
-                            <td className="mono" style={{ fontWeight: 600 }}>
-                              {e.dir_name ? `${e.dir_name} / ${e.name}` : e.name}
-                            </td>
-                            <td className="mono" style={{ color: "var(--brush-muted)" }}>
-                              {nodePayload.format === "PKZ" ? (
-                                <select
-                                  className="pill-select mono"
-                                  style={{ height: 25, fontSize: 11.5 }}
-                                  value={
-                                    String(e.compression || "").toLowerCase().includes("oodle")
-                                      ? "OodleKraken"
-                                      : String(e.compression || "").toLowerCase().includes("zst")
-                                      ? "ZStandard"
-                                      : "None"
+                        <div style={{ display: "flex", alignItems: "center", gap: 6, flexWrap: "wrap" }}>
+                          {nodePayload.format === "PKZ" && pkzSelectedIndices.length > 0 && (
+                            <>
+                              <button
+                                className="pill-button"
+                                style={{ height: 26, fontSize: 11.5 }}
+                                onClick={async () => {
+                                  const folder = await invoke<string | null>("pick_folder_dialog", {
+                                    title: `Extract ${pkzSelectedIndices.length} Selected PKZ File(s)`,
+                                  });
+                                  if (folder) {
+                                    await runContainerMutation(
+                                      baseContainerId,
+                                      "extract_pkz_entries",
+                                      folder,
+                                      { entry_indices: pkzSelectedIndices }
+                                    );
+                                    setStatusLeft(
+                                      `Extracted ${pkzSelectedIndices.length} selected entry(s) to ${folder}`
+                                    );
+                                    loadDirectory(currentDirRef.current);
                                   }
-                                  onChange={(ev) => {
-                                    const nextCodec = ev.target.value;
+                                }}
+                              >
+                                Extract Selected ({pkzSelectedIndices.length})...
+                              </button>
+                              <button
+                                className="pill-button"
+                                style={{ height: 26, fontSize: 11.5 }}
+                                onClick={() => {
+                                  openPkzCompressionModal(
+                                    `Recompress ${pkzSelectedIndices.length} Selected File(s)`,
+                                    "Choose compression codec and level for selected files",
+                                    pkzBulkCodec,
+                                    async (compression, level, forceCompression) => {
+                                      await runContainerMutation(
+                                        baseContainerId,
+                                        "set_pkz_compression",
+                                        compression,
+                                        {
+                                          compression,
+                                          level,
+                                          force_compression: forceCompression,
+                                          entry_indices: pkzSelectedIndices,
+                                        }
+                                      );
+                                    }
+                                  );
+                                }}
+                              >
+                                Recompress ({pkzSelectedIndices.length})...
+                              </button>
+                              {selectedModifiedCount > 0 && (
+                                <button
+                                  className="pill-button"
+                                  style={{ height: 26, fontSize: 11.5 }}
+                                  onClick={() =>
                                     runContainerMutation(
                                       baseContainerId,
+                                      "revert_pkz_entries",
+                                      "",
+                                      { entry_indices: pkzSelectedIndices }
+                                    )
+                                  }
+                                >
+                                  ↺ Revert ({selectedModifiedCount})
+                                </button>
+                              )}
+                              <button
+                                className="pill-button"
+                                style={{ height: 26, fontSize: 11.5 }}
+                                onClick={async () => {
+                                  const ok = window.confirm(
+                                    `Delete ${pkzSelectedIndices.length} selected file(s) from the PKZ archive?\n\nThe change is staged until you save.`
+                                  );
+                                  if (!ok) return;
+                                  await runContainerMutation(
+                                    baseContainerId,
+                                    "remove_pkz_entries",
+                                    "",
+                                    { entry_indices: pkzSelectedIndices }
+                                  );
+                                  setPkzSelectedIndices([]);
+                                }}
+                              >
+                                Delete ({pkzSelectedIndices.length})
+                              </button>
+                              <button
+                                className="pill-button"
+                                style={{ height: 26, fontSize: 11 }}
+                                onClick={() => setPkzSelectedIndices([])}
+                                title="Clear selection"
+                              >
+                                Clear
+                              </button>
+                            </>
+                          )}
+
+                          {nodePayload.format === "PKZ" && (
+                            <button
+                              className="pill-button"
+                              style={{ height: 26 }}
+                              onClick={() => {
+                                openPkzCompressionModal(
+                                  nodePayload.folder_prefix
+                                    ? `Recompress Folder '${nodePayload.folder_prefix}/'`
+                                    : "Recompress All PKZ Entries",
+                                  "Choose compression codec and level (90% worthwhile rule applies automatically)",
+                                  pkzBulkCodec,
+                                  async (compression, level, forceCompression) => {
+                                    setPkzBulkCodec(compression);
+                                    await runContainerMutation(
+                                      nodePayload.node_id,
                                       "set_pkz_compression",
-                                      nextCodec,
+                                      compression,
                                       {
-                                        compression: nextCodec,
-                                        entry_indices: [e.index],
+                                        compression,
+                                        level,
+                                        force_compression: forceCompression,
+                                        folder_prefix: nodePayload.folder_prefix ?? null,
                                       }
                                     );
+                                  }
+                                );
+                              }}
+                            >
+                              Recompress {nodePayload.folder_prefix ? "Folder" : "All"}...
+                            </button>
+                          )}
+
+                          <button
+                            className="pill-button"
+                            style={{ height: 26 }}
+                            onClick={async () => {
+                              const paths = await invoke<string[]>("pick_multiple_files_dialog", {
+                                title: "Add File(s) to Container",
+                                extensions: null,
+                              });
+                              if (!paths || paths.length === 0) return;
+                              if (nodePayload.format === "PKZ") {
+                                openPkzCompressionModal(
+                                  `Add ${paths.length} File(s) as`,
+                                  nodePayload.folder_prefix
+                                    ? `Adding into '${nodePayload.folder_prefix}/'`
+                                    : "Adding into PKZ root",
+                                  pkzBulkCodec,
+                                  async (compression, level, forceCompression) => {
+                                    setPkzBulkCodec(compression);
+                                    await runContainerMutation(
+                                      nodePayload.node_id,
+                                      "add_files",
+                                      "",
+                                      {
+                                        paths,
+                                        folder_prefix: nodePayload.folder_prefix ?? null,
+                                        compression,
+                                        level,
+                                        force_compression: forceCompression,
+                                      }
+                                    );
+                                  }
+                                );
+                              } else {
+                                await runContainerMutation(nodePayload.node_id, "add_files", "", {
+                                  paths,
+                                  folder_prefix: nodePayload.folder_prefix ?? null,
+                                });
+                              }
+                            }}
+                          >
+                            + Add File(s)...
+                          </button>
+
+                          {nodePayload.format === "PKZ" && (
+                            <button
+                              className="pill-button"
+                              style={{ height: 26 }}
+                              onClick={async () => {
+                                const folder = await invoke<string | null>("pick_folder_dialog", {
+                                  title: "Select Folder to Add into PKZ",
+                                });
+                                if (!folder) return;
+                                openPkzCompressionModal(
+                                  "Add Folder Contents as",
+                                  nodePayload.folder_prefix
+                                    ? `Adding recursively into '${nodePayload.folder_prefix}/'`
+                                    : "Adding recursively into PKZ root",
+                                  pkzBulkCodec,
+                                  async (compression, level, forceCompression) => {
+                                    setPkzBulkCodec(compression);
+                                    await runContainerMutation(
+                                      nodePayload.node_id,
+                                      "add_files",
+                                      "",
+                                      {
+                                        paths: [folder],
+                                        folder_prefix: nodePayload.folder_prefix ?? null,
+                                        compression,
+                                        level,
+                                        force_compression: forceCompression,
+                                      }
+                                    );
+                                  }
+                                );
+                              }}
+                            >
+                              + Add Folder...
+                            </button>
+                          )}
+
+                          <button
+                            className="pill-button accent"
+                            style={{ height: 26 }}
+                            onClick={async () => {
+                              const folder = await invoke<string | null>("pick_folder_dialog", {
+                                title: "Extract Entries to Folder",
+                              });
+                              if (folder) {
+                                if (nodePayload.format === "PKZ" && nodePayload.folder_prefix) {
+                                  await runContainerMutation(
+                                    baseContainerId,
+                                    "extract_pkz_folder",
+                                    folder,
+                                    { folder_prefix: nodePayload.folder_prefix }
+                                  );
+                                } else {
+                                  await runContainerMutation(
+                                    nodePayload.node_id,
+                                    "extract_all",
+                                    folder
+                                  );
+                                }
+                                setStatusLeft(`Extracted entries to ${folder}`);
+                                loadDirectory(currentDirRef.current);
+                              }
+                            }}
+                          >
+                            Extract {nodePayload.folder_prefix ? "Folder" : "All"}...
+                          </button>
+                        </div>
+                      </div>
+
+                      {sortedEntries.length > 0 ? (
+                        <table className="struct-table">
+                          <thead>
+                            <tr>
+                              <th
+                                style={{
+                                  width: 58,
+                                  cursor: nodePayload.format === "PKZ" ? "pointer" : undefined,
+                                }}
+                                onClick={() =>
+                                  nodePayload.format === "PKZ" && togglePkzSort("pkz_order")
+                                }
+                                title="Click to restore stored PKZ entry order"
+                              >
+                                #{pkzSortCol === "pkz_order" && nodePayload.format === "PKZ" ? " •" : ""}
+                              </th>
+                              <th
+                                style={{
+                                  cursor: nodePayload.format === "PKZ" ? "pointer" : undefined,
+                                }}
+                                onClick={() =>
+                                  nodePayload.format === "PKZ" && togglePkzSort("name")
+                                }
+                                title="Click to sort by Filename (3rd click returns to PKZ order)"
+                              >
+                                Entry Name{nodePayload.format === "PKZ" ? sortArrow("name") : ""}
+                              </th>
+                              {nodePayload.format === "PKZ" && (
+                                <th
+                                  style={{ width: 85, cursor: "pointer" }}
+                                  onClick={() => togglePkzSort("format")}
+                                  title="Click to sort by Format"
+                                >
+                                  Format{sortArrow("format")}
+                                </th>
+                              )}
+                              <th
+                                style={{
+                                  width: 155,
+                                  cursor: nodePayload.format === "PKZ" ? "pointer" : undefined,
+                                }}
+                                onClick={() =>
+                                  nodePayload.format === "PKZ" && togglePkzSort("compression")
+                                }
+                                title="Click to sort by Compression"
+                              >
+                                {nodePayload.format === "PKZ"
+                                  ? `Compression${sortArrow("compression")}`
+                                  : "Type / Codec"}
+                              </th>
+                              <th
+                                style={{
+                                  textAlign: "right",
+                                  width: 150,
+                                  cursor: nodePayload.format === "PKZ" ? "pointer" : undefined,
+                                }}
+                                onClick={() =>
+                                  nodePayload.format === "PKZ" && togglePkzSort("size")
+                                }
+                                title="Click to sort by Uncompressed Size"
+                              >
+                                Size{nodePayload.format === "PKZ" ? sortArrow("size") : ""}
+                              </th>
+                              <th style={{ width: 195, textAlign: "right" }}>Actions</th>
+                            </tr>
+                          </thead>
+                          <tbody>
+                            {sortedEntries.map((e: any, ei: number) => {
+                              const childNodeId =
+                                nodePayload.format === "PKZ"
+                                  ? `${prefix}pkz:${e.index}`
+                                  : nodePayload.format === "EFF"
+                                  ? `${prefix}effdir:${e.dir_index}/efffile:${e.index}`
+                                  : `${prefix}dat:${e.index}`;
+                              const isRowSelected =
+                                nodePayload.format === "PKZ" &&
+                                pkzSelectedIndices.includes(e.index);
+                              const isModified = Boolean(e.modified);
+
+                              return (
+                                <tr
+                                  key={e.index ?? ei}
+                                  className={`file-row ${isRowSelected ? "selected" : ""}`}
+                                  onClick={(ev) => {
+                                    if (nodePayload.format !== "PKZ") return;
+                                    if (ev.ctrlKey || ev.metaKey) {
+                                      setPkzSelectedIndices((prev) =>
+                                        prev.includes(e.index)
+                                          ? prev.filter((x) => x !== e.index)
+                                          : [...prev, e.index]
+                                      );
+                                      setPkzAnchorIndex(e.index);
+                                    } else if (ev.shiftKey && pkzAnchorIndex !== null) {
+                                      const aPos = sortedEntries.findIndex(
+                                        (r) => r.index === pkzAnchorIndex
+                                      );
+                                      const bPos = sortedEntries.findIndex(
+                                        (r) => r.index === e.index
+                                      );
+                                      if (aPos !== -1 && bPos !== -1) {
+                                        const lo = Math.min(aPos, bPos);
+                                        const hi = Math.max(aPos, bPos);
+                                        setPkzSelectedIndices(
+                                          sortedEntries.slice(lo, hi + 1).map((r) => r.index)
+                                        );
+                                      }
+                                    } else {
+                                      setPkzSelectedIndices([e.index]);
+                                      setPkzAnchorIndex(e.index);
+                                    }
+                                  }}
+                                  onDoubleClick={() => selectAndInspectNode(childNodeId)}
+                                  onContextMenu={(ev) => {
+                                    ev.preventDefault();
+                                    ev.stopPropagation();
+                                    if (
+                                      nodePayload.format === "PKZ" &&
+                                      !pkzSelectedIndices.includes(e.index)
+                                    ) {
+                                      setPkzSelectedIndices([e.index]);
+                                      setPkzAnchorIndex(e.index);
+                                    }
+                                    setHoverSubmenuIdx(null);
+                                    setContextMenu({
+                                      x: Math.min(ev.clientX, window.innerWidth - 260),
+                                      y: Math.min(ev.clientY, window.innerHeight - 320),
+                                      items: buildAssetNodeContextMenu(
+                                        childNodeId,
+                                        e.format || "BIN"
+                                      ),
+                                    });
                                   }}
                                 >
-                                  <option value="ZStandard">ZStandard</option>
-                                  <option value="OodleKraken">OodleKraken</option>
-                                  <option value="None">None</option>
-                                </select>
-                              ) : (
-                                e.compression || e.extension || "BIN"
-                              )}
-                            </td>
-                            <td className="mono" style={{ textAlign: "right" }}>
-                              {formatBytes(e.size ?? 0)}
-                              {e.compressed_size !== undefined && e.compressed_size !== e.size
-                                ? ` (${formatBytes(e.compressed_size)} comp)`
-                                : ""}
-                            </td>
-                            <td style={{ textAlign: "right" }}>
-                              <div style={{ display: "inline-flex", gap: 4 }}>
-                                <button
-                                  className="pill-button"
-                                  style={{ height: 23, padding: "0 8px", fontSize: 11 }}
-                                  onClick={() => selectAndInspectNode(childNodeId)}
-                                >
-                                  Open
-                                </button>
-                                <button
-                                  className="pill-button"
-                                  style={{ height: 23, padding: "0 7px", fontSize: 11 }}
-                                  onClick={() => runContainerMutation(childNodeId, "remove_entry")}
-                                  title="Delete Entry from Container"
-                                >
-                                  ✕
-                                </button>
-                              </div>
-                            </td>
-                          </tr>
-                        );
-                      })}
-                    </tbody>
-                  </table>
-                ) : (
-                  <pre className="mono" style={{ margin: 0, lineHeight: 1.55 }}>
-                    {nodePayload.hex_preview}
-                  </pre>
-                )}
+                                  <td className="mono">#{e.index}</td>
+                                  <td
+                                    className="mono"
+                                    style={{
+                                      fontWeight: isModified ? 700 : 600,
+                                      color:
+                                        isModified && !isRowSelected
+                                          ? "var(--brush-accent)"
+                                          : undefined,
+                                    }}
+                                  >
+                                    {e.dir_name ? `${e.dir_name} / ${e.name}` : e.name}
+                                    {isModified && (
+                                      <span
+                                        style={{
+                                          marginLeft: 6,
+                                          color: "var(--brush-accent)",
+                                          fontWeight: 700,
+                                        }}
+                                        title="Staged unsaved change"
+                                      >
+                                        *
+                                      </span>
+                                    )}
+                                  </td>
+                                  {nodePayload.format === "PKZ" && (
+                                    <td className="mono" style={{ color: "var(--brush-muted)" }}>
+                                      {e.format || "BIN"}
+                                    </td>
+                                  )}
+                                  <td className="mono" style={{ color: "var(--brush-muted)" }}>
+                                    {nodePayload.format === "PKZ" ? (
+                                      <select
+                                        className="pill-select mono"
+                                        style={{ height: 24, fontSize: 11.5 }}
+                                        value={
+                                          String(e.compression || "")
+                                            .toLowerCase()
+                                            .includes("oodle")
+                                            ? "OodleKraken"
+                                            : String(e.compression || "")
+                                                .toLowerCase()
+                                                .includes("zst")
+                                            ? "ZStandard"
+                                            : "None"
+                                        }
+                                        onClick={(ev) => ev.stopPropagation()}
+                                        onChange={(ev) => {
+                                          const nextCodec = ev.target.value;
+                                          runContainerMutation(
+                                            baseContainerId,
+                                            "set_pkz_compression",
+                                            nextCodec,
+                                            {
+                                              compression: nextCodec,
+                                              entry_indices: [e.index],
+                                            }
+                                          );
+                                        }}
+                                      >
+                                        <option value="ZStandard">ZStandard</option>
+                                        <option value="OodleKraken">Oodle Kraken</option>
+                                        <option value="None">None</option>
+                                      </select>
+                                    ) : (
+                                      e.compression || e.extension || "BIN"
+                                    )}
+                                  </td>
+                                  <td
+                                    className="mono"
+                                    style={{
+                                      textAlign: "right",
+                                      color:
+                                        isModified && !isRowSelected
+                                          ? "var(--brush-accent)"
+                                          : undefined,
+                                    }}
+                                  >
+                                    {formatBytes(e.size ?? 0)}
+                                    {e.compressed_size !== undefined &&
+                                    e.compressed_size !== e.size
+                                      ? ` (${formatBytes(e.compressed_size)})`
+                                      : ""}
+                                  </td>
+                                  <td
+                                    style={{ textAlign: "right" }}
+                                    onClick={(ev) => ev.stopPropagation()}
+                                  >
+                                    <div style={{ display: "inline-flex", gap: 4 }}>
+                                      <button
+                                        className="pill-button"
+                                        style={{ height: 23, padding: "0 8px", fontSize: 11 }}
+                                        onClick={() => selectAndInspectNode(childNodeId)}
+                                      >
+                                        Open
+                                      </button>
+                                      {nodePayload.format === "PKZ" && isModified && (
+                                        <button
+                                          className="pill-button"
+                                          style={{ height: 23, padding: "0 7px", fontSize: 11 }}
+                                          onClick={() =>
+                                            runContainerMutation(
+                                              baseContainerId,
+                                              "revert_pkz_entries",
+                                              "",
+                                              { entry_indices: [e.index] }
+                                            )
+                                          }
+                                          title="Revert staged changes on this row"
+                                        >
+                                          ↺
+                                        </button>
+                                      )}
+                                      <button
+                                        className="pill-button"
+                                        style={{ height: 23, padding: "0 7px", fontSize: 11 }}
+                                        onClick={() => {
+                                          if (nodePayload.format === "PKZ") {
+                                            const ok = window.confirm(
+                                              `Delete '${e.name}'?\n\nThe change is staged until you save.`
+                                            );
+                                            if (!ok) return;
+                                          }
+                                          void runContainerMutation(childNodeId, "remove_entry");
+                                        }}
+                                        title="Delete Entry from Container"
+                                      >
+                                        ✕
+                                      </button>
+                                    </div>
+                                  </td>
+                                </tr>
+                              );
+                            })}
+                          </tbody>
+                        </table>
+                      ) : rawEntries.length > 0 && searchLow ? (
+                        <div
+                          style={{
+                            padding: "28px 16px",
+                            textAlign: "center",
+                            color: "var(--brush-muted)",
+                          }}
+                        >
+                          <div style={{ fontWeight: 600, fontSize: 14, marginBottom: 4 }}>
+                            No matches
+                          </div>
+                          <div>Nothing in this archive matches &ldquo;{assetSearch}&rdquo;.</div>
+                        </div>
+                      ) : (
+                        <pre className="mono" style={{ margin: 0, lineHeight: 1.55 }}>
+                          {nodePayload.hex_preview}
+                        </pre>
+                      )}
+                    </>
+                  );
+                })()}
               </div>
             ) : nodePayload ? (
               <div className="struct-table-container">

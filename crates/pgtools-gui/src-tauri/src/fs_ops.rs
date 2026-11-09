@@ -10,7 +10,7 @@ use pgtools_core::{
     exp::ExpFile,
     io::{validate_single_entry_name, Endian},
     mot::MotFile,
-    pkz::PkzArchive,
+    pkz::{clamp_compression_level, OodleLibrary, PkzArchive},
     scr::ScrFile,
     wmb::WmbFile,
     wmb3::Wmb3File,
@@ -540,22 +540,38 @@ pub fn run_file_context_operation(
             Ok(format!("Repacked folder into {}", out_file.display()))
         }
         "repack_folder_pkz" => {
-            let mut files = Vec::new();
-            for item in fs::read_dir(&p).map_err(|e| e.to_string())?.flatten() {
-                if item.path().is_file() {
-                    let name = item.file_name().to_string_lossy().into_owned();
-                    let bytes = fs::read(item.path()).map_err(|e| e.to_string())?;
-                    files.push((name, bytes));
-                }
+            let (default_codec, default_level) = {
+                let s = &lock_session(&state).settings;
+                (s.pkz_default_compression.clone(), s.pkz_default_level)
+            };
+            let files = PkzArchive::collect_dir_files_recursive(&p).map_err(|e| e.to_string())?;
+            if files.is_empty() {
+                return Err("The folder has no files to pack into a PKZ archive".into());
             }
-            files.sort_by(|a, b| a.0.cmp(&b.0));
-            let pkz_bytes = PkzArchive::build(&files, true).map_err(|e| e.to_string())?;
+            let effective_codec = if (default_codec.eq_ignore_ascii_case("OodleKraken")
+                || default_codec.eq_ignore_ascii_case("Oodle"))
+                && !OodleLibrary::load(oodle_opt)
+                    .map(|l| l.can_compress())
+                    .unwrap_or(false)
+            {
+                "ZStandard"
+            } else {
+                default_codec.as_str()
+            };
+            let pkz_bytes = PkzArchive::build_with_options(
+                &files,
+                effective_codec,
+                Some(clamp_compression_level(effective_codec, default_level)),
+                false,
+                oodle_opt,
+            )
+            .map_err(|e| e.to_string())?;
             let out_file = dest_path
                 .map(PathBuf::from)
                 .unwrap_or_else(|| parent.join(format!("{stem}.pkz")));
-            fs::write(&out_file, pkz_bytes).map_err(|e| e.to_string())?;
+            atomic_write_file(&out_file, &pkz_bytes)?;
             Ok(format!(
-                "Packed {} files into {}",
+                "Packed {} file(s) recursively into {}",
                 files.len(),
                 out_file.display()
             ))
@@ -889,4 +905,77 @@ pub fn fs_batch_operation(
         }
         other => Err(format!("Unsupported filesystem batch operation: {other}")),
     }
+}
+
+#[tauri::command]
+pub fn pack_folder_to_pkz(
+    source_dir: String,
+    dest_path: String,
+    compression: String,
+    level: i32,
+    force_compression: Option<bool>,
+    allow_zstd_fallback: Option<bool>,
+    state: State<'_, AppState>,
+) -> Result<String, String> {
+    let oodle_path = lock_session(&state).settings.oodle_dll_path.clone();
+    let oodle_opt = if oodle_path.trim().is_empty() {
+        None
+    } else {
+        Some(Path::new(oodle_path.as_str()))
+    };
+    let req_codec = compression.trim();
+    let clamped_lvl = clamp_compression_level(req_codec, level);
+    let allow_fallback = allow_zstd_fallback.unwrap_or(false);
+    if (req_codec.eq_ignore_ascii_case("OodleKraken") || req_codec.eq_ignore_ascii_case("Oodle"))
+        && !allow_fallback
+        && !OodleLibrary::load(oodle_opt)
+            .map(|l| l.can_compress())
+            .unwrap_or(false)
+    {
+        return Err("OODLE_DLL_MISSING: oo2core_*_win64.dll with OodleLZ_Compress is required to compress with OodleKraken.".into());
+    }
+
+    let src_p = PathBuf::from(source_dir.trim());
+    let dst_p = PathBuf::from(dest_path.trim());
+    let files = PkzArchive::collect_dir_files_recursive(&src_p).map_err(|e| e.to_string())?;
+    if files.is_empty() {
+        return Err("The selected folder has no files to pack".into());
+    }
+    let total_raw: usize = files.iter().map(|(_, b)| b.len()).sum();
+    let effective_codec = if (req_codec.eq_ignore_ascii_case("OodleKraken")
+        || req_codec.eq_ignore_ascii_case("Oodle"))
+        && allow_fallback
+        && !OodleLibrary::load(oodle_opt)
+            .map(|l| l.can_compress())
+            .unwrap_or(false)
+    {
+        "ZStandard"
+    } else {
+        req_codec
+    };
+    let effective_lvl = clamp_compression_level(effective_codec, clamped_lvl);
+    let pkz_bytes = PkzArchive::build_with_options(
+        &files,
+        effective_codec,
+        Some(effective_lvl),
+        force_compression.unwrap_or(false),
+        oodle_opt,
+    )
+    .map_err(|e| e.to_string())?;
+    atomic_write_file(&dst_p, &pkz_bytes)?;
+
+    {
+        let mut sess = lock_session(&state);
+        sess.settings.pkz_default_compression = req_codec.to_string();
+        sess.settings.pkz_default_level = clamped_lvl;
+        let _ = save_settings_to_disk(&sess.settings);
+    }
+
+    Ok(format!(
+        "Packed {} file(s) into {} ({} B -> {} B)",
+        files.len(),
+        dst_p.file_name().and_then(|s| s.to_str()).unwrap_or(&dest_path),
+        total_raw,
+        pkz_bytes.len()
+    ))
 }

@@ -66,6 +66,10 @@ pgtools.exe mot-tool <input.mot> [--decode] [--swap-endian]
 pgtools.exe exp-tool <input.exp> [--swap-endian]
 ```
 
-## Oodle Kraken Support (`PKZ` Archives)
-* `ZStandard` (`Zstd`) and uncompressed (`None`) `.pkz` archives work natively in pure Rust, and a built-in pure-Rust Oodle Kraken (`ooz`) fallback decompressor is included.
-* For hardware-speed *Bayonetta 3* / *Astral Chain* `OodleKraken` compression and decompression, place `oo2core_*_win64.dll` (e.g., `oo2core_8_win64.dll` or `oo2core_9_win64.dll`) next to `PGTools-Studio.exe` / `pgtools.exe`, or select it via **Tools → Configure Oodle Kraken DLL (oo2core)...** in the GUI. (For security, only the application directory and an explicitly configured DLL path are searched.)
+## PKZ Explorer Parity & Oodle Kraken Support (`PKZ` Archives)
+* **Compression Dialog & Worthwhile Rule**: Supports `None`, `ZStandard` (levels `1..22`, default `3`), and `Oodle Kraken` (levels `1..=9`, default `4` with 100-byte `seekChunkLen = 0x40000` options). Automatically stores entries as `None` (uncompressed) when compression does not reduce size below 90% of the original (with an optional force-compression override).
+* **Recursive Folder Packing (`File → PKZ from Folder...`)**: Packs entire directory trees recursively with normalized `/` virtual paths and loads the resulting `.pkz`.
+* **Staged Diffing & Selective Revert**: Tracks modified entries (`*`) against the saved archive baseline and supports reverting individual rows, selections, folders, or the entire archive without discarding unrelated edits.
+* **Collision & Overwrite Prompts**: Prompts to `Overwrite`, `Skip Existing`, or `Cancel` once per batch when adding/renaming colliding paths in a `.pkz` or extracting over existing files on disk.
+* **Sortable & Multi-Select PKZ Table**: Sort by `Entry Name`, `Format`, `Compression`, `Size`, or return to stored `PKZ Order`, with multi-row selection (`Ctrl+Click`, `Shift+Click`, `Ctrl+A`) for bulk extraction, recompression, revert, and deletion.
+* **Oodle Kraken DLL & Pure-Rust Fallback**: `ZStandard` (`Zstd`) and uncompressed (`None`) `.pkz` archives work natively in pure Rust, and a built-in pure-Rust Oodle Kraken (`ooz`) fallback decompressor is included. For hardware-speed *Bayonetta 3* / *Astral Chain* `OodleKraken` compression and decompression, place `oo2core_*_win64.dll` next to `PGTools-Studio.exe` / `pgtools.exe`, or select it via **Tools → Configure Oodle Kraken DLL (oo2core)...** in the GUI.

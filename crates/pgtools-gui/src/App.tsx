@@ -1,7 +1,8 @@
-import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import React, { useCallback, useEffect, useRef, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import {
+  AssetTreeNode,
   BxmXmlNode,
   ContextMenuState,
   DecodedWmbMaterial,
@@ -10,6 +11,9 @@ import {
   FsEntry,
   MaterialClipboardState,
   NodeInspectPayload,
+  OodleValidationReport,
+  PkzCompressionModalState,
+  PkzConflictModalState,
   PointerDragState,
   StudioSettings,
   TexModalState,
@@ -41,7 +45,11 @@ import {
   createDemoModel,
   LegacyActionKind,
 } from "./wmb-studio/contract";
-import { useStudioSettings } from "./hooks/useStudioSettings";
+import {
+  clampPkzLevel,
+  normalizePkzCodec,
+  useStudioSettings,
+} from "./hooks/useStudioSettings";
 import { useResizableTableColumns } from "./hooks/useResizableTableColumns";
 import { useFileBrowser } from "./hooks/useFileBrowser";
 import { useDocumentSession } from "./hooks/useDocumentSession";
@@ -61,6 +69,8 @@ export default function App() {
     assetRatio,
     oodleDllPath,
     nvttDllPath,
+    pkzDefaultCompression,
+    pkzDefaultLevel,
     coreDatB1,
     coreDatB2,
     coreDatB3,
@@ -79,6 +89,8 @@ export default function App() {
     setAssetRatio,
     setOodleDllPath,
     setNvttDllPath,
+    setPkzDefaultCompression,
+    setPkzDefaultLevel,
     setCoreDatB1,
     setCoreDatB2,
     setCoreDatB3,
@@ -102,6 +114,10 @@ export default function App() {
 
   const [wmbDocGeneration, setWmbDocGeneration] = useState<number>(0);
   const [coreDatModalOpen, setCoreDatModalOpen] = useState<boolean>(false);
+  const [pkzCompModal, setPkzCompModal] = useState<PkzCompressionModalState | null>(null);
+  const [pkzConflictModal, setPkzConflictModal] = useState<PkzConflictModalState | null>(null);
+  const [oodleValidation, setOodleValidation] = useState<OodleValidationReport | null>(null);
+  const [busyLabel, setBusyLabel] = useState<string | null>(null);
 
   const [statusLeft, setStatusLeft] = useState<string>("Ready");
   const inspectSeqRef = useRef<number>(0);
@@ -128,30 +144,16 @@ export default function App() {
   } = fb;
 
   // Texture Replacement & Compression Modal Dialog state
-  const [texModalState, setTexModalState] = useState<{
-    nodeId: string;
-    action: "replace_file" | "add_texture";
-    path: string;
-    fileName: string;
-    encodeFormat: string;
-    generateMips: boolean;
-    solidify: boolean;
-    makeOpaque: boolean;
-  } | null>(null);
+  const [texModalState, setTexModalState] = useState<TexModalState | null>(null);
 
   // PKZ Bulk Compression & WMB Mesh->Batch->LOD Tree state
   const meshUi = useMeshUi();
   const {
-    expandedMeshGroups,
-    setExpandedMeshGroups,
-    expandedBatchLods,
-    setExpandedBatchLods,
-    draggedBatchInfo,
-    setDraggedBatchInfo,
-    dragOverMeshIdx,
-    setDragOverMeshIdx,
     pkzBulkCodec,
     setPkzBulkCodec,
+    pkzSelectedIndices,
+    setPkzSelectedIndices,
+    setPkzAnchorIndex,
   } = meshUi;
 
   const docSession = useDocumentSession();
@@ -169,6 +171,9 @@ export default function App() {
     expandForOpen,
   } = docSession;
 
+  const selectedNodeIdRef = useRef<string>(selectedNodeId);
+  selectedNodeIdRef.current = selectedNodeId;
+
   useEffect(() => {
     const onBeforeUnload = (e: BeforeUnloadEvent) => {
       if (outlineRef.current?.dirty) {
@@ -185,6 +190,8 @@ export default function App() {
   const [externalDragHover, setExternalDragHover] = useState<boolean>(false);
 
   const [nodePayload, setNodePayload] = useState<NodeInspectPayload | null>(null);
+  const nodePayloadRef = useRef<NodeInspectPayload | null>(null);
+  nodePayloadRef.current = nodePayload;
   const panStartRef = useRef<{ x: number; y: number }>({ x: 0, y: 0 });
   const [materialClipboard, setMaterialClipboard] =
     useState<MaterialClipboardState | null>(null);
@@ -285,8 +292,80 @@ export default function App() {
     centerTab,
   ]);
 
-  // 2. Listen for external OS file drops (`tauri://drag-drop`) anywhere on the window
-  const openDocRef = useRef<(p: string) => Promise<void>>(async () => {});
+  const refreshOodleValidation = useCallback(async (customPath?: string) => {
+    try {
+      const report = await invoke<OodleValidationReport>("validate_oodle_dll", {
+        path: customPath ?? null,
+      });
+      setOodleValidation(report);
+      return report;
+    } catch {
+      return null;
+    }
+  }, []);
+
+  const openPkzCompressionModal = useCallback(
+    (
+      title: string,
+      subtitle: string,
+      initialCodec: string | undefined,
+      onConfirm: (
+        compression: "None" | "ZStandard" | "OodleKraken",
+        level: number,
+        forceCompression: boolean
+      ) => Promise<void> | void
+    ) => {
+      const codec = normalizePkzCodec(initialCodec ?? pkzDefaultCompression);
+      const level = clampPkzLevel(
+        codec,
+        codec === pkzDefaultCompression
+          ? pkzDefaultLevel
+          : codec === "OodleKraken"
+          ? 4
+          : 3
+      );
+      void refreshOodleValidation();
+      setPkzCompModal({
+        title,
+        subtitle,
+        compression: codec,
+        level,
+        forceCompression: false,
+        onConfirm,
+      });
+    },
+    [pkzDefaultCompression, pkzDefaultLevel, refreshOodleValidation]
+  );
+
+  const handleExpandAll = useCallback(() => {
+    if (!outlineRef.current) return;
+    const next: Record<string, boolean> = {
+      root: true,
+      "root:dat": true,
+      "root:dtt": true,
+    };
+    const walk = (nodes: AssetTreeNode[]) => {
+      for (const n of nodes) {
+        if (n.children && n.children.length > 0) {
+          next[n.id] = true;
+          walk(n.children);
+        }
+      }
+    };
+    walk(outlineRef.current.tree);
+    setExpandedNodes(next);
+  }, [outlineRef, setExpandedNodes]);
+
+  const handleCollapseAll = useCallback(() => {
+    setExpandedNodes({
+      root: true,
+      "root:dat": true,
+      "root:dtt": true,
+    });
+  }, [setExpandedNodes]);
+
+  // Listen for external OS file drops (`tauri://drag-drop`) anywhere on the window
+  const dropHandlerRef = useRef<(paths: string[]) => Promise<void>>(async () => {});
   useEffect(() => {
     let unlistenDrop: (() => void) | undefined;
     let unlistenEnter: (() => void) | undefined;
@@ -297,8 +376,8 @@ export default function App() {
         unlistenDrop = await listen<{ paths?: string[] }>("tauri://drag-drop", (event) => {
           setExternalDragHover(false);
           const paths = event.payload?.paths;
-          if (Array.isArray(paths) && paths.length > 0 && paths[0]) {
-            openDocRef.current(paths[0]);
+          if (Array.isArray(paths) && paths.length > 0) {
+            void dropHandlerRef.current(paths);
           }
         });
         unlistenEnter = await listen("tauri://drag-enter", () => {
@@ -358,6 +437,8 @@ export default function App() {
     assetRatio,
     oodleDllPath,
     nvttDllPath,
+    pkzDefaultCompression,
+    pkzDefaultLevel,
     coreDatB1,
     coreDatB2,
     coreDatB3,
@@ -374,15 +455,23 @@ export default function App() {
     saveAs: () => void;
     undo: () => void;
     redo: () => void;
+    focusSearch: () => void;
+    selectAllPkz: () => void;
+    renameSelected: () => void;
+    deleteSelected: () => void;
   }>({
     openFile: () => {},
     save: () => {},
     saveAs: () => {},
     undo: () => {},
     redo: () => {},
+    focusSearch: () => {},
+    selectAllPkz: () => {},
+    renameSelected: () => {},
+    deleteSelected: () => {},
   });
 
-  // Global keyboard shortcuts (Ctrl+O, Ctrl+S, Ctrl+Z, Ctrl+Y) with editable input guard (B-12)
+  // Global keyboard shortcuts (Ctrl+O, Ctrl+S, Ctrl+Z, Ctrl+Y, Ctrl+F, Ctrl+A, F2, Delete)
   useEffect(() => {
     const onKeyDown = (e: KeyboardEvent) => {
       const target = e.target as HTMLElement | null;
@@ -403,6 +492,14 @@ export default function App() {
         } else {
           shortcutHandlersRef.current.save();
         }
+      } else if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === "f") {
+        e.preventDefault();
+        shortcutHandlersRef.current.focusSearch();
+      } else if (!inEditableField && (e.ctrlKey || e.metaKey) && e.key.toLowerCase() === "a") {
+        if (nodePayloadRef.current?.format === "PKZ") {
+          e.preventDefault();
+          shortcutHandlersRef.current.selectAllPkz();
+        }
       } else if (!inEditableField && (e.ctrlKey || e.metaKey) && e.key.toLowerCase() === "z") {
         if (e.shiftKey) {
           e.preventDefault();
@@ -414,10 +511,18 @@ export default function App() {
       } else if (!inEditableField && (e.ctrlKey || e.metaKey) && e.key.toLowerCase() === "y") {
         e.preventDefault();
         shortcutHandlersRef.current.redo();
+      } else if (!inEditableField && e.key === "F2") {
+        e.preventDefault();
+        shortcutHandlersRef.current.renameSelected();
+      } else if (!inEditableField && e.key === "Delete") {
+        e.preventDefault();
+        shortcutHandlersRef.current.deleteSelected();
       } else if (e.key === "Escape") {
         setContextMenu(null);
         setActiveTopMenu(null);
         setPointerDrag(null);
+        setPkzCompModal(null);
+        setPkzConflictModal(null);
       }
     };
     window.addEventListener("keydown", onKeyDown);
@@ -445,7 +550,7 @@ export default function App() {
       window.removeEventListener("mousemove", onMove);
       window.removeEventListener("mouseup", onUp);
     };
-  }, [draggingSplit]);
+  }, [draggingSplit, setAssetRatio, setLeftWidth, setRightWidth]);
 
   useEffect(() => {
     if (!pointerDrag) return;
@@ -544,9 +649,14 @@ export default function App() {
             pointerDrag.overId.includes("pkzfolder:")
           ) {
             const folderPrefix = pointerDrag.overId.split("pkzfolder:").pop() || "";
-            runContainerMutation(pointerDrag.sourceId, "move_pkz_entry_to_folder", folderPrefix, {
-              target_folder: folderPrefix,
-            });
+            void runContainerMutation(
+              pointerDrag.sourceId,
+              "move_pkz_entry_to_folder",
+              folderPrefix,
+              {
+                target_folder: folderPrefix,
+              }
+            );
             setPointerDrag(null);
             return;
           }
@@ -617,10 +727,12 @@ export default function App() {
       return;
     }
     try {
+      setBusyLabel(`Loading ${path.split(/[\\/]/).pop() || path}...`);
       setStatusLeft(`Loading ${path}...`);
       const opened = await invoke<DocumentOutline>("open_document", { path });
       setOutline(opened);
       setSelectedFilePath(path);
+      setPkzSelectedIndices([]);
       setWmbB2Override(null);
       refreshRecents();
 
@@ -639,9 +751,54 @@ export default function App() {
       setStatusLeft(`Loaded ${opened.file_name}`);
     } catch (err) {
       setStatusLeft(`Failed to open: ${String(err)}`);
+    } finally {
+      setBusyLabel(null);
     }
   }
-  openDocRef.current = openDocumentByPath;
+
+  dropHandlerRef.current = async (paths: string[]) => {
+    const pkzArchives = paths.filter((p) => p.toLowerCase().endsWith(".pkz"));
+    const looseItems = paths.filter((p) => !p.toLowerCase().endsWith(".pkz"));
+
+    if (
+      pkzArchives.length === 0 &&
+      looseItems.length > 0 &&
+      (outlineRef.current?.root_format === "PKZ" ||
+        nodePayloadRef.current?.format === "PKZ")
+    ) {
+      const curSel = selectedNodeIdRef.current;
+      const curPayload = nodePayloadRef.current;
+      const folderPrefix = curSel.includes("pkzfolder:")
+        ? curSel.split("pkzfolder:").pop() || ""
+        : curPayload?.folder_prefix ?? "";
+      const rawTargetNode =
+        curPayload?.format === "PKZ" ? curPayload.node_id : "root";
+      const basePkzNodeId = rawTargetNode.includes("/pkzfolder:")
+        ? rawTargetNode.split("/pkzfolder:")[0]
+        : rawTargetNode.startsWith("pkzfolder:")
+        ? "root"
+        : rawTargetNode;
+      openPkzCompressionModal(
+        `Add ${looseItems.length} Dropped Item(s) as`,
+        folderPrefix ? `Adding into '${folderPrefix}/'` : "Adding into PKZ root",
+        pkzDefaultCompression,
+        async (compression, level, forceCompression) => {
+          await runContainerMutation(basePkzNodeId, "add_files", "", {
+            paths: looseItems,
+            folder_prefix: folderPrefix || null,
+            compression,
+            level,
+            force_compression: forceCompression,
+          });
+        }
+      );
+      return;
+    }
+
+    if (paths[0]) {
+      await openDocumentByPath(paths[0]);
+    }
+  };
 
   async function selectAndInspectNode(
     nodeId: string,
@@ -736,16 +893,87 @@ export default function App() {
     }
   }
 
+  async function handlePackFolderToPkz(sourceFolder?: string) {
+    setActiveTopMenu(null);
+    const srcFolder =
+      sourceFolder ??
+      (await invoke<string | null>("pick_folder_dialog", {
+        title: "Choose the folder to pack into a .PKZ archive",
+      }));
+    if (!srcFolder) return;
+
+    const folderStem =
+      srcFolder.replace(/[\\/]+$/, "").split(/[\\/]/).pop() || "archive";
+
+    openPkzCompressionModal(
+      "Pack Folder as .PKZ",
+      `Source folder: ${srcFolder}`,
+      pkzDefaultCompression,
+      async (compression, level, forceCompression) => {
+        const dest = await invoke<string | null>("save_file_dialog", {
+          title: "Save the new .PKZ archive",
+          defaultName: `${folderStem}.pkz`,
+        });
+        if (!dest) return;
+
+        const runPack = async (
+          codecToUse: "None" | "ZStandard" | "OodleKraken",
+          allowFallback = false
+        ) => {
+          try {
+            setBusyLabel(`Packing ${folderStem}.pkz...`);
+            setStatusLeft(`Packing folder ${srcFolder} into ${dest}...`);
+            const msg = await invoke<string>("pack_folder_to_pkz", {
+              sourceDir: srcFolder,
+              destPath: dest,
+              compression: codecToUse,
+              level,
+              forceCompression,
+              allowZstdFallback: allowFallback,
+            });
+            setPkzDefaultCompression(codecToUse);
+            setPkzDefaultLevel(level);
+            await loadDirectory(currentDirRef.current);
+            await openDocumentByPath(dest, true);
+            setStatusLeft(msg);
+          } catch (err) {
+            const errStr = String(err);
+            if (errStr.includes("OODLE_DLL_MISSING")) {
+              const useZstd = window.confirm(
+                "OodleKraken compression requires oo2core_*_win64.dll with OodleLZ_Compress.\n\nClick OK to pack using ZStandard instead, or Cancel to locate oo2core_*_win64.dll."
+              );
+              if (useZstd) {
+                await runPack("ZStandard", true);
+              } else {
+                await handlePickOodleDll();
+              }
+              return;
+            }
+            setStatusLeft(`Pack folder failed: ${errStr}`);
+          } finally {
+            setBusyLabel(null);
+          }
+        };
+
+        await runPack(compression);
+      }
+    );
+  }
+
   async function handleMenuSave() {
     setActiveTopMenu(null);
     if (!outline) return;
     try {
+      setBusyLabel(`Saving ${outline.file_name}...`);
       const updated = await invoke<DocumentOutline>("save_document", { outputPath: null });
       setOutline(updated);
+      await selectAndInspectNode(selectedNodeId);
       setStatusLeft(`Saved ${updated.file_name}`);
       loadDirectory(currentDirRef.current);
     } catch (err) {
       setStatusLeft(`Save error: ${String(err)}`);
+    } finally {
+      setBusyLabel(null);
     }
   }
 
@@ -758,12 +986,16 @@ export default function App() {
     });
     if (!dest) return;
     try {
+      setBusyLabel(`Saving to ${dest.split(/[\\/]/).pop() || dest}...`);
       const updated = await invoke<DocumentOutline>("save_document", { outputPath: dest });
       setOutline(updated);
+      await selectAndInspectNode(selectedNodeId);
       setStatusLeft(`Saved to ${dest}`);
       loadDirectory(currentDirRef.current);
     } catch (err) {
       setStatusLeft(`Save As error: ${String(err)}`);
+    } finally {
+      setBusyLabel(null);
     }
   }
 
@@ -811,6 +1043,65 @@ export default function App() {
     redo: () => {
       void handleRedo();
     },
+    selectAllPkz: () => {
+      if (nodePayload?.format === "PKZ" && Array.isArray(nodePayload.entries)) {
+        setPkzSelectedIndices(nodePayload.entries.map((e: any) => e.index));
+      }
+    },
+    renameSelected: () => {
+      const leafSeg = selectedNodeId.split("/").pop() || "";
+      if (selectedNodeId.includes("pkzfolder:")) {
+        const folderPrefix = selectedNodeId.split("pkzfolder:").pop() || "";
+        const nextPrefix = window.prompt("Rename PKZ folder:", folderPrefix);
+        if (nextPrefix !== null && nextPrefix.trim() !== folderPrefix) {
+          void runContainerMutation(selectedNodeId, "rename_pkz_folder", nextPrefix.trim(), {
+            folder_prefix: folderPrefix,
+            new_prefix: nextPrefix.trim(),
+          });
+        }
+      } else if (leafSeg.startsWith("pkz:")) {
+        const nextName = window.prompt("Rename PKZ entry:", nodePayload?.title || "");
+        if (nextName && nextName.trim()) {
+          void runContainerMutation(selectedNodeId, "rename_entry", nextName.trim(), {
+            new_name: nextName.trim(),
+          });
+        }
+      }
+    },
+    deleteSelected: () => {
+      const leafSeg = selectedNodeId.split("/").pop() || "";
+      if (nodePayload?.format === "PKZ" && pkzSelectedIndices.length > 0) {
+        const baseContainerId = nodePayload.node_id.includes("/pkzfolder:")
+          ? nodePayload.node_id.split("/pkzfolder:")[0]
+          : nodePayload.node_id.startsWith("pkzfolder:")
+          ? "root"
+          : nodePayload.node_id;
+        const ok = window.confirm(
+          `Delete ${pkzSelectedIndices.length} selected file(s) from the PKZ archive?\n\nThe change is staged until you save.`
+        );
+        if (!ok) return;
+        void runContainerMutation(baseContainerId, "remove_pkz_entries", "", {
+          entry_indices: pkzSelectedIndices,
+        });
+      } else if (selectedNodeId.includes("pkzfolder:")) {
+        const folderPrefix = selectedNodeId.split("pkzfolder:").pop() || "";
+        const ok = window.confirm(
+          `Delete the folder '${folderPrefix}' and all files under it?\n\nThe change is staged until you save.`
+        );
+        if (ok) {
+          void runContainerMutation(selectedNodeId, "remove_pkz_folder", "", {
+            folder_prefix: folderPrefix,
+          });
+        }
+      } else if (leafSeg.startsWith("pkz:")) {
+        const ok = window.confirm(
+          `Delete '${nodePayload?.title || selectedNodeId}'?\n\nThe change is staged until you save.`
+        );
+        if (ok) {
+          void runContainerMutation(selectedNodeId, "remove_entry");
+        }
+      }
+    },
   };
 
   function handleResetView() {
@@ -828,9 +1119,10 @@ export default function App() {
       await invoke("save_studio_settings", {
         settings: buildStudioSettingsPayload(currentDir, { oodle_dll_path: picked }),
       }).catch(() => {});
+      await refreshOodleValidation(picked);
       setStatusLeft(`Configured Oodle DLL: ${picked}`);
-      if (outline) {
-        await openDocumentByPath(outline.path);
+      if (outline && !outline.dirty) {
+        await openDocumentByPath(outline.path, true);
       }
     }
   }
@@ -1059,6 +1351,7 @@ export default function App() {
   ) {
     setContextMenu(null);
     try {
+      setBusyLabel(`Working (${action})...`);
       const updated = await invoke<DocumentOutline>("mutate_container_node", {
         nodeId,
         action,
@@ -1066,7 +1359,22 @@ export default function App() {
         payload,
       });
       setOutline(updated);
-      if (action === "remove_entry") {
+      if (
+        action === "remove_entry" ||
+        action === "remove_pkz_entries" ||
+        action === "remove_pkz_folder" ||
+        action === "revert_pkz_entries" ||
+        action === "add_files"
+      ) {
+        setPkzSelectedIndices([]);
+        setPkzAnchorIndex(null);
+      }
+      if (action === "remove_pkz_folder") {
+        const parent = nodeId.includes("/pkzfolder:")
+          ? nodeId.split("/pkzfolder:")[0]
+          : "root";
+        await selectAndInspectNode(parent || "root");
+      } else if (action === "remove_entry") {
         const parent = nodeId.includes("/") ? nodeId.slice(0, nodeId.lastIndexOf("/")) : "root";
         await selectAndInspectNode(parent);
       } else {
@@ -1077,7 +1385,7 @@ export default function App() {
       const msg = String(err);
       if (msg.includes("OODLE_DLL_MISSING")) {
         const useZstd = window.confirm(
-          "OodleKraken compression requires oo2core_*_win64.dll.\n\nClick OK to compress using ZStandard instead, or Cancel to locate oo2core_*_win64.dll."
+          "OodleKraken compression requires oo2core_*_win64.dll with OodleLZ_Compress.\n\nClick OK to compress using ZStandard instead, or Cancel to locate oo2core_*_win64.dll."
         );
         if (useZstd) {
           await runContainerMutation(nodeId, action, targetPath, {
@@ -1090,7 +1398,65 @@ export default function App() {
         }
         return;
       }
+      if (msg.includes("PKZ_COLLISION:")) {
+        const jsonPart = msg.slice(msg.indexOf("PKZ_COLLISION:") + "PKZ_COLLISION:".length);
+        try {
+          const info = JSON.parse(jsonPart);
+          const count = Number(info.count ?? 1);
+          const paths: string[] = Array.isArray(info.paths) ? info.paths : [];
+          const newCount = Number(info.new_count ?? 0);
+          setPkzConflictModal({
+            kind: "collision",
+            title: "Name Collision in PKZ Archive",
+            message:
+              count === 1
+                ? `1 entry already exists in the PKZ archive:\n${paths[0] ?? ""}\n\nOverwrite it?`
+                : `${count} entries already exist in the PKZ archive.${
+                    newCount > 0
+                      ? ` Choosing Skip Existing adds only the ${newCount} new file(s).`
+                      : ""
+                  }`,
+            paths: paths.slice(0, 10),
+            onChoice: async (policy) => {
+              setPkzConflictModal(null);
+              await runContainerMutation(nodeId, action, targetPath, {
+                ...(payload || {}),
+                collision_policy: policy,
+              });
+            },
+          });
+          return;
+        } catch {
+          // fall through
+        }
+      }
+      if (msg.includes("EXTRACT_OVERWRITE:")) {
+        const countStr = msg
+          .slice(msg.indexOf("EXTRACT_OVERWRITE:") + "EXTRACT_OVERWRITE:".length)
+          .trim();
+        const count = parseInt(countStr || "1", 10) || 1;
+        setPkzConflictModal({
+          kind: "extract_overwrite",
+          title: "Files Already Exist in Destination Folder",
+          message:
+            count === 1
+              ? "1 file in the destination folder already exists."
+              : `${count} files in the destination folder already exist.`,
+          onChoice: async (policy) => {
+            setPkzConflictModal(null);
+            await runContainerMutation(nodeId, action, targetPath, {
+              ...(payload || {}),
+              overwrite_policy: policy,
+            });
+            setStatusLeft(`Extraction completed (${policy}) to ${targetPath}`);
+            loadDirectory(currentDirRef.current);
+          },
+        });
+        return;
+      }
       setStatusLeft(`Container operation failed: ${msg}`);
+    } finally {
+      setBusyLabel(null);
     }
   }
 
@@ -1116,6 +1482,9 @@ export default function App() {
       handleTextureExport,
       runTextureMutation,
       runClothMutation,
+      openPkzCompressionModal,
+      onExpandAll: handleExpandAll,
+      onCollapseAll: handleCollapseAll,
       loadDirectory,
       currentDirRef,
     },
@@ -1130,6 +1499,7 @@ export default function App() {
       setStatusLeft,
       loadDirectory,
       openDocumentByPath,
+      onPackFolderToPkz: handlePackFolderToPkz,
     }
   );
 
@@ -1176,7 +1546,11 @@ export default function App() {
 
       {/* External OS File Drop Visual Overlay */}
       {externalDragHover && (
-        <div className="external-drop-overlay">Drop PlatinumGames file to open in Studio</div>
+        <div className="external-drop-overlay">
+          {outline?.root_format === "PKZ"
+            ? "Drop .pkz to open, or drop files/folders to add into current PKZ"
+            : "Drop PlatinumGames file to open in Studio"}
+        </div>
       )}
       <header className="studio-menubar" onClick={(e) => e.stopPropagation()}>
         <div style={{ position: "relative" }}>
@@ -1246,6 +1620,13 @@ export default function App() {
               <button className="context-menu-item" disabled={!outline} onClick={handleMenuSaveAs}>
                 <span>Save As...</span>
                 <span className="context-menu-shortcut">Ctrl+Shift+S</span>
+              </button>
+              <div className="context-menu-sep" />
+              <button
+                className="context-menu-item"
+                onClick={() => void handlePackFolderToPkz()}
+              >
+                <span>PKZ from Folder...</span>
               </button>
             </div>
           )}
@@ -1466,6 +1847,20 @@ export default function App() {
             <IconRedo />
             <span>Redo</span>
           </button>
+
+          {busyLabel && (
+            <span
+              className="mono"
+              style={{
+                marginLeft: 10,
+                fontSize: 11.5,
+                color: "var(--brush-accent)",
+                fontWeight: 600,
+              }}
+            >
+              ⏳ {busyLabel}
+            </span>
+          )}
         </div>
 
         <div className="toolbar-group">
@@ -1658,6 +2053,7 @@ export default function App() {
             runStructMutation,
             runClothMutation,
             runContainerMutation,
+            openPkzCompressionModal,
             handleCrossGameMaterialConvert,
             promptAndRunTextureImport,
             handleTextureExport,
@@ -1762,6 +2158,305 @@ export default function App() {
           setTexMakeOpaque={setTexMakeOpaque}
           runTextureMutation={runTextureMutation}
         />
+      )}
+
+
+
+
+
+      {/* PKZ Compression Type & Level Modal (matching PKZ Explorer CompressionDialog) */}
+      {pkzCompModal && (
+        <div
+          className="context-menu-backdrop"
+          style={{
+            display: "flex",
+            alignItems: "center",
+            justifyContent: "center",
+            backgroundColor: "rgba(0, 0, 0, 0.55)",
+          }}
+          onClick={() => setPkzCompModal(null)}
+        >
+          <div
+            className="studio-card"
+            style={{
+              width: 470,
+              maxWidth: "94vw",
+              padding: 16,
+              display: "flex",
+              flexDirection: "column",
+              gap: 12,
+            }}
+            onClick={(e) => e.stopPropagation()}
+          >
+            <div>
+              <div style={{ fontWeight: 700, fontSize: 14, color: "var(--brush-heading)" }}>
+                {pkzCompModal.title}
+              </div>
+              {pkzCompModal.subtitle && (
+                <div style={{ fontSize: 11.5, color: "var(--brush-muted)", marginTop: 3 }}>
+                  {pkzCompModal.subtitle}
+                </div>
+              )}
+            </div>
+
+            <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
+              {(
+                [
+                  [
+                    "None",
+                    "None (Uncompressed)",
+                    "Store every file as it is. Fastest loading, largest archives.",
+                  ],
+                  [
+                    "ZStandard",
+                    "ZStandard",
+                    "Built in, no extra DLL needed. Fast and widely supported.",
+                  ],
+                  [
+                    "OodleKraken",
+                    "Oodle Kraken",
+                    "What Bayonetta 3 and Astral Chain use natively. Requires oo2core_*_win64.dll for encoding.",
+                  ],
+                ] as const
+              ).map(([codecKey, codecLabel, codecDesc]) => {
+                const checked = pkzCompModal.compression === codecKey;
+                return (
+                  <label
+                    key={codecKey}
+                    style={{
+                      display: "flex",
+                      alignItems: "flex-start",
+                      gap: 9,
+                      padding: "8px 10px",
+                      borderRadius: 6,
+                      border: `1px solid ${
+                        checked ? "var(--brush-accent)" : "var(--brush-border)"
+                      }`,
+                      cursor: "pointer",
+                    }}
+                  >
+                    <input
+                      type="radio"
+                      name="pkz_codec_choice"
+                      checked={checked}
+                      onChange={() => {
+                        const nextLvl = clampPkzLevel(
+                          codecKey,
+                          codecKey === "OodleKraken"
+                            ? 4
+                            : codecKey === "ZStandard"
+                            ? 3
+                            : 0
+                        );
+                        setPkzCompModal((prev) =>
+                          prev
+                            ? { ...prev, compression: codecKey, level: nextLvl }
+                            : null
+                        );
+                      }}
+                      style={{ marginTop: 2 }}
+                    />
+                    <div>
+                      <div style={{ fontWeight: 600, fontSize: 12.5 }}>{codecLabel}</div>
+                      <div style={{ fontSize: 11.5, color: "var(--brush-muted)", marginTop: 2 }}>
+                        {codecDesc}
+                      </div>
+                    </div>
+                  </label>
+                );
+              })}
+            </div>
+
+            {pkzCompModal.compression !== "None" && (
+              <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
+                <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+                  <span style={{ fontSize: 12, fontWeight: 600 }}>
+                    Compression Level ({pkzCompModal.compression === "OodleKraken" ? "1–9" : "1–22"})
+                  </span>
+                  <span className="mono" style={{ fontWeight: 700, fontSize: 12.5 }}>
+                    {pkzCompModal.level}
+                  </span>
+                </div>
+                <input
+                  type="range"
+                  min={1}
+                  max={pkzCompModal.compression === "OodleKraken" ? 9 : 22}
+                  value={pkzCompModal.level}
+                  onChange={(e) => {
+                    const next = parseInt(e.target.value || "3", 10);
+                    setPkzCompModal((prev) =>
+                      prev ? { ...prev, level: next } : null
+                    );
+                  }}
+                />
+                <label
+                  style={{
+                    display: "flex",
+                    alignItems: "center",
+                    gap: 7,
+                    fontSize: 11.5,
+                    color: "var(--brush-muted)",
+                    marginTop: 2,
+                    cursor: "pointer",
+                  }}
+                >
+                  <input
+                    type="checkbox"
+                    checked={pkzCompModal.forceCompression}
+                    onChange={(e) =>
+                      setPkzCompModal((prev) =>
+                        prev ? { ...prev, forceCompression: e.target.checked } : null
+                      )
+                    }
+                  />
+                  <span>
+                    Force compression even if file stays at ≥ 90% of original size
+                  </span>
+                </label>
+                <div style={{ fontSize: 11, color: "var(--brush-muted)", lineHeight: 1.4 }}>
+                  {pkzCompModal.forceCompression
+                    ? "Every file will be stored compressed even if compression does not reduce size by 10%."
+                    : "Files that stay at 90% or more of their original size are automatically stored uncompressed (None) for faster in-game loading."}
+                </div>
+              </div>
+            )}
+
+            {pkzCompModal.compression === "OodleKraken" && (
+              <div
+                style={{
+                  padding: "8px 10px",
+                  borderRadius: 6,
+                  border: "1px solid var(--brush-border)",
+                  fontSize: 11.5,
+                  display: "flex",
+                  justifyContent: "space-between",
+                  alignItems: "center",
+                  gap: 8,
+                }}
+              >
+                <div style={{ color: "var(--brush-muted)", flex: 1 }}>
+                  {oodleValidation?.can_compress
+                    ? `✓ ${oodleValidation.message}`
+                    : oodleValidation?.message ??
+                      "Oodle Kraken compression requires oo2core_*_win64.dll."}
+                </div>
+                <button
+                  type="button"
+                  className="pill-button"
+                  onClick={() => void handlePickOodleDll()}
+                >
+                  Browse DLL...
+                </button>
+              </div>
+            )}
+
+            <div style={{ display: "flex", justifyContent: "flex-end", gap: 8, marginTop: 4 }}>
+              <button
+                type="button"
+                className="pill-button"
+                onClick={() => setPkzCompModal(null)}
+              >
+                Cancel
+              </button>
+              <button
+                type="button"
+                className="pill-button accent"
+                onClick={() => {
+                  const { compression, level, forceCompression, onConfirm } = pkzCompModal;
+                  setPkzDefaultCompression(compression);
+                  if (compression !== "None") {
+                    setPkzDefaultLevel(level);
+                  }
+                  setPkzCompModal(null);
+                  void onConfirm(compression, level, forceCompression);
+                }}
+              >
+                OK
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* PKZ Collision & Extract Overwrite Modal (matching PKZ Explorer OverwriteDialog) */}
+      {pkzConflictModal && (
+        <div
+          className="context-menu-backdrop"
+          style={{
+            display: "flex",
+            alignItems: "center",
+            justifyContent: "center",
+            backgroundColor: "rgba(0, 0, 0, 0.55)",
+          }}
+          onClick={() => setPkzConflictModal(null)}
+        >
+          <div
+            className="studio-card"
+            style={{
+              width: 440,
+              maxWidth: "94vw",
+              padding: 16,
+              display: "flex",
+              flexDirection: "column",
+              gap: 12,
+            }}
+            onClick={(e) => e.stopPropagation()}
+          >
+            <div style={{ fontWeight: 700, fontSize: 14, color: "var(--brush-heading)" }}>
+              {pkzConflictModal.title}
+            </div>
+            <div
+              style={{
+                fontSize: 12,
+                color: "var(--brush-muted)",
+                whiteSpace: "pre-line",
+                lineHeight: 1.45,
+              }}
+            >
+              {pkzConflictModal.message}
+            </div>
+            {pkzConflictModal.paths && pkzConflictModal.paths.length > 0 && (
+              <div
+                className="mono"
+                style={{
+                  fontSize: 11,
+                  padding: "6px 8px",
+                  borderRadius: 4,
+                  border: "1px solid var(--brush-border)",
+                  maxHeight: 110,
+                  overflowY: "auto",
+                }}
+              >
+                {pkzConflictModal.paths.map((p, i) => (
+                  <div key={i}>{p}</div>
+                ))}
+              </div>
+            )}
+            <div style={{ display: "flex", justifyContent: "flex-end", gap: 8, marginTop: 4 }}>
+              <button
+                type="button"
+                className="pill-button"
+                onClick={() => setPkzConflictModal(null)}
+              >
+                Cancel
+              </button>
+              <button
+                type="button"
+                className="pill-button"
+                onClick={() => void pkzConflictModal.onChoice("skip")}
+              >
+                Skip Existing
+              </button>
+              <button
+                type="button"
+                className="pill-button accent"
+                onClick={() => void pkzConflictModal.onChoice("overwrite")}
+              >
+                Overwrite
+              </button>
+            </div>
+          </div>
+        </div>
       )}
 
       {coreDatModalOpen && (

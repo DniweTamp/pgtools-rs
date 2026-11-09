@@ -78,6 +78,7 @@ pub(crate) struct StudioSession {
     pub(crate) wtp_path: Option<PathBuf>,
     pub(crate) dtt_path: Option<PathBuf>,
     pub(crate) current: Option<DocSnapshot>,
+    pub(crate) saved_snapshot: Option<DocSnapshot>,
     pub(crate) dirty: bool,
     pub(crate) current_revision: u64,
     pub(crate) saved_revision: u64,
@@ -150,6 +151,7 @@ impl Default for StudioSession {
             wtp_path: None,
             dtt_path: None,
             current: None,
+            saved_snapshot: None,
             dirty: false,
             current_revision: 0,
             saved_revision: 0,
@@ -420,6 +422,7 @@ pub fn open_document(path: String, state: State<'_, AppState>) -> Result<Documen
     sess.doc_path = Some(primary_path);
     sess.wtp_path = wtp_path_opt;
     sess.dtt_path = dtt_path_opt;
+    sess.saved_snapshot = Some(snapshot.clone());
     sess.current = Some(snapshot);
     sess.dirty = false;
     sess.current_revision = 0;
@@ -493,6 +496,7 @@ pub fn save_document(
         if let Some(p) = paired_dtt {
             sess.dtt_path = Some(p);
         }
+        sess.saved_snapshot = Some(snap);
         sess.saved_revision = expected_revision;
         sess.dirty = false;
     } else {
@@ -504,6 +508,7 @@ pub fn save_document(
         if let Some(p) = paired_dtt {
             sess.dtt_path = Some(p);
         }
+        sess.saved_snapshot = Some(snap);
         sess.dirty = true;
     }
     build_outline_from_session(&sess)

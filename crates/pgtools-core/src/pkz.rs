@@ -6,12 +6,15 @@
 //!
 //! Supports:
 //! - Uncompressed entries (`None` / `""`)
-//! - Native pure-Rust `zstd` compression and decompression (`ZStandard`, `Zstd`, `zstd`)
+//! - Native pure-Rust `zstd` compression and decompression (`ZStandard`, `Zstd`, `zstd`) with levels `1..=22`
 //! - Dynamic user-supplied or application-directory `OodleKraken` DLL/SO (`oo2core_*.dll` / `liboo2core.so`)
-//!   with both `OodleLZ_Decompress` and `OodleLZ_Compress`
+//!   with both `OodleLZ_Decompress` and `OodleLZ_Compress` (levels `1..=9` and 100-byte seek-chunk options)
 //! - Built-in pure-Rust open-source Oodle Kraken (`ooz`) fallback decompressor when `oo2core_*.dll`
 //!   is not available on disk
-//! - Automatic fallback to `ZStandard` / `Zstd` when repacking or modifying entries without an Oodle DLL.
+//! - PKZ Explorer's 90% worthwhile compression threshold (`comp.len() < raw.len() * 0.90`, with optional
+//!   `force_compression` override), storing entries uncompressed (`None`) when compression does not
+//!   shrink the file by at least 10%
+//! - Recursive directory enumeration (`build_from_dir`) preserving relative virtual paths with `/` separators.
 
 use std::collections::HashMap;
 use std::fs;
@@ -21,11 +24,91 @@ use std::path::{Path, PathBuf};
 use serde::{Deserialize, Serialize};
 
 use crate::io::{
-    align, checked_count, sanitize_entry_path, BinReader, BinWriter, Endian,
-    MAX_ARCHIVE_ALLOC_BYTES,
+    align, checked_count, sanitize_entry_path, validate_single_entry_name, BinReader, BinWriter,
+    Endian, MAX_ARCHIVE_ALLOC_BYTES,
 };
 use crate::oodle_fallback::decompress_oodle_fallback;
 use crate::{PgError, Result};
+
+/// Default ZStandard compression level, matching `CompressionCodec.DefaultZstdLevel`.
+pub const DEFAULT_ZSTD_LEVEL: i32 = 3;
+/// Minimum ZStandard compression level.
+pub const MIN_ZSTD_LEVEL: i32 = 1;
+/// Maximum ZStandard compression level.
+pub const MAX_ZSTD_LEVEL: i32 = 22;
+
+/// Default Oodle Kraken compression level (`Normal` = 4), matching `Oodle.DefaultKrakenLevel`.
+pub const DEFAULT_OODLE_LEVEL: i32 = 4;
+/// Minimum Oodle Kraken compression level (`SuperFast` = 1).
+pub const MIN_OODLE_LEVEL: i32 = 1;
+/// Maximum Oodle Kraken compression level (`Optimal5` = 9).
+pub const MAX_OODLE_LEVEL: i32 = 9;
+
+/// Worthwhile compression ratio numerator (`0.90` = 9 / 10).
+/// Entries whose compressed size is `>= 90%` of the uncompressed size are stored as `None`
+/// unless `force_compression` is enabled.
+pub const COMPRESSION_WORTHWHILE_NUM: u128 = 9;
+pub const COMPRESSION_WORTHWHILE_DEN: u128 = 10;
+
+/// Return the default compression level for a codec name (`ZStandard` -> 3, `OodleKraken` -> 4, `None` -> 0).
+pub fn default_compression_level(codec: &str) -> i32 {
+    let low = codec.trim().to_ascii_lowercase();
+    if low.contains("oodle") || low.contains("kraken") {
+        DEFAULT_OODLE_LEVEL
+    } else if low == "none" || low.is_empty() {
+        0
+    } else {
+        DEFAULT_ZSTD_LEVEL
+    }
+}
+
+/// Clamp a requested compression level into the valid range for `codec`.
+pub fn clamp_compression_level(codec: &str, level: i32) -> i32 {
+    let low = codec.trim().to_ascii_lowercase();
+    if low.contains("oodle") || low.contains("kraken") {
+        level.clamp(MIN_OODLE_LEVEL, MAX_OODLE_LEVEL)
+    } else if low == "none" || low.is_empty() {
+        0
+    } else {
+        level.clamp(MIN_ZSTD_LEVEL, MAX_ZSTD_LEVEL)
+    }
+}
+
+/// Returns true when `compressed_len` shrinks `raw_len` below the 90% threshold (or when `force` is set).
+#[inline]
+pub fn is_compression_worthwhile(compressed_len: usize, raw_len: usize, force: bool) -> bool {
+    if raw_len == 0 {
+        return false;
+    }
+    if force {
+        return true;
+    }
+    (compressed_len as u128) * COMPRESSION_WORTHWHILE_DEN
+        < (raw_len as u128) * COMPRESSION_WORTHWHILE_NUM
+}
+
+/// Normalize a virtual path inside a `.pkz` archive:
+/// - Converts `\` to `/`
+/// - Strips leading/trailing `/`
+/// - Validates each path segment via `validate_single_entry_name` (rejecting `.`, `..`, colons, reserved device names)
+pub fn normalize_pkz_virtual_path(raw_path: &str) -> Result<String> {
+    let normalized = raw_path.trim().replace('\\', "/");
+    let mut segments: Vec<String> = Vec::new();
+    for seg in normalized.split('/') {
+        let trimmed = seg.trim();
+        if trimmed.is_empty() {
+            continue;
+        }
+        let valid = validate_single_entry_name(trimmed)?;
+        segments.push(valid);
+    }
+    if segments.is_empty() {
+        return Err(PgError::InvalidData(
+            "PKZ virtual path cannot be empty".to_string(),
+        ));
+    }
+    Ok(segments.join("/"))
+}
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct PkzFileDescriptor {
@@ -140,6 +223,32 @@ impl OodleLibrary {
         ))
     }
 
+    /// True when the loaded library exports `OodleLZ_Decompress`.
+    pub fn can_decompress(&self) -> bool {
+        unsafe {
+            self.lib
+                .get::<*const std::ffi::c_void>(b"OodleLZ_Decompress\0")
+                .is_ok()
+                || self
+                    .lib
+                    .get::<*const std::ffi::c_void>(b"_OodleLZ_Decompress@56\0")
+                    .is_ok()
+        }
+    }
+
+    /// True when the loaded library exports `OodleLZ_Compress`.
+    pub fn can_compress(&self) -> bool {
+        unsafe {
+            self.lib
+                .get::<*const std::ffi::c_void>(b"OodleLZ_Compress\0")
+                .is_ok()
+                || self
+                    .lib
+                    .get::<*const std::ffi::c_void>(b"_OodleLZ_Compress@40\0")
+                    .is_ok()
+        }
+    }
+
     pub fn decompress(&self, compressed: &[u8], uncompressed_size: usize) -> Result<Vec<u8>> {
         if uncompressed_size == 0 {
             return Ok(Vec::new());
@@ -227,8 +336,15 @@ impl OodleLibrary {
         decompress_oodle_fallback(compressed, uncompressed_size)
     }
 
-    /// Compress `raw` using `OodleLZ_Compress` (Kraken = 8, Normal = 4), matching `Oodle.cs` in `PKZ-Explorer`.
+    /// Compress `raw` using `OodleLZ_Compress` (Kraken = 8, Default level = 4).
     pub fn compress(&self, raw: &[u8]) -> Result<Vec<u8>> {
+        self.compress_with_level(raw, DEFAULT_OODLE_LEVEL)
+    }
+
+    /// Compress `raw` using `OodleLZ_Compress` (Kraken = 8) at `level` (`1..=9`),
+    /// passing the 100-byte options struct (`seekChunkReset = 1`, `seekChunkLen = 0x40000`)
+    /// matching `Oodle.cs` in `PKZ-Explorer`.
+    pub fn compress_with_level(&self, raw: &[u8], level: i32) -> Result<Vec<u8>> {
         if raw.is_empty() {
             return Ok(Vec::new());
         }
@@ -254,7 +370,12 @@ impl OodleLibrary {
                 })?
         };
 
-        let bound = raw.len() + 274 * ((raw.len() + 0x3FFFF) / 0x40000) + 64;
+        let clamped_level = clamp_compression_level("OodleKraken", level);
+        let mut options = [0u8; 100];
+        options[8..12].copy_from_slice(&1i32.to_le_bytes()); // seekChunkReset = 1
+        options[12..16].copy_from_slice(&0x40000i32.to_le_bytes()); // seekChunkLen = 0x40000
+
+        let bound = raw.len() + 65536usize.max(274 * ((raw.len() + 0x3FFFF) / 0x40000) + 64);
         let mut comp = vec![0u8; bound];
         let written = unsafe {
             func(
@@ -262,8 +383,8 @@ impl OodleLibrary {
                 raw.as_ptr(),
                 raw.len() as isize,
                 comp.as_mut_ptr(),
-                4, // OodleCompressionLevel.Normal
-                std::ptr::null(),
+                clamped_level,
+                options.as_ptr() as *const std::ffi::c_void,
                 std::ptr::null(),
                 std::ptr::null(),
                 std::ptr::null_mut(),
@@ -394,6 +515,26 @@ impl PkzArchive {
         })
     }
 
+    /// Return the raw stored compressed slice for entry `index`.
+    pub fn raw_entry_slice<'a>(&self, archive_bytes: &'a [u8], index: usize) -> Result<&'a [u8]> {
+        let desc = self
+            .descriptors
+            .get(index)
+            .ok_or_else(|| PgError::InvalidData(format!("PKZ entry index {index} out of bounds")))?;
+        let start = desc.offset as usize;
+        let end = start.saturating_add(desc.compressed_size as usize);
+        if end > archive_bytes.len() {
+            return Err(PgError::InvalidData(format!(
+                "PKZ entry {} slice ({}..{}) out of bounds (len {})",
+                desc.name,
+                start,
+                end,
+                archive_bytes.len()
+            )));
+        }
+        Ok(&archive_bytes[start..end])
+    }
+
     /// Extract and decompress a single entry by index from the `.pkz` archive bytes.
     /// Automatically uses the pure-Rust `ooz` Oodle Kraken fallback when `oo2core_*.dll` is absent.
     pub fn extract_entry(
@@ -423,18 +564,7 @@ impl PkzArchive {
                 desc.name, desc.size
             )));
         }
-        let start = desc.offset as usize;
-        let end = start.saturating_add(desc.compressed_size as usize);
-        if end > archive_bytes.len() {
-            return Err(PgError::InvalidData(format!(
-                "PKZ entry {} slice ({}..{}) out of bounds (len {})",
-                desc.name,
-                start,
-                end,
-                archive_bytes.len()
-            )));
-        }
-        let raw_slice = &archive_bytes[start..end];
+        let raw_slice = self.raw_entry_slice(archive_bytes, index)?;
         let comp_lower = desc.compression.to_ascii_lowercase();
         if comp_lower.is_empty() || comp_lower == "none" {
             return Ok(raw_slice.to_vec());
@@ -463,7 +593,7 @@ impl PkzArchive {
             }
             return Ok(out);
         }
-        if comp_lower == "oodlekraken" || comp_lower == "oodle" {
+        if comp_lower == "oodlekraken" || comp_lower == "oodle" || comp_lower == "kraken" {
             if desc.compressed_size == desc.size {
                 return Ok(raw_slice.to_vec());
             }
@@ -545,6 +675,36 @@ impl PkzArchive {
         renamed_entries: Option<&HashMap<usize, String>>,
         oodle_dll: Option<&Path>,
     ) -> Result<Vec<u8>> {
+        self.repack_with_full_options(
+            original_archive_bytes,
+            replacements,
+            added_files,
+            removed_indices,
+            reorder_map,
+            preferred_compression,
+            compression_overrides,
+            renamed_entries,
+            None,
+            false,
+            oodle_dll,
+        )
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub fn repack_with_full_options(
+        &self,
+        original_archive_bytes: &[u8],
+        replacements: &HashMap<usize, Vec<u8>>,
+        added_files: &[(String, Vec<u8>)],
+        removed_indices: &[usize],
+        reorder_map: Option<&[usize]>,
+        preferred_compression: Option<&str>,
+        compression_overrides: Option<&HashMap<usize, String>>,
+        renamed_entries: Option<&HashMap<usize, String>>,
+        compression_level: Option<i32>,
+        force_compression: bool,
+        oodle_dll: Option<&Path>,
+    ) -> Result<Vec<u8>> {
         let default_zstd_label = if self.is_lowercase_magic {
             "ZStandard"
         } else {
@@ -552,14 +712,7 @@ impl PkzArchive {
         };
         let oodle_lib = OodleLibrary::load(oodle_dll).ok();
 
-        struct PendingItem {
-            name: String,
-            compression: String,
-            uncompressed_size: u64,
-            compressed_payload: Vec<u8>,
-        }
-
-        let mut items: Vec<PendingItem> = Vec::new();
+        let mut raw_items: Vec<(String, String, u64, Vec<u8>)> = Vec::new();
         let indices: Vec<usize> = if let Some(order) = reorder_map {
             order.to_vec()
         } else {
@@ -586,31 +739,26 @@ impl PkzArchive {
                 let (actual_comp, payload) = Self::compress_payload(
                     new_raw,
                     target_comp,
+                    compression_level,
+                    force_compression,
                     default_zstd_label,
                     oodle_lib.as_ref(),
                 )?;
-                items.push(PendingItem {
-                    name: entry_name,
-                    compression: actual_comp,
-                    uncompressed_size: new_raw.len() as u64,
-                    compressed_payload: payload,
-                });
+                raw_items.push((entry_name, actual_comp, new_raw.len() as u64, payload));
             } else if let Some(override_codec) = entry_comp_override {
-                if !override_codec.eq_ignore_ascii_case(&desc.compression) {
+                let level_changed = compression_level.is_some();
+                if !override_codec.eq_ignore_ascii_case(&desc.compression) || level_changed {
                     let raw_bytes =
                         self.extract_entry_with_lib(original_archive_bytes, idx, oodle_lib.as_ref())?;
                     let (actual_comp, payload) = Self::compress_payload(
                         &raw_bytes,
                         override_codec,
+                        compression_level,
+                        force_compression,
                         default_zstd_label,
                         oodle_lib.as_ref(),
                     )?;
-                    items.push(PendingItem {
-                        name: entry_name,
-                        compression: actual_comp,
-                        uncompressed_size: raw_bytes.len() as u64,
-                        compressed_payload: payload,
-                    });
+                    raw_items.push((entry_name, actual_comp, raw_bytes.len() as u64, payload));
                 } else {
                     let start = desc.offset as usize;
                     let end = (start + desc.compressed_size as usize).min(original_archive_bytes.len());
@@ -619,12 +767,7 @@ impl PkzArchive {
                     } else {
                         Vec::new()
                     };
-                    items.push(PendingItem {
-                        name: entry_name,
-                        compression: desc.compression.clone(),
-                        uncompressed_size: desc.size,
-                        compressed_payload: slice,
-                    });
+                    raw_items.push((entry_name, desc.compression.clone(), desc.size, slice));
                 }
             } else {
                 let start = desc.offset as usize;
@@ -634,12 +777,7 @@ impl PkzArchive {
                 } else {
                     Vec::new()
                 };
-                items.push(PendingItem {
-                    name: entry_name,
-                    compression: desc.compression.clone(),
-                    uncompressed_size: desc.size,
-                    compressed_payload: slice,
-                });
+                raw_items.push((entry_name, desc.compression.clone(), desc.size, slice));
             }
         }
 
@@ -648,17 +786,20 @@ impl PkzArchive {
             let (actual_comp, payload) = Self::compress_payload(
                 raw,
                 target_comp,
+                compression_level,
+                force_compression,
                 default_zstd_label,
                 oodle_lib.as_ref(),
             )?;
-            items.push(PendingItem {
-                name: name.clone(),
-                compression: actual_comp,
-                uncompressed_size: raw.len() as u64,
-                compressed_payload: payload,
-            });
+            raw_items.push((name.clone(), actual_comp, raw.len() as u64, payload));
         }
 
+        Ok(self.pack_raw_slices(&raw_items))
+    }
+
+    /// Lay out pre-compressed `(name, compression_label, uncompressed_size, compressed_payload)` slices
+    /// into a `.pkz` archive preserving this archive's header format and alignment.
+    pub fn pack_raw_slices(&self, items: &[(String, String, u64, Vec<u8>)]) -> Vec<u8> {
         let num_files = items.len();
         let offset_file_descriptors = 0x20usize;
         let entry_byte_size = if self.is_32byte_descriptors { 32 } else { 40 };
@@ -684,19 +825,11 @@ impl PkzArchive {
 
         let mut name_offsets = Vec::with_capacity(num_files);
         let mut comp_offsets = Vec::with_capacity(num_files);
-        for item in &items {
-            comp_offsets.push(intern_str(
-                &item.compression,
-                &mut string_table,
-                &mut string_offsets,
-            ));
+        for (_, comp, _, _) in items {
+            comp_offsets.push(intern_str(comp, &mut string_table, &mut string_offsets));
         }
-        for item in &items {
-            name_offsets.push(intern_str(
-                &item.name,
-                &mut string_table,
-                &mut string_offsets,
-            ));
+        for (name, _, _, _) in items {
+            name_offsets.push(intern_str(name, &mut string_table, &mut string_offsets));
         }
 
         let align_boundary = if self.is_lowercase_magic { 8 } else { 64 };
@@ -710,12 +843,12 @@ impl PkzArchive {
         );
 
         let mut raw_descs = Vec::with_capacity(num_files);
-        for (i, item) in items.iter().enumerate() {
-            let comp_len = item.compressed_payload.len();
+        for (i, (_, _, uncomp_sz, payload)) in items.iter().enumerate() {
+            let comp_len = payload.len();
             raw_descs.push(RawFileDescriptor {
                 name_offset: name_offsets[i],
                 compression_offset: comp_offsets[i],
-                size: item.uncompressed_size,
+                size: *uncomp_sz,
                 offset: data_offset as u64,
                 compressed_size: comp_len as u64,
             });
@@ -756,38 +889,52 @@ impl PkzArchive {
         w.write_bytes(&string_table);
         w.align_to(data_alignment);
 
-        for (desc, item) in raw_descs.iter().zip(items.iter()) {
+        for (desc, (_, _, _, payload)) in raw_descs.iter().zip(items.iter()) {
             w.seek(desc.offset as usize);
-            w.write_bytes(&item.compressed_payload);
+            w.write_bytes(payload);
             w.align_to(data_alignment);
         }
 
-        Ok(w.into_inner())
+        w.into_inner()
     }
 
-    fn compress_payload(
+    pub fn compress_payload(
         raw: &[u8],
         requested_codec: &str,
+        level: Option<i32>,
+        force_compression: bool,
         default_zstd_label: &str,
         oodle_lib: Option<&OodleLibrary>,
     ) -> Result<(String, Vec<u8>)> {
-        let low = requested_codec.to_ascii_lowercase();
-        if low.is_empty() || low == "none" {
+        let low = requested_codec.trim().to_ascii_lowercase();
+        if raw.is_empty() || low.is_empty() || low == "none" || low == "uncompressed" {
             return Ok(("None".to_string(), raw.to_vec()));
         }
-        if low == "oodlekraken" || low == "oodle" {
+        if low == "oodlekraken" || low == "oodle" || low == "kraken" || low == "oodle kraken" {
+            let oodle_lvl = clamp_compression_level(
+                "OodleKraken",
+                level.unwrap_or(DEFAULT_OODLE_LEVEL),
+            );
             if let Some(oodle) = oodle_lib {
-                if let Ok(comp) = oodle.compress(raw) {
-                    if comp.len() < raw.len() {
+                if let Ok(comp) = oodle.compress_with_level(raw, oodle_lvl) {
+                    if is_compression_worthwhile(comp.len(), raw.len(), force_compression) {
                         return Ok(("OodleKraken".to_string(), comp));
                     } else {
-                        return Ok(("OodleKraken".to_string(), raw.to_vec()));
+                        return Ok(("None".to_string(), raw.to_vec()));
                     }
                 }
             }
-            let zstd_bytes = zstd::stream::encode_all(raw, 3)
+            let zstd_lvl = clamp_compression_level(
+                "ZStandard",
+                level.unwrap_or(DEFAULT_ZSTD_LEVEL),
+            );
+            let zstd_bytes = zstd::stream::encode_all(raw, zstd_lvl)
                 .map_err(|e| PgError::InvalidData(format!("Zstd encode error: {e}")))?;
-            return Ok((default_zstd_label.to_string(), zstd_bytes));
+            if is_compression_worthwhile(zstd_bytes.len(), raw.len(), force_compression) {
+                return Ok((default_zstd_label.to_string(), zstd_bytes));
+            } else {
+                return Ok(("None".to_string(), raw.to_vec()));
+            }
         }
         let label = if requested_codec.eq_ignore_ascii_case("ZStandard") {
             "ZStandard"
@@ -796,13 +943,108 @@ impl PkzArchive {
         } else {
             default_zstd_label
         };
-        let zstd_bytes = zstd::stream::encode_all(raw, 3)
+        let zstd_lvl = clamp_compression_level(
+            "ZStandard",
+            level.unwrap_or(DEFAULT_ZSTD_LEVEL),
+        );
+        let zstd_bytes = zstd::stream::encode_all(raw, zstd_lvl)
             .map_err(|e| PgError::InvalidData(format!("Zstd encode error: {e}")))?;
-        Ok((label.to_string(), zstd_bytes))
+        if is_compression_worthwhile(zstd_bytes.len(), raw.len(), force_compression) {
+            Ok((label.to_string(), zstd_bytes))
+        } else {
+            Ok(("None".to_string(), raw.to_vec()))
+        }
     }
 
-    /// Build a `.pkz` archive from `(filename, raw_bytes)` pairs using ZStandard/Zstd or uncompressed storage.
-    pub fn build(files: &[(String, Vec<u8>)], prefer_zstd: bool) -> Result<Vec<u8>> {
+    /// Recursively collect all files under `source_dir`, returning `(virtual_path, raw_bytes)`
+    /// sorted case-insensitively by virtual path (`pl/pl0000.dat`), matching `PkzFolderBuilder.cs`.
+    pub fn collect_dir_files_recursive(source_dir: &Path) -> Result<Vec<(String, Vec<u8>)>> {
+        if !source_dir.is_dir() {
+            return Err(PgError::InvalidData(format!(
+                "PKZ source folder does not exist: {}",
+                source_dir.display()
+            )));
+        }
+        let mut collected: Vec<(String, PathBuf)> = Vec::new();
+        fn walk(base: &Path, cur: &Path, out: &mut Vec<(String, PathBuf)>) -> Result<()> {
+            for entry in fs::read_dir(cur)? {
+                let entry = entry?;
+                let ft = entry.file_type()?;
+                if ft.is_symlink() {
+                    continue;
+                }
+                let path = entry.path();
+                if ft.is_dir() {
+                    walk(base, &path, out)?;
+                } else if ft.is_file() {
+                    let rel = path.strip_prefix(base).map_err(|e| {
+                        PgError::InvalidData(format!("Failed to compute relative path: {e}"))
+                    })?;
+                    let rel_str = rel
+                        .components()
+                        .filter_map(|c| match c {
+                            std::path::Component::Normal(s) => s.to_str(),
+                            _ => None,
+                        })
+                        .collect::<Vec<_>>()
+                        .join("/");
+                    let norm = normalize_pkz_virtual_path(&rel_str)?;
+                    out.push((norm, path));
+                }
+            }
+            Ok(())
+        }
+        walk(source_dir, source_dir, &mut collected)?;
+        collected.sort_by(|a, b| {
+            a.0.to_ascii_lowercase()
+                .cmp(&b.0.to_ascii_lowercase())
+                .then_with(|| a.0.cmp(&b.0))
+        });
+
+        let mut files = Vec::with_capacity(collected.len());
+        for (vpath, disk_path) in collected {
+            let bytes = fs::read(&disk_path)?;
+            files.push((vpath, bytes));
+        }
+        Ok(files)
+    }
+
+    /// Build a `.pkz` archive recursively from `source_dir` using the requested codec, level,
+    /// and 90% worthwhile compression rule (`PkzFolderBuilder.Build` parity).
+    pub fn build_from_dir(
+        source_dir: &Path,
+        codec: &str,
+        level: i32,
+        force_compression: bool,
+        oodle_dll: Option<&Path>,
+    ) -> Result<Vec<u8>> {
+        let files = Self::collect_dir_files_recursive(source_dir)?;
+        if files.is_empty() {
+            return Err(PgError::InvalidData(
+                "The folder has no files to pack into a PKZ archive".into(),
+            ));
+        }
+        Self::build_with_options(&files, codec, Some(level), force_compression, oodle_dll)
+    }
+
+    /// Build a `.pkz` archive from `(filename, raw_bytes)` pairs with explicit codec, level, and threshold options.
+    pub fn build_with_options(
+        files: &[(String, Vec<u8>)],
+        codec: &str,
+        level: Option<i32>,
+        force_compression: bool,
+        oodle_dll: Option<&Path>,
+    ) -> Result<Vec<u8>> {
+        let req_low = codec.trim().to_ascii_lowercase();
+        if (req_low == "oodlekraken" || req_low == "oodle" || req_low == "kraken" || req_low == "oodle kraken")
+            && !OodleLibrary::load(oodle_dll)
+                .map(|l| l.can_compress())
+                .unwrap_or(false)
+        {
+            return Err(PgError::Unsupported(
+                "OODLE_DLL_MISSING: oo2core_*_win64.dll with OodleLZ_Compress is required to compress with OodleKraken.".into(),
+            ));
+        }
         let dummy = Self {
             endian: Endian::Little,
             is_lowercase_magic: true,
@@ -810,11 +1052,24 @@ impl PkzArchive {
             unknown: 0x0002_0000,
             descriptors: Vec::new(),
         };
-        let codec = if prefer_zstd {
-            Some("ZStandard")
-        } else {
-            Some("None")
-        };
-        dummy.repack_with_replacements(&[], &HashMap::new(), files, &[], None, codec, None)
+        dummy.repack_with_full_options(
+            &[],
+            &HashMap::new(),
+            files,
+            &[],
+            None,
+            Some(codec),
+            None,
+            None,
+            level,
+            force_compression,
+            oodle_dll,
+        )
+    }
+
+    /// Build a `.pkz` archive from `(filename, raw_bytes)` pairs using ZStandard/Zstd or uncompressed storage.
+    pub fn build(files: &[(String, Vec<u8>)], prefer_zstd: bool) -> Result<Vec<u8>> {
+        let codec = if prefer_zstd { "ZStandard" } else { "None" };
+        Self::build_with_options(files, codec, None, false, None)
     }
 }

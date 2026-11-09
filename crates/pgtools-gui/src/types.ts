@@ -10,6 +10,8 @@ export interface StudioSettings {
   asset_ratio: number;
   oodle_dll_path: string;
   nvtt_dll_path: string;
+  pkz_default_compression?: string;
+  pkz_default_level?: number;
   core_dat_b1: string;
   core_dat_b2: string;
   core_dat_b3: string;
@@ -19,6 +21,37 @@ export interface StudioSettings {
   wmb_skeleton_overlay?: boolean;
   wmb_grid_visible?: boolean;
 }
+
+export interface OodleValidationReport {
+  found: boolean;
+  resolved_path: string;
+  can_decompress: boolean;
+  can_compress: boolean;
+  message: string;
+}
+
+export interface PkzCompressionModalState {
+  title: string;
+  subtitle?: string;
+  compression: "None" | "ZStandard" | "OodleKraken";
+  level: number;
+  forceCompression: boolean;
+  onConfirm: (
+    compression: "None" | "ZStandard" | "OodleKraken",
+    level: number,
+    forceCompression: boolean
+  ) => Promise<void> | void;
+}
+
+export interface PkzConflictModalState {
+  kind: "collision" | "extract_overwrite";
+  title: string;
+  message: string;
+  paths?: string[];
+  onChoice: (policy: "overwrite" | "skip") => Promise<void> | void;
+}
+
+export type PkzSortCol = "pkz_order" | "name" | "format" | "compression" | "size";
 
 export interface FsEntry {
   name: string;
@@ -37,6 +70,8 @@ export interface AssetTreeNode {
   kind: string;
   format_badge: string;
   size: number;
+  modified?: boolean;
+  compression?: string | null;
   children: AssetTreeNode[];
 }
 

@@ -5,15 +5,18 @@ use pgtools_core::{
     bxm::BxmFile,
     dat::DatFile,
     eff::{EffDirectory, EffFile, EffSubFile},
-    io::{sanitize_entry_path, Endian},
-    pkz::{OodleLibrary, PkzArchive},
+    io::{sanitize_entry_path, validate_single_entry_name, Endian},
+    pkz::{
+        clamp_compression_level, default_compression_level, normalize_pkz_virtual_path,
+        OodleLibrary, PkzArchive,
+    },
     scr::ScrFile,
     wmb::WmbFile,
     wmb3::Wmb3File,
     wtb::WtbFile,
 };
 use serde::{Deserialize, Serialize};
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -26,6 +29,10 @@ pub struct AssetTreeNode {
     pub kind: String,
     pub format_badge: String,
     pub size: usize,
+    #[serde(default)]
+    pub modified: bool,
+    #[serde(default)]
+    pub compression: Option<String>,
     pub children: Vec<AssetTreeNode>,
 }
 
@@ -91,6 +98,17 @@ pub(crate) fn is_bntx_blob(bytes: &[u8]) -> bool {
         || (bytes.len() >= 84 && &bytes[80..84] == b"BNTX")
 }
 
+pub(crate) fn parse_eff_entry_id(fname: &str) -> u32 {
+    let stem = fname.split('.').next().unwrap_or("");
+    if let Some(hex) = stem.strip_prefix("0x").or_else(|| stem.strip_prefix("0X")) {
+        u32::from_str_radix(hex, 16).unwrap_or(0)
+    } else {
+        stem.parse::<u32>()
+            .or_else(|_| u32::from_str_radix(stem, 16))
+            .unwrap_or(0)
+    }
+}
+
 pub(crate) fn find_pkz_peer_dtt_index(pkz: &PkzArchive, entry_name: &str) -> Option<usize> {
     if !entry_name.to_ascii_lowercase().ends_with(".dat") || entry_name.len() < 4 {
         return None;
@@ -100,6 +118,69 @@ pub(crate) fn find_pkz_peer_dtt_index(pkz: &PkzArchive, entry_name: &str) -> Opt
     pkz.descriptors
         .iter()
         .position(|d| d.name.eq_ignore_ascii_case(&target_dtt))
+}
+
+/// Compare a current `PkzArchive` against its saved baseline bytes (if any).
+/// Returns `(entry_index -> is_modified, total_staged_change_count)`.
+pub(crate) fn compute_pkz_modified_map(
+    cur_bytes: &[u8],
+    cur_pkz: &PkzArchive,
+    base_bytes: Option<&[u8]>,
+) -> (HashMap<usize, bool>, usize) {
+    let Some(bb) = base_bytes else {
+        return (HashMap::new(), 0);
+    };
+    let Ok(base_pkz) = PkzArchive::from_bytes(bb) else {
+        return (HashMap::new(), 0);
+    };
+
+    let mut base_by_key: HashMap<String, (usize, &pgtools_core::pkz::PkzFileDescriptor)> =
+        HashMap::with_capacity(base_pkz.descriptors.len());
+    for (bi, bd) in base_pkz.descriptors.iter().enumerate() {
+        let key = bd
+            .name
+            .replace('\\', "/")
+            .trim_start_matches('/')
+            .to_ascii_lowercase();
+        base_by_key.entry(key).or_insert((bi, bd));
+    }
+
+    let mut seen_base_keys: HashSet<String> = HashSet::with_capacity(cur_pkz.descriptors.len());
+    let mut mod_map: HashMap<usize, bool> = HashMap::with_capacity(cur_pkz.descriptors.len());
+    let mut modified_count = 0usize;
+
+    for (ci, cd) in cur_pkz.descriptors.iter().enumerate() {
+        let key = cd
+            .name
+            .replace('\\', "/")
+            .trim_start_matches('/')
+            .to_ascii_lowercase();
+        seen_base_keys.insert(key.clone());
+
+        let is_mod = match base_by_key.get(&key) {
+            None => true,
+            Some(&(bi, bd)) => {
+                let cur_slice = cur_pkz.raw_entry_slice(cur_bytes, ci).unwrap_or(&[]);
+                let base_slice = base_pkz.raw_entry_slice(bb, bi).unwrap_or(&[]);
+                cd.name != bd.name
+                    || !cd.compression.eq_ignore_ascii_case(&bd.compression)
+                    || cd.size != bd.size
+                    || cd.compressed_size != bd.compressed_size
+                    || cur_slice != base_slice
+            }
+        };
+        if is_mod {
+            modified_count += 1;
+        }
+        mod_map.insert(ci, is_mod);
+    }
+
+    let deleted_count = base_by_key
+        .keys()
+        .filter(|k| !seen_base_keys.contains(*k))
+        .count();
+
+    (mod_map, modified_count + deleted_count)
 }
 
 pub(crate) fn detect_file_format_tag(name: &str, bytes: &[u8]) -> &'static str {
@@ -236,13 +317,38 @@ pub(crate) fn build_nodes_for_blob(
     oodle_dll: Option<&Path>,
     depth: usize,
 ) -> AssetTreeNode {
+    build_nodes_for_blob_with_baseline(
+        id_prefix,
+        name,
+        bytes,
+        None,
+        sibling_wtp,
+        sibling_dtt_bytes,
+        oodle_dll,
+        depth,
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn build_nodes_for_blob_with_baseline(
+    id_prefix: &str,
+    name: &str,
+    bytes: &[u8],
+    baseline_bytes: Option<&[u8]>,
+    sibling_wtp: Option<&[u8]>,
+    sibling_dtt_bytes: Option<&[u8]>,
+    oodle_dll: Option<&Path>,
+    depth: usize,
+) -> AssetTreeNode {
     let tag = detect_file_format_tag(name, bytes);
     let mut children = Vec::new();
+    let mut node_modified = false;
 
     if depth < 6 {
         match tag {
             "DAT" => {
                 if let Ok(dat) = DatFile::from_bytes(bytes) {
+                    let base_dat = baseline_bytes.and_then(|bb| DatFile::from_bytes(bb).ok());
                     let parsed_dtt = sibling_dtt_bytes.and_then(|b| DatFile::from_bytes(b).ok());
                     let dtt_slice = parsed_dtt.as_ref().map(|d| d.entries.as_slice());
                     let total_wtas = dat
@@ -272,20 +378,30 @@ pub(crate) fn build_nodes_for_blob(
                         } else {
                             None
                         };
-                        children.push(build_nodes_for_blob(
+                        let child_base = base_dat
+                            .as_ref()
+                            .and_then(|bd| bd.entries.get(idx))
+                            .map(|be| be.data.as_slice());
+                        let child_node = build_nodes_for_blob_with_baseline(
                             &child_id,
                             &entry.name,
                             &entry.data,
+                            child_base,
                             pair_wtp.as_deref(),
                             None,
                             oodle_dll,
                             depth + 1,
-                        ));
+                        );
+                        node_modified |= child_node.modified;
+                        children.push(child_node);
                     }
                 }
             }
             "PKZ" => {
                 if let Ok(pkz) = PkzArchive::from_bytes(bytes) {
+                    let (pkz_mod_map, pkz_staged_total) =
+                        compute_pkz_modified_map(bytes, &pkz, baseline_bytes);
+                    node_modified = pkz_staged_total > 0;
                     let oodle_lib = OodleLibrary::load(oodle_dll).ok();
                     let mut unpacked_cache: HashMap<usize, Vec<u8>> = HashMap::new();
                     for (idx, desc) in pkz.descriptors.iter().enumerate() {
@@ -297,7 +413,7 @@ pub(crate) fn build_nodes_for_blob(
                         // Only decompress nested containers that expand into sub-trees in the Asset Browser
                         let expands_in_tree = matches!(
                             ext.as_str(),
-                            "dat" | "dtt" | "evn" | "eff" | "idd" | "scr" | "wtb" | "wta" | "wtp" | "wmb" | "bntx"
+                            "dat" | "dtt" | "evn" | "pkz" | "eff" | "idd" | "scr" | "wtb" | "wta" | "wtp" | "wmb" | "bntx"
                         );
                         if expands_in_tree {
                             if let Ok(u) = pkz.extract_entry_with_lib(bytes, idx, oodle_lib.as_ref()) {
@@ -338,11 +454,14 @@ pub(crate) fn build_nodes_for_blob(
                                 kind: "PKZ_FOLDER".into(),
                                 format_badge: "DIR".into(),
                                 size: 0,
+                                modified: false,
+                                compression: None,
                                 children: Vec::new(),
                             });
                             nodes.last_mut().unwrap()
                         };
                         folder_node.size += leaf_node.size;
+                        folder_node.modified |= leaf_node.modified;
                         insert_into_pkz_folder(
                             &mut folder_node.children,
                             &folder_parts[1..],
@@ -363,8 +482,9 @@ pub(crate) fn build_nodes_for_blob(
                         let segs: Vec<&str> = clean_path.split('/').filter(|s| !s.is_empty()).collect();
                         let base_name = segs.last().copied().unwrap_or(desc.name.as_str());
                         let folder_segs = if segs.len() > 1 { &segs[..segs.len() - 1] } else { &[] };
+                        let is_entry_mod = pkz_mod_map.get(&idx).copied().unwrap_or(false);
 
-                        let leaf_node = if let Some(unpacked) = unpacked_cache.get(&idx) {
+                        let mut leaf_node = if let Some(unpacked) = unpacked_cache.get(&idx) {
                             let peer_dtt = if desc.name.to_ascii_lowercase().ends_with(".dat") {
                                 let stem = &desc.name[..desc.name.len() - 4];
                                 let target_dtt = format!("{stem}.dtt");
@@ -392,9 +512,13 @@ pub(crate) fn build_nodes_for_blob(
                                 kind: tag.to_string(),
                                 format_badge: tag.to_string(),
                                 size: desc.size as usize,
+                                modified: is_entry_mod,
+                                compression: Some(desc.compression.clone()),
                                 children: Vec::new(),
                             }
                         };
+                        leaf_node.modified = is_entry_mod;
+                        leaf_node.compression = Some(desc.compression.clone());
                         insert_into_pkz_folder(&mut children, folder_segs, "", id_prefix, leaf_node);
                     }
                 }
@@ -426,6 +550,8 @@ pub(crate) fn build_nodes_for_blob(
                             kind: "EFF_DIR".into(),
                             format_badge: "DIR".into(),
                             size: dir.files.iter().map(|x| x.data.len()).sum(),
+                            modified: false,
+                            compression: None,
                             children: dir_children,
                         });
                     }
@@ -498,6 +624,8 @@ pub(crate) fn build_nodes_for_blob(
                             kind: "TEXTURE".into(),
                             format_badge: fmt_badge,
                             size: e.data.len(),
+                            modified: false,
+                            compression: None,
                             children: Vec::new(),
                         });
                     }
@@ -517,6 +645,8 @@ pub(crate) fn build_nodes_for_blob(
                         kind: "WMB_HEADER".into(),
                         format_badge: "HDR".into(),
                         size: 128,
+                        modified: false,
+                        compression: None,
                         children: Vec::new(),
                     });
                     children.push(AssetTreeNode {
@@ -525,6 +655,8 @@ pub(crate) fn build_nodes_for_blob(
                         kind: "WMB_VERTEXES".into(),
                         format_badge: "VTX".into(),
                         size: wmb.vertexes.len() * 32,
+                        modified: false,
+                        compression: None,
                         children: Vec::new(),
                     });
                     children.push(AssetTreeNode {
@@ -533,6 +665,8 @@ pub(crate) fn build_nodes_for_blob(
                         kind: "WMB_BONES".into(),
                         format_badge: "SKEL".into(),
                         size: wmb.bone_hierarchy.len() * 16,
+                        modified: false,
+                        compression: None,
                         children: Vec::new(),
                     });
                     let mat_children: Vec<AssetTreeNode> = wmb
@@ -550,6 +684,8 @@ pub(crate) fn build_nodes_for_blob(
                                 kind: "WMB_MATERIAL".into(),
                                 format_badge: format!("0x{:02X}", m.mat_type),
                                 size: m.byte_size(),
+                                modified: false,
+                                compression: None,
                                 children: Vec::new(),
                             }
                         })
@@ -560,6 +696,8 @@ pub(crate) fn build_nodes_for_blob(
                         kind: "WMB_MATERIALS".into(),
                         format_badge: "MAT".into(),
                         size: wmb.materials.iter().map(|m| m.byte_size()).sum(),
+                        modified: false,
+                        compression: None,
                         children: mat_children,
                     });
                     let mesh_children: Vec<AssetTreeNode> = wmb
@@ -591,6 +729,8 @@ pub(crate) fn build_nodes_for_blob(
                                             "BATCH".into()
                                         },
                                         size: b.byte_size(),
+                                        modified: false,
+                                        compression: None,
                                         children: Vec::new(),
                                     }
                                 })
@@ -605,6 +745,8 @@ pub(crate) fn build_nodes_for_blob(
                                 kind: "WMB_MESH".into(),
                                 format_badge: "MESH".into(),
                                 size: mesh.byte_size(),
+                                modified: false,
+                                compression: None,
                                 children: batch_nodes,
                             }
                         })
@@ -615,6 +757,8 @@ pub(crate) fn build_nodes_for_blob(
                         kind: "WMB_MESHES".into(),
                         format_badge: "GEO".into(),
                         size: wmb.meshes.iter().map(|m| m.byte_size()).sum(),
+                        modified: false,
+                        compression: None,
                         children: mesh_children,
                     });
                 }
@@ -632,6 +776,8 @@ pub(crate) fn build_nodes_for_blob(
                         kind: "WMB3_HEADER".into(),
                         format_badge: "WMB3".into(),
                         size: 144,
+                        modified: false,
+                        compression: None,
                         children: Vec::new(),
                     });
                     children.push(AssetTreeNode {
@@ -640,6 +786,8 @@ pub(crate) fn build_nodes_for_blob(
                         kind: "WMB3_BONES".into(),
                         format_badge: "SKEL".into(),
                         size: wmb3.bones.len() * 88,
+                        modified: false,
+                        compression: None,
                         children: Vec::new(),
                     });
                     let mat_children: Vec<AssetTreeNode> = wmb3
@@ -652,6 +800,8 @@ pub(crate) fn build_nodes_for_blob(
                             kind: "WMB3_MATERIAL".into(),
                             format_badge: "MAT3".into(),
                             size: 48,
+                            modified: false,
+                            compression: None,
                             children: Vec::new(),
                         })
                         .collect();
@@ -661,6 +811,8 @@ pub(crate) fn build_nodes_for_blob(
                         kind: "WMB3_MATERIALS".into(),
                         format_badge: "MAT3".into(),
                         size: wmb3.materials.len() * 48,
+                        modified: false,
+                        compression: None,
                         children: mat_children,
                     });
                     children.push(AssetTreeNode {
@@ -673,6 +825,8 @@ pub(crate) fn build_nodes_for_blob(
                         kind: "WMB3_MESHES".into(),
                         format_badge: "GEO3".into(),
                         size: wmb3.batches.len() * 28,
+                        modified: false,
+                        compression: None,
                         children: Vec::new(),
                     });
                 }
@@ -693,6 +847,8 @@ pub(crate) fn build_nodes_for_blob(
         kind: tag.to_string(),
         format_badge: tag.to_string(),
         size: bytes.len(),
+        modified: node_modified,
+        compression: None,
         children,
     }
 }
@@ -787,7 +943,10 @@ pub(crate) fn resolve_subblob(
                 .descriptors
                 .get(entry_idx)
                 .ok_or_else(|| format!("PKZ entry #{entry_idx} out of range"))?;
-            let peer_dtt = find_pkz_peer_dtt_index(&pkz, &desc.name).and_then(|d_idx| pkz.extract_entry_with_lib(&cur_bytes, d_idx, oodle_lib.as_ref()).ok());
+            let peer_dtt = find_pkz_peer_dtt_index(&pkz, &desc.name).and_then(|d_idx| {
+                pkz.extract_entry_with_lib(&cur_bytes, d_idx, oodle_lib.as_ref())
+                    .ok()
+            });
             cur_name = desc.name.clone();
             cur_bytes = pkz
                 .extract_entry_with_lib(&cur_bytes, entry_idx, oodle_lib.as_ref())
@@ -886,7 +1045,8 @@ pub(crate) fn split_container_and_leaf(node_id: &str) -> (Vec<&str>, &str) {
     }
     let container_parts = parts[..container_end].to_vec();
     let leaf = if container_end < parts.len() {
-        parts[container_end]
+        let prefix_len: usize = parts[..container_end].iter().map(|s| s.len() + 1).sum();
+        node_id.get(prefix_len..).unwrap_or(parts[container_end])
     } else {
         ""
     };
@@ -1116,7 +1276,9 @@ pub(crate) fn write_back_subblob(
         let peer_dtt_idx = find_pkz_peer_dtt_index(&pkz, &entry_name);
 
         if let Some(dtt_idx) = peer_dtt_idx {
-            if let Ok(dtt_orig) = pkz.extract_entry_with_lib(root_bytes, dtt_idx, oodle_lib.as_ref()) {
+            if let Ok(dtt_orig) =
+                pkz.extract_entry_with_lib(root_bytes, dtt_idx, oodle_lib.as_ref())
+            {
                 let mut child_parts = Vec::with_capacity(rest.len() + 1);
                 child_parts.push("root:dat");
                 child_parts.extend_from_slice(rest);
@@ -1128,7 +1290,11 @@ pub(crate) fn write_back_subblob(
                     new_wtp.clone(),
                     oodle_dll,
                 )?;
-                if let DocSnapshot::PairedDatDtt { dat: new_dat, dtt: new_dtt } = updated_paired {
+                if let DocSnapshot::PairedDatDtt {
+                    dat: new_dat,
+                    dtt: new_dtt,
+                } = updated_paired
+                {
                     let mut replacements = HashMap::new();
                     replacements.insert(entry_idx, new_dat.as_ref().clone());
                     if new_dtt.as_slice() != dtt_orig.as_slice() {
@@ -1309,11 +1475,18 @@ pub(crate) fn build_outline_from_session(sess: &StudioSession) -> Result<Documen
         DocSnapshot::PairedDatDtt { dat, .. } => (dat.as_slice(), None),
     };
 
+    let baseline_main_bytes: Option<&[u8]> = sess.saved_snapshot.as_ref().map(|s| match s {
+        DocSnapshot::SingleFile(b) => b.as_slice(),
+        DocSnapshot::SplitWtaWtp { wta, .. } => wta.as_slice(),
+        DocSnapshot::PairedDatDtt { dat, .. } => dat.as_slice(),
+    });
+
     let root_format = detect_file_format_tag(&file_name, main_bytes).to_string();
-    let root_node = build_nodes_for_blob(
+    let root_node = build_nodes_for_blob_with_baseline(
         "",
         &file_name,
         main_bytes,
+        baseline_main_bytes,
         wtp_bytes,
         None,
         oodle_path_opt,
@@ -1333,7 +1506,22 @@ pub(crate) fn build_outline_from_session(sess: &StudioSession) -> Result<Documen
     let summary_right = match root_format.as_str() {
         "DAT" => format!("ModelDat · {} files", root_node.children.len()),
         "WTB" | "BNTX" => format!("TextureBank · {} textures", root_node.children.len()),
-        "PKZ" => format!("PkzArchive · {} entries", root_node.children.len()),
+        "PKZ" => {
+            if let Ok(pkz) = PkzArchive::from_bytes(main_bytes) {
+                let (_, staged) = compute_pkz_modified_map(main_bytes, &pkz, baseline_main_bytes);
+                if staged > 0 {
+                    format!(
+                        "PkzArchive · {} entries · {} staged change(s)",
+                        pkz.descriptors.len(),
+                        staged
+                    )
+                } else {
+                    format!("PkzArchive · {} entries", pkz.descriptors.len())
+                }
+            } else {
+                format!("PkzArchive · {} entries", root_node.children.len())
+            }
+        }
         "EFF" => format!("EffectContainer · {} dirs", root_node.children.len()),
         "WMB" | "WMB3" => format!("{root_format} · {} sections", root_node.children.len()),
         _ => format!("{root_format} · {} B", main_bytes.len()),
@@ -1368,23 +1556,17 @@ fn validate_user_fs_path(path_str: &str, for_write: bool) -> Result<PathBuf, Str
     }
     let p = PathBuf::from(trimmed);
     if !p.is_absolute() {
-        return Err(format!(
-            "Path must be absolute: '{}'",
-            p.display()
-        ));
+        return Err(format!("Path must be absolute: '{}'", p.display()));
     }
     for comp in p.components() {
         if matches!(comp, std::path::Component::ParentDir) {
-            return Err(format!(
-                "Path must not contain '..': '{}'",
-                p.display()
-            ));
+            return Err(format!("Path must not contain '..': '{}'", p.display()));
         }
     }
     if for_write {
-        let parent = p.parent().ok_or_else(|| {
-            format!("Cannot write to filesystem root path '{}'", p.display())
-        })?;
+        let parent = p
+            .parent()
+            .ok_or_else(|| format!("Cannot write to filesystem root path '{}'", p.display()))?;
         if !parent.exists() {
             return Err(format!(
                 "Parent directory does not exist: '{}'",
@@ -1392,12 +1574,245 @@ fn validate_user_fs_path(path_str: &str, for_write: bool) -> Result<PathBuf, Str
             ));
         }
     } else if !p.is_file() {
-        return Err(format!(
-            "Path is not an existing file: '{}'",
-            p.display()
-        ));
+        return Err(format!("Path is not an existing file: '{}'", p.display()));
     }
     Ok(p)
+}
+
+/// Collect disk files (and recursively any folders) into `(normalized_pkz_virtual_path, bytes)`
+/// under `folder_prefix`.
+pub(crate) fn collect_paths_for_pkz_add(
+    paths: &[String],
+    folder_prefix: &str,
+) -> Result<Vec<(String, Vec<u8>)>, String> {
+    let clean_prefix = folder_prefix.trim().trim_matches('/').replace('\\', "/");
+    let mut items: Vec<(String, Vec<u8>)> = Vec::new();
+
+    for p_str in paths {
+        let trimmed = p_str.trim();
+        let p = Path::new(trimmed);
+        for comp in p.components() {
+            if matches!(comp, std::path::Component::ParentDir) {
+                return Err(format!("Path must not contain '..': '{}'", p.display()));
+            }
+        }
+        if p.is_dir() {
+            let sub_files =
+                PkzArchive::collect_dir_files_recursive(p).map_err(|e| e.to_string())?;
+            for (rel_vpath, bytes) in sub_files {
+                let combined = if clean_prefix.is_empty() {
+                    rel_vpath
+                } else {
+                    format!("{clean_prefix}/{rel_vpath}")
+                };
+                let norm = normalize_pkz_virtual_path(&combined).map_err(|e| e.to_string())?;
+                items.push((norm, bytes));
+            }
+        } else if p.is_file() {
+            let base_fname = p
+                .file_name()
+                .and_then(|s| s.to_str())
+                .ok_or_else(|| format!("Invalid filename: '{}'", p.display()))?;
+            let combined = if clean_prefix.is_empty() {
+                base_fname.to_string()
+            } else {
+                format!("{clean_prefix}/{base_fname}")
+            };
+            let norm = normalize_pkz_virtual_path(&combined).map_err(|e| e.to_string())?;
+            let bytes = fs::read(p).map_err(|e| e.to_string())?;
+            items.push((norm, bytes));
+        } else {
+            return Err(format!("Path does not exist: '{}'", p.display()));
+        }
+    }
+
+    Ok(items)
+}
+
+/// Extract a subset of PKZ entries to `out_dir`, checking for existing files on disk first.
+/// If files exist and `overwrite_policy` (`"overwrite"` | `"skip"`) is not set, returns
+/// `Err("EXTRACT_OVERWRITE:<count>")` so the UI can ask once for the batch.
+pub(crate) fn extract_pkz_entries_with_overwrite_check(
+    pkz: &PkzArchive,
+    archive_bytes: &[u8],
+    indices: &[usize],
+    out_dir: &Path,
+    overwrite_policy: Option<&str>,
+    oodle_opt: Option<&Path>,
+) -> Result<usize, String> {
+    for comp in out_dir.components() {
+        if matches!(comp, std::path::Component::ParentDir) {
+            return Err(format!(
+                "Destination folder must not contain '..': '{}'",
+                out_dir.display()
+            ));
+        }
+    }
+    fs::create_dir_all(out_dir).map_err(|e| e.to_string())?;
+    let mut planned: Vec<(usize, PathBuf)> = Vec::with_capacity(indices.len());
+    for &idx in indices {
+        let desc = pkz
+            .descriptors
+            .get(idx)
+            .ok_or_else(|| format!("PKZ entry index {idx} out of range"))?;
+        let norm = desc.name.replace('\\', "/");
+        let clean = norm.trim_start_matches('/');
+        let fallback = format!("entry_{idx}.bin");
+        let dest_file =
+            sanitize_entry_path(out_dir, clean, &fallback).map_err(|e| e.to_string())?;
+        planned.push((idx, dest_file));
+    }
+
+    let existing_count = planned.iter().filter(|(_, dest)| dest.is_file()).count();
+    if existing_count > 0 && overwrite_policy.is_none() {
+        return Err(format!("EXTRACT_OVERWRITE:{existing_count}"));
+    }
+
+    let skip_existing = matches!(overwrite_policy, Some("skip"));
+    let oodle_lib = OodleLibrary::load(oodle_opt).ok();
+    let mut written = 0usize;
+    for (idx, dest_file) in planned {
+        if skip_existing && dest_file.is_file() {
+            continue;
+        }
+        let data = pkz
+            .extract_entry_with_lib(archive_bytes, idx, oodle_lib.as_ref())
+            .map_err(|e| e.to_string())?;
+        if let Some(p) = dest_file.parent() {
+            fs::create_dir_all(p).map_err(|e| e.to_string())?;
+        }
+        fs::write(dest_file, data).map_err(|e| e.to_string())?;
+        written += 1;
+    }
+    Ok(written)
+}
+
+/// Revert selected entries or a virtual folder prefix in `cur_bytes` back to their state in `base_bytes`.
+pub(crate) fn revert_pkz_subset(
+    cur_bytes: &[u8],
+    base_bytes: &[u8],
+    entry_indices: Option<&[usize]>,
+    folder_prefix: Option<&str>,
+) -> Result<(Vec<u8>, usize), String> {
+    let cur_pkz = PkzArchive::from_bytes(cur_bytes).map_err(|e| e.to_string())?;
+    let base_pkz = PkzArchive::from_bytes(base_bytes).map_err(|e| e.to_string())?;
+
+    let clean_folder = folder_prefix
+        .map(|s| s.trim().trim_matches('/').replace('\\', "/"))
+        .filter(|s| !s.is_empty());
+
+    // If neither specific indices nor folder prefix is specified, revert the entire PKZ
+    if entry_indices.is_none() && clean_folder.is_none() {
+        let (_, staged) = compute_pkz_modified_map(cur_bytes, &cur_pkz, Some(base_bytes));
+        return Ok((base_bytes.to_vec(), staged.max(1)));
+    }
+
+    let matches_scope = |path: &str, idx_opt: Option<usize>| -> bool {
+        if let Some(indices) = entry_indices {
+            if let Some(i) = idx_opt {
+                if indices.contains(&i) {
+                    return true;
+                }
+            }
+        }
+        if let Some(ref fp) = clean_folder {
+            let norm = path.replace('\\', "/");
+            let clean = norm.trim_start_matches('/');
+            let prefix_slash = format!("{fp}/");
+            if clean.eq_ignore_ascii_case(fp)
+                || clean
+                    .get(..prefix_slash.len())
+                    .map(|p| p.eq_ignore_ascii_case(&prefix_slash))
+                    .unwrap_or(false)
+            {
+                return true;
+            }
+        }
+        false
+    };
+
+    // Also include the lowercase names of any selected current indices so matching baseline entries are found
+    let mut target_keys: HashSet<String> = HashSet::new();
+    if let Some(indices) = entry_indices {
+        for &idx in indices {
+            if let Some(d) = cur_pkz.descriptors.get(idx) {
+                target_keys.insert(
+                    d.name
+                        .replace('\\', "/")
+                        .trim_start_matches('/')
+                        .to_ascii_lowercase(),
+                );
+            }
+        }
+    }
+
+    let mut base_by_key: HashMap<String, (usize, &pgtools_core::pkz::PkzFileDescriptor)> =
+        HashMap::with_capacity(base_pkz.descriptors.len());
+    for (bi, bd) in base_pkz.descriptors.iter().enumerate() {
+        let key = bd
+            .name
+            .replace('\\', "/")
+            .trim_start_matches('/')
+            .to_ascii_lowercase();
+        base_by_key.entry(key).or_insert((bi, bd));
+    }
+
+    let mut raw_items: Vec<(String, String, u64, Vec<u8>)> =
+        Vec::with_capacity(cur_pkz.descriptors.len().max(base_pkz.descriptors.len()));
+    let mut handled_base_keys: HashSet<String> = HashSet::new();
+    let mut reverted_count = 0usize;
+
+    for (ci, cd) in cur_pkz.descriptors.iter().enumerate() {
+        let key = cd
+            .name
+            .replace('\\', "/")
+            .trim_start_matches('/')
+            .to_ascii_lowercase();
+        let in_scope = matches_scope(&cd.name, Some(ci)) || target_keys.contains(&key);
+
+        if !in_scope {
+            let slice = cur_pkz
+                .raw_entry_slice(cur_bytes, ci)
+                .map_err(|e| e.to_string())?
+                .to_vec();
+            raw_items.push((cd.name.clone(), cd.compression.clone(), cd.size, slice));
+            handled_base_keys.insert(key);
+        } else if let Some(&(bi, bd)) = base_by_key.get(&key) {
+            let base_slice = base_pkz
+                .raw_entry_slice(base_bytes, bi)
+                .map_err(|e| e.to_string())?
+                .to_vec();
+            raw_items.push((bd.name.clone(), bd.compression.clone(), bd.size, base_slice));
+            handled_base_keys.insert(key);
+            reverted_count += 1;
+        } else {
+            // Newly added entry in scope -> drop it on revert
+            reverted_count += 1;
+        }
+    }
+
+    // Restore any baseline entries in scope that were deleted in `cur_pkz`
+    for (bi, bd) in base_pkz.descriptors.iter().enumerate() {
+        let key = bd
+            .name
+            .replace('\\', "/")
+            .trim_start_matches('/')
+            .to_ascii_lowercase();
+        if handled_base_keys.contains(&key) {
+            continue;
+        }
+        if matches_scope(&bd.name, None) || target_keys.contains(&key) {
+            let base_slice = base_pkz
+                .raw_entry_slice(base_bytes, bi)
+                .map_err(|e| e.to_string())?
+                .to_vec();
+            raw_items.push((bd.name.clone(), bd.compression.clone(), bd.size, base_slice));
+            handled_base_keys.insert(key);
+            reverted_count += 1;
+        }
+    }
+
+    Ok((cur_pkz.pack_raw_slices(&raw_items), reverted_count))
 }
 
 #[tauri::command]
@@ -1439,7 +1854,22 @@ pub fn mutate_container_node(
             build_outline_from_session(&sess)
         }
         "set_pkz_compression" => {
-            let (container_parts, _) = split_container_and_leaf(&node_id);
+            let (mut container_parts, leaf) = split_container_and_leaf(&node_id);
+            let mut single_pkz_idx: Option<usize> = None;
+            if let Some(last) = container_parts.last() {
+                if let Some(idx_s) = last.strip_prefix("pkz:") {
+                    if let Ok(parsed_idx) = idx_s.parse::<usize>() {
+                        // Check if this pkz:X is a leaf file inside a parent PKZ rather than a nested PKZ container
+                        let candidate_id = container_parts.join("/");
+                        if let Ok((nm, b, _, _)) = resolve_subblob(&snap, &candidate_id, oodle_opt) {
+                            if detect_file_format_tag(&nm, &b) != "PKZ" {
+                                single_pkz_idx = Some(parsed_idx);
+                                container_parts.pop();
+                            }
+                        }
+                    }
+                }
+            }
             let container_id = container_parts.join("/");
             let (_, sub_bytes, _, _) = resolve_subblob(&snap, &container_id, oodle_opt)?;
             let pkz = PkzArchive::from_bytes(&sub_bytes).map_err(|e| e.to_string())?;
@@ -1448,31 +1878,70 @@ pub fn mutate_container_node(
                 .and_then(|v| v.as_str())
                 .unwrap_or(&target_path)
                 .trim();
+            let requested_level = payload_val
+                .get("level")
+                .and_then(|v| v.as_i64())
+                .map(|v| clamp_compression_level(requested_codec, v as i32));
+            let force_comp = payload_val
+                .get("force_compression")
+                .and_then(|v| v.as_bool())
+                .unwrap_or(false);
             let allow_fallback = payload_val
                 .get("allow_zstd_fallback")
                 .and_then(|v| v.as_bool())
                 .unwrap_or(false);
-            if requested_codec.eq_ignore_ascii_case("OodleKraken")
+            if (requested_codec.eq_ignore_ascii_case("OodleKraken")
+                || requested_codec.eq_ignore_ascii_case("Oodle"))
                 && !allow_fallback
-                && OodleLibrary::load(oodle_opt).is_err()
+                && !OodleLibrary::load(oodle_opt)
+                    .map(|l| l.can_compress())
+                    .unwrap_or(false)
             {
-                return Err("OODLE_DLL_MISSING: oo2core_*_win64.dll is required to compress with OodleKraken.".into());
+                return Err("OODLE_DLL_MISSING: oo2core_*_win64.dll with OodleLZ_Compress is required to compress with OodleKraken.".into());
             }
+
+            let folder_prefix = payload_val
+                .get("folder_prefix")
+                .and_then(|v| v.as_str())
+                .map(|s| s.trim_matches('/').to_string())
+                .or_else(|| {
+                    leaf.strip_prefix("pkzfolder:")
+                        .map(|s| s.trim_matches('/').to_string())
+                })
+                .filter(|s| !s.is_empty());
+
             let entry_indices: Option<Vec<usize>> = payload_val
                 .get("entry_indices")
-                .and_then(|v| serde_json::from_value(v.clone()).ok());
+                .and_then(|v| serde_json::from_value(v.clone()).ok())
+                .or_else(|| single_pkz_idx.map(|i| vec![i]));
+
             let mut overrides = HashMap::new();
             if let Some(indices) = entry_indices {
                 for idx in indices {
                     overrides.insert(idx, requested_codec.to_string());
+                }
+            } else if let Some(fp) = folder_prefix {
+                let prefix_slash = format!("{fp}/");
+                for (idx, d) in pkz.descriptors.iter().enumerate() {
+                    let norm = d.name.replace('\\', "/");
+                    let clean = norm.trim_start_matches('/');
+                    if clean.eq_ignore_ascii_case(&fp)
+                        || clean
+                            .get(..prefix_slash.len())
+                            .map(|p| p.eq_ignore_ascii_case(&prefix_slash))
+                            .unwrap_or(false)
+                    {
+                        overrides.insert(idx, requested_codec.to_string());
+                    }
                 }
             } else {
                 for idx in 0..pkz.descriptors.len() {
                     overrides.insert(idx, requested_codec.to_string());
                 }
             }
+            let count = overrides.len();
             let repacked = pkz
-                .repack_with_options(
+                .repack_with_full_options(
                     &sub_bytes,
                     &HashMap::new(),
                     &[],
@@ -1481,48 +1950,138 @@ pub fn mutate_container_node(
                     None,
                     Some(&overrides),
                     None,
+                    requested_level,
+                    force_comp,
                     oodle_opt,
                 )
                 .map_err(|e| e.to_string())?;
             let next_snap = write_back_subblob(&snap, &container_parts, repacked, None, oodle_opt)?;
+            if let Some(lvl) = requested_level {
+                sess.settings.pkz_default_compression = requested_codec.to_string();
+                sess.settings.pkz_default_level = lvl;
+            }
             record_mutation(
                 &mut sess,
-                format!("Set PKZ Compression to {requested_codec}"),
+                format!("Recompress {count} PKZ file(s) to {requested_codec}"),
                 next_snap,
             );
             build_outline_from_session(&sess)
         }
-        "extract_pkz_folder" => {
-            let (container_parts, leaf) = split_container_and_leaf(&node_id);
+        "revert_pkz_entries" => {
+            let (mut container_parts, leaf) = split_container_and_leaf(&node_id);
+            let mut single_pkz_idx: Option<usize> = None;
+            if let Some(last) = container_parts.last() {
+                if let Some(idx_s) = last.strip_prefix("pkz:") {
+                    if let Ok(parsed_idx) = idx_s.parse::<usize>() {
+                        let candidate_id = container_parts.join("/");
+                        if let Ok((nm, b, _, _)) = resolve_subblob(&snap, &candidate_id, oodle_opt) {
+                            if detect_file_format_tag(&nm, &b) != "PKZ" {
+                                single_pkz_idx = Some(parsed_idx);
+                                container_parts.pop();
+                            }
+                        }
+                    }
+                }
+            }
+            let container_id = container_parts.join("/");
+            let (_, cur_bytes, _, _) = resolve_subblob(&snap, &container_id, oodle_opt)?;
+            let base_snap = sess
+                .saved_snapshot
+                .as_ref()
+                .ok_or("No saved baseline snapshot to revert to")?;
+            let (_, base_bytes, _, _) = resolve_subblob(base_snap, &container_id, oodle_opt)?;
+
+            let entry_indices: Option<Vec<usize>> = payload_val
+                .get("entry_indices")
+                .and_then(|v| serde_json::from_value(v.clone()).ok())
+                .or_else(|| single_pkz_idx.map(|i| vec![i]));
             let folder_prefix = payload_val
                 .get("folder_prefix")
                 .and_then(|v| v.as_str())
                 .map(|s| s.to_string())
-                .or_else(|| leaf.strip_prefix("pkzfolder:").map(|s| s.to_string()))
-                .ok_or("Missing PKZ folder prefix")?;
+                .or_else(|| leaf.strip_prefix("pkzfolder:").map(|s| s.to_string()));
+
+            let (reverted_bytes, count) = revert_pkz_subset(
+                &cur_bytes,
+                &base_bytes,
+                entry_indices.as_deref(),
+                folder_prefix.as_deref(),
+            )?;
+            let next_snap =
+                write_back_subblob(&snap, &container_parts, reverted_bytes, None, oodle_opt)?;
+            sess.invalidate_texture_caches();
+            record_mutation(
+                &mut sess,
+                format!("Revert {count} staged PKZ change(s)"),
+                next_snap,
+            );
+            build_outline_from_session(&sess)
+        }
+        "extract_pkz_folder" | "extract_pkz_entries" => {
+            let (mut container_parts, leaf) = split_container_and_leaf(&node_id);
+            let mut single_pkz_idx: Option<usize> = None;
+            if let Some(last) = container_parts.last() {
+                if let Some(idx_s) = last.strip_prefix("pkz:") {
+                    if let Ok(parsed_idx) = idx_s.parse::<usize>() {
+                        let candidate_id = container_parts.join("/");
+                        if let Ok((nm, b, _, _)) = resolve_subblob(&snap, &candidate_id, oodle_opt) {
+                            if detect_file_format_tag(&nm, &b) != "PKZ" {
+                                single_pkz_idx = Some(parsed_idx);
+                                container_parts.pop();
+                            }
+                        }
+                    }
+                }
+            }
             let container_id = container_parts.join("/");
             let (_, sub_bytes, _, _) = resolve_subblob(&snap, &container_id, oodle_opt)?;
             let pkz = PkzArchive::from_bytes(&sub_bytes).map_err(|e| e.to_string())?;
             let out_dir = PathBuf::from(&target_path);
-            fs::create_dir_all(&out_dir).map_err(|e| e.to_string())?;
-            let prefix_slash = format!("{}/", folder_prefix.trim_matches('/'));
-            let oodle_lib = OodleLibrary::load(oodle_opt).ok();
-            for (idx, desc) in pkz.descriptors.iter().enumerate() {
-                let norm = desc.name.replace('\\', "/");
-                let clean = norm.trim_start_matches('/');
-                if clean.starts_with(&prefix_slash) || clean == folder_prefix.trim_matches('/') {
-                    let fallback = format!("entry_{idx}.bin");
-                    let dest_file = sanitize_entry_path(&out_dir, clean, &fallback)
-                        .map_err(|e| e.to_string())?;
-                    let data = pkz
-                        .extract_entry_with_lib(&sub_bytes, idx, oodle_lib.as_ref())
-                        .map_err(|e| e.to_string())?;
-                    if let Some(p) = dest_file.parent() {
-                        fs::create_dir_all(p).map_err(|e| e.to_string())?;
-                    }
-                    fs::write(dest_file, data).map_err(|e| e.to_string())?;
-                }
-            }
+            let overwrite_policy = payload_val.get("overwrite_policy").and_then(|v| v.as_str());
+
+            let indices: Vec<usize> = if action == "extract_pkz_entries" {
+                payload_val
+                    .get("entry_indices")
+                    .and_then(|v| serde_json::from_value::<Vec<usize>>(v.clone()).ok())
+                    .or_else(|| single_pkz_idx.map(|i| vec![i]))
+                    .unwrap_or_default()
+            } else {
+                let folder_prefix = payload_val
+                    .get("folder_prefix")
+                    .and_then(|v| v.as_str())
+                    .map(|s| s.to_string())
+                    .or_else(|| leaf.strip_prefix("pkzfolder:").map(|s| s.to_string()))
+                    .ok_or("Missing PKZ folder prefix")?;
+                let clean_fp = folder_prefix.trim().trim_matches('/').replace('\\', "/");
+                let prefix_slash = format!("{clean_fp}/");
+                pkz.descriptors
+                    .iter()
+                    .enumerate()
+                    .filter_map(|(idx, desc)| {
+                        let norm = desc.name.replace('\\', "/");
+                        let clean = norm.trim_start_matches('/');
+                        if clean.eq_ignore_ascii_case(&clean_fp)
+                            || clean
+                                .get(..prefix_slash.len())
+                                .map(|p| p.eq_ignore_ascii_case(&prefix_slash))
+                                .unwrap_or(false)
+                        {
+                            Some(idx)
+                        } else {
+                            None
+                        }
+                    })
+                    .collect()
+            };
+
+            extract_pkz_entries_with_overwrite_check(
+                &pkz,
+                &sub_bytes,
+                &indices,
+                &out_dir,
+                overwrite_policy,
+                oodle_opt,
+            )?;
             build_outline_from_session(&sess)
         }
         "remove_pkz_folder" | "rename_pkz_folder" | "move_pkz_entry_to_folder" => {
@@ -1545,34 +2104,63 @@ pub fn mutate_container_node(
                 .map(|s| s.to_string())
                 .or_else(|| leaf.strip_prefix("pkzfolder:").map(|s| s.to_string()))
                 .unwrap_or_default();
-            let prefix_slash = format!("{}/", folder_prefix.trim_matches('/'));
+            let clean_fp = folder_prefix.trim().trim_matches('/').replace('\\', "/");
+            let prefix_slash = format!("{clean_fp}/");
+            let collision_policy = payload_val.get("collision_policy").and_then(|v| v.as_str());
 
             let (repacked, desc) = if action == "remove_pkz_folder" {
                 let mut removed = Vec::new();
                 for (idx, d) in pkz.descriptors.iter().enumerate() {
                     let norm = d.name.replace('\\', "/");
                     let clean = norm.trim_start_matches('/');
-                    if clean.starts_with(&prefix_slash) || clean == folder_prefix.trim_matches('/') {
+                    if clean.eq_ignore_ascii_case(&clean_fp)
+                        || clean
+                            .get(..prefix_slash.len())
+                            .map(|p| p.eq_ignore_ascii_case(&prefix_slash))
+                            .unwrap_or(false)
+                    {
                         removed.push(idx);
                     }
                 }
                 let r = pkz
-                    .repack_with_options(&sub_bytes, &HashMap::new(), &[], &removed, None, None, None, None, oodle_opt)
+                    .repack_with_options(
+                        &sub_bytes,
+                        &HashMap::new(),
+                        &[],
+                        &removed,
+                        None,
+                        None,
+                        None,
+                        None,
+                        oodle_opt,
+                    )
                     .map_err(|e| e.to_string())?;
-                (r, format!("Remove PKZ folder '{folder_prefix}' ({} files)", removed.len()))
+                (
+                    r,
+                    format!("Remove PKZ folder '{clean_fp}' ({} files)", removed.len()),
+                )
             } else if action == "rename_pkz_folder" {
-                let new_prefix = payload_val
+                let raw_new_prefix = payload_val
                     .get("new_prefix")
                     .and_then(|v| v.as_str())
                     .unwrap_or(&target_path)
                     .trim()
-                    .trim_matches('/')
-                    .to_string();
+                    .trim_matches('/');
+                let new_prefix = if raw_new_prefix.is_empty() {
+                    String::new()
+                } else {
+                    normalize_pkz_virtual_path(raw_new_prefix).map_err(|e| e.to_string())?
+                };
                 let mut renamed = HashMap::new();
                 for (idx, d) in pkz.descriptors.iter().enumerate() {
                     let norm = d.name.replace('\\', "/");
                     let clean = norm.trim_start_matches('/');
-                    if let Some(rest) = clean.strip_prefix(&prefix_slash) {
+                    if clean
+                        .get(..prefix_slash.len())
+                        .map(|p| p.eq_ignore_ascii_case(&prefix_slash))
+                        .unwrap_or(false)
+                    {
+                        let rest = &clean[prefix_slash.len()..];
                         let updated = if new_prefix.is_empty() {
                             rest.to_string()
                         } else {
@@ -1581,33 +2169,165 @@ pub fn mutate_container_node(
                         renamed.insert(idx, updated);
                     }
                 }
+
+                // Check for collisions outside the renamed folder
+                let mut colliding_indices: Vec<usize> = Vec::new();
+                let mut colliding_names: Vec<String> = Vec::new();
+                for (&src_idx, target_name) in &renamed {
+                    for (other_idx, other_desc) in pkz.descriptors.iter().enumerate() {
+                        if other_idx != src_idx
+                            && !renamed.contains_key(&other_idx)
+                            && other_desc.name.eq_ignore_ascii_case(target_name)
+                        {
+                            colliding_indices.push(other_idx);
+                            colliding_names.push(target_name.clone());
+                        }
+                    }
+                }
+                if !colliding_names.is_empty() && collision_policy.is_none() {
+                    return Err(format!(
+                        "PKZ_COLLISION:{}",
+                        serde_json::json!({
+                            "count": colliding_names.len(),
+                            "paths": colliding_names,
+                            "new_count": renamed.len().saturating_sub(colliding_names.len())
+                        })
+                    ));
+                }
+                if matches!(collision_policy, Some("skip")) {
+                    for name in &colliding_names {
+                        renamed.retain(|_, v| !v.eq_ignore_ascii_case(name));
+                    }
+                    colliding_indices.clear();
+                }
+
                 let r = pkz
-                    .repack_with_options(&sub_bytes, &HashMap::new(), &[], &[], None, None, None, Some(&renamed), oodle_opt)
+                    .repack_with_options(
+                        &sub_bytes,
+                        &HashMap::new(),
+                        &[],
+                        &colliding_indices,
+                        None,
+                        None,
+                        None,
+                        Some(&renamed),
+                        oodle_opt,
+                    )
                     .map_err(|e| e.to_string())?;
-                (r, format!("Rename PKZ folder '{folder_prefix}' -> '{new_prefix}'"))
+                (
+                    r,
+                    format!(
+                        "Rename PKZ folder '{clean_fp}' -> '{new_prefix}' ({} files)",
+                        renamed.len()
+                    ),
+                )
             } else {
-                let idx = single_pkz_idx
-                    .or_else(|| payload_val.get("entry_index").and_then(|v| v.as_u64()).map(|v| v as usize))
+                let move_indices: Vec<usize> = payload_val
+                    .get("entry_indices")
+                    .and_then(|v| serde_json::from_value::<Vec<usize>>(v.clone()).ok())
+                    .or_else(|| {
+                        single_pkz_idx
+                            .or_else(|| {
+                                payload_val
+                                    .get("entry_index")
+                                    .and_then(|v| v.as_u64())
+                                    .map(|v| v as usize)
+                            })
+                            .map(|i| vec![i])
+                    })
                     .ok_or("Missing PKZ entry index to move")?;
-                let target_folder = payload_val
+
+                let raw_target_folder = payload_val
                     .get("target_folder")
                     .and_then(|v| v.as_str())
                     .unwrap_or(&target_path)
                     .trim()
                     .trim_matches('/');
-                let old_name = pkz.descriptors.get(idx).ok_or("PKZ index out of bounds")?.name.clone();
-                let base_name = old_name.replace('\\', "/").split('/').last().unwrap_or(&old_name).to_string();
-                let new_name = if target_folder.is_empty() {
-                    base_name
+                let target_folder = if raw_target_folder.is_empty() {
+                    String::new()
                 } else {
-                    format!("{target_folder}/{base_name}")
+                    normalize_pkz_virtual_path(raw_target_folder).map_err(|e| e.to_string())?
                 };
+
                 let mut renamed = HashMap::new();
-                renamed.insert(idx, new_name.clone());
+                let mut colliding_indices = Vec::new();
+                let mut colliding_names = Vec::new();
+
+                for &idx in &move_indices {
+                    let old_name = pkz
+                        .descriptors
+                        .get(idx)
+                        .ok_or("PKZ index out of bounds")?
+                        .name
+                        .clone();
+                    let base_name = old_name
+                        .replace('\\', "/")
+                        .split('/')
+                        .next_back()
+                        .unwrap_or(&old_name)
+                        .to_string();
+                    let new_name = if target_folder.is_empty() {
+                        base_name
+                    } else {
+                        format!("{target_folder}/{base_name}")
+                    };
+                    if new_name.eq_ignore_ascii_case(&old_name) {
+                        continue;
+                    }
+                    for (other_idx, other_desc) in pkz.descriptors.iter().enumerate() {
+                        if other_idx != idx
+                            && !move_indices.contains(&other_idx)
+                            && other_desc.name.eq_ignore_ascii_case(&new_name)
+                        {
+                            colliding_indices.push(other_idx);
+                            colliding_names.push(new_name.clone());
+                        }
+                    }
+                    renamed.insert(idx, new_name);
+                }
+
+                if !colliding_names.is_empty() && collision_policy.is_none() {
+                    return Err(format!(
+                        "PKZ_COLLISION:{}",
+                        serde_json::json!({
+                            "count": colliding_names.len(),
+                            "paths": colliding_names,
+                            "new_count": renamed.len().saturating_sub(colliding_names.len())
+                        })
+                    ));
+                }
+                if matches!(collision_policy, Some("skip")) {
+                    for name in &colliding_names {
+                        renamed.retain(|_, v| !v.eq_ignore_ascii_case(name));
+                    }
+                    colliding_indices.clear();
+                }
+
                 let r = pkz
-                    .repack_with_options(&sub_bytes, &HashMap::new(), &[], &[], None, None, None, Some(&renamed), oodle_opt)
+                    .repack_with_options(
+                        &sub_bytes,
+                        &HashMap::new(),
+                        &[],
+                        &colliding_indices,
+                        None,
+                        None,
+                        None,
+                        Some(&renamed),
+                        oodle_opt,
+                    )
                     .map_err(|e| e.to_string())?;
-                (r, format!("Move PKZ entry #{idx} to '{new_name}'"))
+                (
+                    r,
+                    format!(
+                        "Move {} PKZ file(s) to '{}'",
+                        renamed.len(),
+                        if target_folder.is_empty() {
+                            "(root)"
+                        } else {
+                            &target_folder
+                        }
+                    ),
+                )
             };
             let next_snap = write_back_subblob(&snap, &container_parts, repacked, None, oodle_opt)?;
             sess.invalidate_texture_caches();
@@ -1620,8 +2340,101 @@ pub fn mutate_container_node(
             build_outline_from_session(&sess)
         }
         "replace_subfile" => {
-            let (container_parts, _) = split_container_and_leaf(&node_id);
-            let new_bytes = fs::read(&target_path).map_err(|e| e.to_string())?;
+            let src_path = validate_user_fs_path(&target_path, false)?;
+            let (mut container_parts, _) = split_container_and_leaf(&node_id);
+            let new_bytes = fs::read(&src_path).map_err(|e| e.to_string())?;
+
+            // If replacing an entry directly inside a PKZ with explicit compression/level options:
+            if let Some(last) = container_parts.last() {
+                if let Some(pkz_idx_s) = last.strip_prefix("pkz:") {
+                    if let Ok(entry_idx) = pkz_idx_s.parse::<usize>() {
+                        let parent_parts = &container_parts[..container_parts.len() - 1];
+                        let parent_id = parent_parts.join("/");
+                        let (_, parent_bytes, _, _) =
+                            resolve_subblob(&snap, &parent_id, oodle_opt)?;
+                        let pkz = PkzArchive::from_bytes(&parent_bytes).map_err(|e| e.to_string())?;
+                        let requested_codec = payload_val
+                            .get("compression")
+                            .and_then(|v| v.as_str())
+                            .map(|s| s.trim().to_string());
+                        let codec_for_clamp = requested_codec
+                            .as_deref()
+                            .or_else(|| pkz.descriptors.get(entry_idx).map(|d| d.compression.as_str()))
+                            .unwrap_or("ZStandard");
+                        let requested_level = payload_val
+                            .get("level")
+                            .and_then(|v| v.as_i64())
+                            .map(|v| clamp_compression_level(codec_for_clamp, v as i32));
+                        let force_comp = payload_val
+                            .get("force_compression")
+                            .and_then(|v| v.as_bool())
+                            .unwrap_or(false);
+                        let allow_fallback = payload_val
+                            .get("allow_zstd_fallback")
+                            .and_then(|v| v.as_bool())
+                            .unwrap_or(false);
+
+                        if let Some(ref codec) = requested_codec {
+                            if (codec.eq_ignore_ascii_case("OodleKraken")
+                                || codec.eq_ignore_ascii_case("Oodle"))
+                                && !allow_fallback
+                                && !OodleLibrary::load(oodle_opt)
+                                    .map(|l| l.can_compress())
+                                    .unwrap_or(false)
+                            {
+                                return Err("OODLE_DLL_MISSING: oo2core_*_win64.dll with OodleLZ_Compress is required to compress with OodleKraken.".into());
+                            }
+                        }
+
+                        let mut replacements = HashMap::new();
+                        replacements.insert(entry_idx, new_bytes);
+                        let mut overrides = HashMap::new();
+                        if let Some(ref codec) = requested_codec {
+                            overrides.insert(entry_idx, codec.clone());
+                            sess.settings.pkz_default_compression = codec.clone();
+                        }
+                        if let Some(lvl) = requested_level {
+                            sess.settings.pkz_default_level = lvl;
+                        }
+                        let entry_name = pkz
+                            .descriptors
+                            .get(entry_idx)
+                            .map(|d| d.name.clone())
+                            .unwrap_or_else(|| format!("pkz:{entry_idx}"));
+                        let repacked = pkz
+                            .repack_with_full_options(
+                                &parent_bytes,
+                                &replacements,
+                                &[],
+                                &[],
+                                None,
+                                None,
+                                if overrides.is_empty() {
+                                    None
+                                } else {
+                                    Some(&overrides)
+                                },
+                                None,
+                                requested_level,
+                                force_comp,
+                                oodle_opt,
+                            )
+                            .map_err(|e| e.to_string())?;
+                        container_parts.pop();
+                        let next_snap = write_back_subblob(
+                            &snap,
+                            &container_parts,
+                            repacked,
+                            None,
+                            oodle_opt,
+                        )?;
+                        sess.invalidate_texture_caches();
+                        record_mutation(&mut sess, format!("Replace {entry_name}"), next_snap);
+                        return build_outline_from_session(&sess);
+                    }
+                }
+            }
+
             let next_snap =
                 write_back_subblob(&snap, &container_parts, new_bytes, None, oodle_opt)?;
             sess.invalidate_texture_caches();
@@ -1636,8 +2449,17 @@ pub fn mutate_container_node(
             match tag {
                 "PKZ" => {
                     let pkz = PkzArchive::from_bytes(&sub_bytes).map_err(|e| e.to_string())?;
-                    pkz.extract_all(&sub_bytes, &out_dir, oodle_opt)
-                        .map_err(|e| e.to_string())?;
+                    let all_indices: Vec<usize> = (0..pkz.descriptors.len()).collect();
+                    let overwrite_policy =
+                        payload_val.get("overwrite_policy").and_then(|v| v.as_str());
+                    extract_pkz_entries_with_overwrite_check(
+                        &pkz,
+                        &sub_bytes,
+                        &all_indices,
+                        &out_dir,
+                        overwrite_policy,
+                        oodle_opt,
+                    )?;
                 }
                 "EFF" => {
                     let eff = EffFile::from_bytes(&sub_bytes).map_err(|e| e.to_string())?;
@@ -1736,35 +2558,154 @@ pub fn mutate_container_node(
                         .get("folder_prefix")
                         .and_then(|v| v.as_str())
                         .map(|s| s.trim_matches('/').to_string())
-                        .or_else(|| leaf.strip_prefix("pkzfolder:").map(|s| s.trim_matches('/').to_string()))
+                        .or_else(|| {
+                            leaf.strip_prefix("pkzfolder:")
+                                .map(|s| s.trim_matches('/').to_string())
+                        })
                         .unwrap_or_default();
-                    let mut added = Vec::new();
-                    for p_str in &paths {
-                        let p = Path::new(p_str);
-                        let base_fname = p
-                            .file_name()
-                            .and_then(|s| s.to_str())
-                            .unwrap_or("new_file.dat");
-                        let fname = if folder_prefix.is_empty() {
-                            base_fname.to_string()
-                        } else {
-                            format!("{folder_prefix}/{base_fname}")
-                        };
-                        let data = fs::read(p).map_err(|e| e.to_string())?;
-                        added.push((fname, data));
+                    let requested_codec = payload_val
+                        .get("compression")
+                        .and_then(|v| v.as_str())
+                        .map(|s| s.trim().to_string())
+                        .unwrap_or_else(|| oodle_settings.pkz_default_compression.clone());
+                    let requested_level = payload_val
+                        .get("level")
+                        .and_then(|v| v.as_i64())
+                        .map(|v| clamp_compression_level(&requested_codec, v as i32))
+                        .unwrap_or_else(|| {
+                            if requested_codec
+                                .eq_ignore_ascii_case(&oodle_settings.pkz_default_compression)
+                            {
+                                clamp_compression_level(
+                                    &requested_codec,
+                                    oodle_settings.pkz_default_level,
+                                )
+                            } else {
+                                default_compression_level(&requested_codec)
+                            }
+                        });
+                    let force_comp = payload_val
+                        .get("force_compression")
+                        .and_then(|v| v.as_bool())
+                        .unwrap_or(false);
+                    let allow_fallback = payload_val
+                        .get("allow_zstd_fallback")
+                        .and_then(|v| v.as_bool())
+                        .unwrap_or(false);
+                    let collision_policy =
+                        payload_val.get("collision_policy").and_then(|v| v.as_str());
+
+                    if (requested_codec.eq_ignore_ascii_case("OodleKraken")
+                        || requested_codec.eq_ignore_ascii_case("Oodle"))
+                        && !allow_fallback
+                        && !OodleLibrary::load(oodle_opt)
+                            .map(|l| l.can_compress())
+                            .unwrap_or(false)
+                    {
+                        return Err("OODLE_DLL_MISSING: oo2core_*_win64.dll with OodleLZ_Compress is required to compress with OodleKraken.".into());
                     }
+
+                    let raw_candidate_items = collect_paths_for_pkz_add(&paths, &folder_prefix)?;
+                    // Deduplicate intra-batch items by lowercase virtual path (last item wins)
+                    let mut dedup_pos: HashMap<String, usize> =
+                        HashMap::with_capacity(raw_candidate_items.len());
+                    let mut candidate_items: Vec<(String, Vec<u8>)> =
+                        Vec::with_capacity(raw_candidate_items.len());
+                    for (vpath, data) in raw_candidate_items {
+                        let key = vpath.to_ascii_lowercase();
+                        if let Some(&pos) = dedup_pos.get(&key) {
+                            candidate_items[pos] = (vpath, data);
+                        } else {
+                            dedup_pos.insert(key, candidate_items.len());
+                            candidate_items.push((vpath, data));
+                        }
+                    }
+
+                    let mut existing_by_low: HashMap<String, usize> =
+                        HashMap::with_capacity(pkz.descriptors.len());
+                    for (idx, d) in pkz.descriptors.iter().enumerate() {
+                        existing_by_low.insert(
+                            d.name
+                                .replace('\\', "/")
+                                .trim_start_matches('/')
+                                .to_ascii_lowercase(),
+                            idx,
+                        );
+                    }
+
+                    let mut colliding_paths: Vec<String> = Vec::new();
+                    let mut new_count = 0usize;
+                    for (vpath, _) in &candidate_items {
+                        if existing_by_low.contains_key(&vpath.to_ascii_lowercase()) {
+                            colliding_paths.push(vpath.clone());
+                        } else {
+                            new_count += 1;
+                        }
+                    }
+
+                    if !colliding_paths.is_empty() && collision_policy.is_none() {
+                        return Err(format!(
+                            "PKZ_COLLISION:{}",
+                            serde_json::json!({
+                                "count": colliding_paths.len(),
+                                "paths": colliding_paths,
+                                "new_count": new_count
+                            })
+                        ));
+                    }
+
+                    let skip_colliding = matches!(collision_policy, Some("skip"));
+                    let mut replacements: HashMap<usize, Vec<u8>> = HashMap::new();
+                    let mut comp_overrides: HashMap<usize, String> = HashMap::new();
+                    let mut renamed_entries: HashMap<usize, String> = HashMap::new();
+                    let mut added: Vec<(String, Vec<u8>)> = Vec::new();
+
+                    for (vpath, data) in candidate_items {
+                        if let Some(&existing_idx) =
+                            existing_by_low.get(&vpath.to_ascii_lowercase())
+                        {
+                            if skip_colliding {
+                                continue;
+                            }
+                            replacements.insert(existing_idx, data);
+                            comp_overrides.insert(existing_idx, requested_codec.clone());
+                            renamed_entries.insert(existing_idx, vpath);
+                        } else {
+                            added.push((vpath, data));
+                        }
+                    }
+
+                    let total_staged = replacements.len() + added.len();
+                    sess.settings.pkz_default_compression = requested_codec.clone();
+                    sess.settings.pkz_default_level = requested_level;
+
                     let repacked = pkz
-                        .repack_with_replacements(
+                        .repack_with_full_options(
                             &sub_bytes,
-                            &HashMap::new(),
+                            &replacements,
                             &added,
                             &[],
                             None,
-                            None,
+                            Some(&requested_codec),
+                            if comp_overrides.is_empty() {
+                                None
+                            } else {
+                                Some(&comp_overrides)
+                            },
+                            if renamed_entries.is_empty() {
+                                None
+                            } else {
+                                Some(&renamed_entries)
+                            },
+                            Some(requested_level),
+                            force_comp,
                             oodle_opt,
                         )
                         .map_err(|e| e.to_string())?;
-                    (repacked, format!("Add {} file(s) to PKZ", paths.len()))
+                    (
+                        repacked,
+                        format!("Add {total_staged} file(s) to PKZ ({requested_codec})"),
+                    )
                 }
                 "EFF" => {
                     let mut eff = EffFile::from_bytes(&sub_bytes).map_err(|e| e.to_string())?;
@@ -1787,12 +2728,7 @@ pub fn mutate_container_node(
                             .and_then(|s| s.to_str())
                             .unwrap_or("0000000000.est")
                             .to_string();
-                        let stem = fname.split('.').next().unwrap_or("");
-                        let id = if let Some(hex) = stem.strip_prefix("0x").or_else(|| stem.strip_prefix("0X")) {
-                            u32::from_str_radix(hex, 16).ok()
-                        } else {
-                            stem.parse::<u32>().ok().or_else(|| u32::from_str_radix(stem, 16).ok())
-                        }.unwrap_or(dir.files.len() as u32);
+                        let id = parse_eff_entry_id(&fname);
                         let data = fs::read(p).map_err(|e| e.to_string())?;
                         dir.files.push(EffSubFile {
                             id,
@@ -1817,6 +2753,36 @@ pub fn mutate_container_node(
             )?;
             sess.invalidate_texture_caches();
             record_mutation(&mut sess, desc, next_snap);
+            build_outline_from_session(&sess)
+        }
+        "remove_pkz_entries" => {
+            let (container_parts, _) = split_container_and_leaf(&node_id);
+            let container_id = container_parts.join("/");
+            let (_, parent_bytes, _, _) = resolve_subblob(&snap, &container_id, oodle_opt)?;
+            let pkz = PkzArchive::from_bytes(&parent_bytes).map_err(|e| e.to_string())?;
+            let indices: Vec<usize> = payload_val
+                .get("entry_indices")
+                .and_then(|v| serde_json::from_value(v.clone()).ok())
+                .ok_or("Missing entry_indices for remove_pkz_entries")?;
+            let repacked = pkz
+                .repack_with_replacements(
+                    &parent_bytes,
+                    &HashMap::new(),
+                    &[],
+                    &indices,
+                    None,
+                    None,
+                    oodle_opt,
+                )
+                .map_err(|e| e.to_string())?;
+            let next_snap =
+                write_back_subblob(&snap, &container_parts, repacked, None, oodle_opt)?;
+            sess.invalidate_texture_caches();
+            record_mutation(
+                &mut sess,
+                format!("Delete {} file(s) from PKZ", indices.len()),
+                next_snap,
+            );
             build_outline_from_session(&sess)
         }
         "remove_entry" | "rename_entry" | "reorder_entry" => {
@@ -1928,8 +2894,7 @@ pub fn mutate_container_node(
                     }
                 } else if let Some(pkz_idx_str) = last_seg.strip_prefix("pkz:") {
                     let idx: usize = pkz_idx_str.parse().map_err(|_| "Invalid pkz index")?;
-                    let mut pkz =
-                        PkzArchive::from_bytes(&parent_bytes).map_err(|e| e.to_string())?;
+                    let pkz = PkzArchive::from_bytes(&parent_bytes).map_err(|e| e.to_string())?;
                     if idx >= pkz.descriptors.len() {
                         return Err("PKZ entry index out of range".into());
                     }
@@ -1950,25 +2915,77 @@ pub fn mutate_container_node(
                             (repacked, format!("Remove {name} from PKZ"))
                         }
                         "rename_entry" => {
-                            let new_name = payload_val
+                            let raw_input = payload_val
                                 .get("new_name")
                                 .and_then(|v| v.as_str())
                                 .unwrap_or(&target_path)
-                                .trim()
-                                .to_string();
-                            pkz.descriptors[idx].name = new_name.clone();
+                                .trim();
+                            let old_path = pkz.descriptors[idx].name.replace('\\', "/");
+                            let new_full_path =
+                                if !raw_input.contains('/') && !raw_input.contains('\\') {
+                                    // Leaf-only rename: preserve parent directory segment (matching PKZ Explorer F2 rename)
+                                    let leaf_valid = validate_single_entry_name(raw_input)
+                                        .map_err(|e| e.to_string())?;
+                                    if let Some(slash_pos) = old_path.rfind('/') {
+                                        let dir_part = &old_path[..slash_pos];
+                                        if dir_part.is_empty() {
+                                            leaf_valid
+                                        } else {
+                                            format!("{dir_part}/{leaf_valid}")
+                                        }
+                                    } else {
+                                        leaf_valid
+                                    }
+                                } else {
+                                    normalize_pkz_virtual_path(raw_input)
+                                        .map_err(|e| e.to_string())?
+                                };
+
+                            let collision_policy =
+                                payload_val.get("collision_policy").and_then(|v| v.as_str());
+                            let mut removed = Vec::new();
+                            if !new_full_path.eq_ignore_ascii_case(&old_path) {
+                                if let Some((other_idx, _)) = pkz
+                                    .descriptors
+                                    .iter()
+                                    .enumerate()
+                                    .find(|&(oi, d)| {
+                                        oi != idx && d.name.eq_ignore_ascii_case(&new_full_path)
+                                    })
+                                {
+                                    if collision_policy.is_none() {
+                                        return Err(format!(
+                                            "PKZ_COLLISION:{}",
+                                            serde_json::json!({
+                                                "count": 1,
+                                                "paths": [new_full_path],
+                                                "new_count": 0
+                                            })
+                                        ));
+                                    }
+                                    if matches!(collision_policy, Some("skip")) {
+                                        return build_outline_from_session(&sess);
+                                    }
+                                    removed.push(other_idx);
+                                }
+                            }
+
+                            let mut renamed = HashMap::new();
+                            renamed.insert(idx, new_full_path.clone());
                             let repacked = pkz
-                                .repack_with_replacements(
+                                .repack_with_options(
                                     &parent_bytes,
                                     &HashMap::new(),
                                     &[],
-                                    &[],
+                                    &removed,
                                     None,
                                     None,
+                                    None,
+                                    Some(&renamed),
                                     oodle_opt,
                                 )
                                 .map_err(|e| e.to_string())?;
-                            (repacked, format!("Rename PKZ entry to {new_name}"))
+                            (repacked, format!("Rename PKZ entry to {new_full_path}"))
                         }
                         "reorder_entry" => {
                             let to_idx = compute_reorder_target(

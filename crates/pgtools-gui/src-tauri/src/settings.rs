@@ -1,4 +1,5 @@
 use crate::session::{lock_session, AppState};
+use pgtools_core::pkz::{clamp_compression_level, OodleLibrary, DEFAULT_ZSTD_LEVEL};
 use serde::{Deserialize, Serialize};
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -18,6 +19,8 @@ pub struct StudioSettings {
     pub asset_ratio: f32,
     pub oodle_dll_path: String,
     pub nvtt_dll_path: String,
+    pub pkz_default_compression: String,
+    pub pkz_default_level: i32,
     pub core_dat_b1: String,
     pub core_dat_b2: String,
     pub core_dat_b3: String,
@@ -26,6 +29,15 @@ pub struct StudioSettings {
     pub wmb_normals_view: bool,
     pub wmb_skeleton_overlay: bool,
     pub wmb_grid_visible: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct OodleValidationReport {
+    pub found: bool,
+    pub resolved_path: String,
+    pub can_decompress: bool,
+    pub can_compress: bool,
+    pub message: String,
 }
 
 impl StudioSettings {
@@ -53,6 +65,8 @@ impl Default for StudioSettings {
             asset_ratio: 0.50,
             oodle_dll_path: String::new(),
             nvtt_dll_path: String::new(),
+            pkz_default_compression: "ZStandard".to_string(),
+            pkz_default_level: DEFAULT_ZSTD_LEVEL,
             core_dat_b1: String::new(),
             core_dat_b2: String::new(),
             core_dat_b3: String::new(),
@@ -112,6 +126,8 @@ pub(crate) fn load_settings_from_disk() -> StudioSettings {
             if validate_optional_dll_setting(&s.nvtt_dll_path).is_err() {
                 s.nvtt_dll_path.clear();
             }
+            s.pkz_default_level =
+                clamp_compression_level(&s.pkz_default_compression, s.pkz_default_level);
             return s;
         }
     }
@@ -137,10 +153,80 @@ pub fn save_studio_settings(
 ) -> Result<StudioSettings, String> {
     settings.oodle_dll_path = validate_optional_dll_setting(&settings.oodle_dll_path)?;
     settings.nvtt_dll_path = validate_optional_dll_setting(&settings.nvtt_dll_path)?;
+    settings.pkz_default_level = clamp_compression_level(
+        &settings.pkz_default_compression,
+        settings.pkz_default_level,
+    );
     let mut sess = lock_session(&state);
     sess.settings = settings;
     save_settings_to_disk(&sess.settings);
     Ok(sess.settings.clone())
+}
+
+#[tauri::command]
+pub fn validate_oodle_dll(
+    path: Option<String>,
+    state: State<'_, AppState>,
+) -> OodleValidationReport {
+    let configured = path.unwrap_or_else(|| lock_session(&state).settings.oodle_dll_path.clone());
+    let trimmed = configured.trim();
+    let explicit_opt = if trimmed.is_empty() {
+        None
+    } else {
+        Some(Path::new(trimmed))
+    };
+
+    if let Some(exp) = explicit_opt {
+        if !exp.is_file() {
+            let auto = OodleLibrary::find_dll_path(None);
+            return OodleValidationReport {
+                found: false,
+                resolved_path: auto
+                    .as_ref()
+                    .map(|p| p.to_string_lossy().into_owned())
+                    .unwrap_or_default(),
+                can_decompress: false,
+                can_compress: false,
+                message: if let Some(a) = auto {
+                    format!(
+                        "Not found at '{trimmed}'. Auto-detect found {}.",
+                        a.display()
+                    )
+                } else {
+                    format!("Not found at '{trimmed}', and no oo2core*.dll in application folder.")
+                },
+            };
+        }
+    }
+
+    match OodleLibrary::load(explicit_opt) {
+        Ok(lib) => {
+            let can_dec = lib.can_decompress();
+            let can_comp = lib.can_compress();
+            let resolved = lib.resolved_path.to_string_lossy().into_owned();
+            let message = if can_dec && can_comp {
+                format!("{resolved} loads and supports both OodleKraken compression and decompression.")
+            } else if can_dec {
+                format!("{resolved} loads for decompression only (missing OodleLZ_Compress export).")
+            } else {
+                format!("{resolved} does not export OodleLZ_Decompress.")
+            };
+            OodleValidationReport {
+                found: true,
+                resolved_path: resolved,
+                can_decompress: can_dec,
+                can_compress: can_comp,
+                message,
+            }
+        }
+        Err(_) => OodleValidationReport {
+            found: false,
+            resolved_path: String::new(),
+            can_decompress: false,
+            can_compress: false,
+            message: "No oo2core*.dll configured (built-in pure-Rust ooz decompressor active for reading; OodleKraken compression requires oo2core_*_win64.dll).".to_string(),
+        },
+    }
 }
 
 #[tauri::command]

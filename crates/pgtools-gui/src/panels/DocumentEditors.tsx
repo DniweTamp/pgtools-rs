@@ -70,6 +70,16 @@ export interface DocumentActions {
     targetPath?: string,
     payload?: any
   ) => Promise<void>;
+  openPkzCompressionModal: (
+    title: string,
+    subtitle: string,
+    initialCodec: string | undefined,
+    onConfirm: (
+      compression: "None" | "ZStandard" | "OodleKraken",
+      level: number,
+      forceCompression: boolean
+    ) => Promise<void> | void
+  ) => void;
   handleCrossGameMaterialConvert: (
     wmb: WmbSectionView,
     dstGame: "b1" | "b2" | "b3"
@@ -364,9 +374,17 @@ export function DocumentEditors({
               setSelectedMotTrackIdx={setSelectedMotTrackIdx}
               pkzBulkCodec={meshUi.pkzBulkCodec}
               setPkzBulkCodec={meshUi.setPkzBulkCodec}
+              pkzSortCol={meshUi.pkzSortCol}
+              pkzSortAsc={meshUi.pkzSortAsc}
+              togglePkzSort={meshUi.togglePkzSort}
+              pkzSelectedIndices={meshUi.pkzSelectedIndices}
+              setPkzSelectedIndices={meshUi.setPkzSelectedIndices}
+              pkzAnchorIndex={meshUi.pkzAnchorIndex}
+              setPkzAnchorIndex={meshUi.setPkzAnchorIndex}
               runStructMutation={actions.runStructMutation}
               runClothMutation={actions.runClothMutation}
               runContainerMutation={actions.runContainerMutation}
+              openPkzCompressionModal={actions.openPkzCompressionModal}
               selectAndInspectNode={actions.selectAndInspectNode}
               handlePickOodleDll={dll.handlePickOodleDll}
               loadDirectory={actions.loadDirectory}

@@ -10,6 +10,8 @@ export interface StudioSettingsState {
   assetRatio: number;
   oodleDllPath: string;
   nvttDllPath: string;
+  pkzDefaultCompression: "None" | "ZStandard" | "OodleKraken";
+  pkzDefaultLevel: number;
   coreDatB1: string;
   coreDatB2: string;
   coreDatB3: string;
@@ -32,6 +34,10 @@ export interface StudioSettingsApi extends StudioSettingsState {
   setAssetRatio: React.Dispatch<React.SetStateAction<number>>;
   setOodleDllPath: React.Dispatch<React.SetStateAction<string>>;
   setNvttDllPath: React.Dispatch<React.SetStateAction<string>>;
+  setPkzDefaultCompression: React.Dispatch<
+    React.SetStateAction<"None" | "ZStandard" | "OodleKraken">
+  >;
+  setPkzDefaultLevel: React.Dispatch<React.SetStateAction<number>>;
   setCoreDatB1: React.Dispatch<React.SetStateAction<string>>;
   setCoreDatB2: React.Dispatch<React.SetStateAction<string>>;
   setCoreDatB3: React.Dispatch<React.SetStateAction<string>>;
@@ -58,6 +64,24 @@ export interface StudioSettingsApi extends StudioSettingsState {
  * should usually be persisted together; callers supply currentDir when
  * building the save payload.
  */
+export function normalizePkzCodec(
+  raw?: string | null
+): "None" | "ZStandard" | "OodleKraken" {
+  const low = (raw ?? "").trim().toLowerCase();
+  if (low.includes("oodle") || low.includes("kraken")) return "OodleKraken";
+  if (low === "none" || low === "uncompressed") return "None";
+  return "ZStandard";
+}
+
+export function clampPkzLevel(
+  codec: "None" | "ZStandard" | "OodleKraken",
+  level: number
+): number {
+  if (codec === "None") return 0;
+  if (codec === "OodleKraken") return Math.max(1, Math.min(9, Math.round(level || 4)));
+  return Math.max(1, Math.min(22, Math.round(level || 3)));
+}
+
 export function useStudioSettings(): StudioSettingsApi {
   const [settingsLoaded, setSettingsLoaded] = useState(false);
   const [theme, setTheme] = useState<ThemeMode>("dark");
@@ -66,6 +90,10 @@ export function useStudioSettings(): StudioSettingsApi {
   const [assetRatio, setAssetRatio] = useState(0.5);
   const [oodleDllPath, setOodleDllPath] = useState("");
   const [nvttDllPath, setNvttDllPath] = useState("");
+  const [pkzDefaultCompression, setPkzDefaultCompression] = useState<
+    "None" | "ZStandard" | "OodleKraken"
+  >("ZStandard");
+  const [pkzDefaultLevel, setPkzDefaultLevel] = useState<number>(3);
   const [coreDatB1, setCoreDatB1] = useState("");
   const [coreDatB2, setCoreDatB2] = useState("");
   const [coreDatB3, setCoreDatB3] = useState("");
@@ -92,6 +120,8 @@ export function useStudioSettings(): StudioSettingsApi {
     assetRatio,
     oodleDllPath,
     nvttDllPath,
+    pkzDefaultCompression,
+    pkzDefaultLevel,
     coreDatB1,
     coreDatB2,
     coreDatB3,
@@ -112,6 +142,8 @@ export function useStudioSettings(): StudioSettingsApi {
     assetRatio,
     oodleDllPath,
     nvttDllPath,
+    pkzDefaultCompression,
+    pkzDefaultLevel,
     coreDatB1,
     coreDatB2,
     coreDatB3,
@@ -137,6 +169,9 @@ export function useStudioSettings(): StudioSettingsApi {
     if (s.asset_ratio >= 0.18 && s.asset_ratio <= 0.82) setAssetRatio(s.asset_ratio);
     setOodleDllPath(s.oodle_dll_path ?? "");
     setNvttDllPath(s.nvtt_dll_path ?? "");
+    const normCodec = normalizePkzCodec(s.pkz_default_compression);
+    setPkzDefaultCompression(normCodec);
+    setPkzDefaultLevel(clampPkzLevel(normCodec, s.pkz_default_level ?? 3));
     setCoreDatB1(s.core_dat_b1 ?? "");
     setCoreDatB2(s.core_dat_b2 ?? "");
     setCoreDatB3(s.core_dat_b3 ?? "");
@@ -174,6 +209,8 @@ export function useStudioSettings(): StudioSettingsApi {
         asset_ratio: s.assetRatio,
         oodle_dll_path: s.oodleDllPath,
         nvtt_dll_path: s.nvttDllPath,
+        pkz_default_compression: s.pkzDefaultCompression,
+        pkz_default_level: s.pkzDefaultLevel,
         core_dat_b1: s.coreDatB1,
         core_dat_b2: s.coreDatB2,
         core_dat_b3: s.coreDatB3,
@@ -200,6 +237,8 @@ export function useStudioSettings(): StudioSettingsApi {
     assetRatio,
     oodleDllPath,
     nvttDllPath,
+    pkzDefaultCompression,
+    pkzDefaultLevel,
     coreDatB1,
     coreDatB2,
     coreDatB3,
@@ -218,6 +257,8 @@ export function useStudioSettings(): StudioSettingsApi {
     setAssetRatio,
     setOodleDllPath,
     setNvttDllPath,
+    setPkzDefaultCompression,
+    setPkzDefaultLevel,
     setCoreDatB1,
     setCoreDatB2,
     setCoreDatB3,

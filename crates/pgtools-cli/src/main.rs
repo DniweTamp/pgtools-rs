@@ -69,13 +69,21 @@ enum Commands {
         #[arg(long)]
         oodle_dll: Option<PathBuf>,
     },
-    /// Pack a directory of files into a .pkz archive
+    /// Pack a directory of files recursively into a .pkz archive
     PkzCreate {
         input_dir: PathBuf,
         #[arg(short, long)]
         output: PathBuf,
         #[arg(long, default_value_t = true)]
         zstd: bool,
+        #[arg(long)]
+        compression: Option<String>,
+        #[arg(long)]
+        level: Option<i32>,
+        #[arg(long, default_value_t = false)]
+        force_compression: bool,
+        #[arg(long)]
+        oodle_dll: Option<PathBuf>,
     },
     /// Extract an .eff or .idd multi-directory effect container (replaces `eff_idd_extractor`)
     EffExtract {
@@ -406,18 +414,26 @@ fn main() -> Result<()> {
             input_dir,
             output,
             zstd,
+            compression,
+            level,
+            force_compression,
+            oodle_dll,
         } => {
-            let mut files = Vec::new();
-            for entry in fs::read_dir(&input_dir)? {
-                let entry = entry?;
-                if entry.file_type()?.is_file() {
-                    let name = entry.file_name().to_string_lossy().into_owned();
-                    let data = fs::read(entry.path())?;
-                    files.push((name, data));
+            let codec = compression.unwrap_or_else(|| {
+                if zstd {
+                    "ZStandard".to_string()
+                } else {
+                    "None".to_string()
                 }
-            }
-            files.sort_by(|a, b| a.0.cmp(&b.0));
-            let bytes = PkzArchive::build(&files, zstd)?;
+            });
+            let lvl = level.unwrap_or_else(|| pgtools_core::pkz::default_compression_level(&codec));
+            let bytes = PkzArchive::build_from_dir(
+                &input_dir,
+                &codec,
+                lvl,
+                force_compression,
+                oodle_dll.as_deref(),
+            )?;
             fs::write(&output, bytes)?;
             println!("Created PKZ archive at {}", output.display());
         }

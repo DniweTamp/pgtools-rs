@@ -1,8 +1,8 @@
 use crate::session::{lock_session, record_mutation, AppState};
 use crate::texture_cmd::build_texture_node_view;
 use crate::vfs::{
-    build_outline_from_session, detect_file_format_tag, resolve_subblob, split_container_and_leaf,
-    write_back_subblob, DocumentOutline,
+    build_outline_from_session, compute_pkz_modified_map, detect_file_format_tag, resolve_subblob,
+    split_container_and_leaf, write_back_subblob, DocumentOutline,
 };
 use crate::wmb_scene::{build_wmb1_section_view, build_wmb3_section_view};
 use pgtools_core::{
@@ -528,15 +528,39 @@ pub fn inspect_asset_node(
         }
     } else if tag == "PKZ" {
         if let Ok(pkz) = PkzArchive::from_bytes(&sub_bytes) {
-            let oodle_found = OodleLibrary::find_dll_path(oodle_path_opt);
+            let (container_parts, _) = split_container_and_leaf(&node_id);
+            let container_id = container_parts.join("/");
+            let baseline_bytes = sess
+                .saved_snapshot
+                .as_ref()
+                .and_then(|bs| resolve_subblob(bs, &container_id, oodle_path_opt).ok())
+                .map(|(_, b, _, _)| b);
+            let (mod_map, staged_count) =
+                compute_pkz_modified_map(&sub_bytes, &pkz, baseline_bytes.as_deref());
+            let oodle_lib = OodleLibrary::load(oodle_path_opt).ok();
+            let oodle_found = oodle_lib
+                .as_ref()
+                .map(|l| l.resolved_path.clone())
+                .or_else(|| OodleLibrary::find_dll_path(oodle_path_opt));
+            let oodle_can_compress = oodle_lib.as_ref().map(|l| l.can_compress()).unwrap_or(false);
+
             for (i, d) in pkz.descriptors.iter().enumerate() {
+                let fmt_label = Path::new(&d.name)
+                    .extension()
+                    .and_then(|e| e.to_str())
+                    .filter(|s| !s.is_empty())
+                    .map(|s| s.to_ascii_uppercase())
+                    .unwrap_or_else(|| "BIN".to_string());
+                let is_mod = mod_map.get(&i).copied().unwrap_or(false);
                 container_entries.push(serde_json::json!({
                     "index": i,
                     "name": d.name,
+                    "format": fmt_label,
                     "compression": d.compression,
                     "size": d.size,
                     "compressed_size": d.compressed_size,
                     "offset": d.offset,
+                    "modified": is_mod,
                 }));
             }
             pkz_info = serde_json::json!({
@@ -545,7 +569,11 @@ pub fn inspect_asset_node(
                 "uses_oodle": pkz.uses_oodle(),
                 "oodle_available": true,
                 "oodle_fallback_active": oodle_found.is_none(),
+                "oodle_can_compress": oodle_can_compress,
                 "oodle_path": oodle_found.map(|p| p.to_string_lossy().into_owned()).unwrap_or_else(|| "Built-in Pure-Rust Oodle Kraken (ooz) Fallback".into()),
+                "staged_count": staged_count,
+                "default_compression": sess.settings.pkz_default_compression,
+                "default_level": sess.settings.pkz_default_level,
             });
         }
     } else if tag == "EFF" {

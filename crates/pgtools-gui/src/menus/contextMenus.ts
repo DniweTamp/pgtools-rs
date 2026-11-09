@@ -26,6 +26,18 @@ export interface AssetMenuDeps {
   handleTextureExport: (nodeId: string, scope: "single" | "bank", format: "png" | "dds" | "raw") => Promise<void>;
   runTextureMutation: (nodeId: string, action: string, payload?: any) => Promise<void>;
   runClothMutation: (nodeId: string, operation: string, preset?: string, updatedJson?: any) => Promise<void>;
+  openPkzCompressionModal: (
+    title: string,
+    subtitle: string,
+    initialCodec: string | undefined,
+    onConfirm: (
+      compression: "None" | "ZStandard" | "OodleKraken",
+      level: number,
+      forceCompression: boolean
+    ) => Promise<void> | void
+  ) => void;
+  onExpandAll: () => void;
+  onCollapseAll: () => void;
   loadDirectory: (target?: string) => Promise<void>;
   currentDirRef: React.MutableRefObject<string>;
 }
@@ -41,6 +53,7 @@ export interface FileMenuDeps {
   setStatusLeft: (msg: string) => void;
   loadDirectory: (target?: string) => Promise<void>;
   openDocumentByPath: (path: string) => Promise<void>;
+  onPackFolderToPkz: (folderPath: string) => Promise<void>;
 }
 
 export function createMenuBuilders(assetDeps: AssetMenuDeps, fileDeps: FileMenuDeps) {
@@ -60,6 +73,9 @@ export function createMenuBuilders(assetDeps: AssetMenuDeps, fileDeps: FileMenuD
     handleTextureExport,
     runTextureMutation,
     runClothMutation,
+    openPkzCompressionModal,
+    onExpandAll,
+    onCollapseAll,
     loadDirectory,
     currentDirRef,
   } = assetDeps;
@@ -72,17 +88,19 @@ export function createMenuBuilders(assetDeps: AssetMenuDeps, fileDeps: FileMenuD
     setFsClipboard,
     currentDir,
     openDocumentByPath,
+    onPackFolderToPkz,
   } = fileDeps;
 
   function buildAssetNodeContextMenu(nodeId: string, kind: string): MenuItemSpec[] {
     const virtualSub = isVirtualSubNode(nodeId);
     const leafSeg = nodeId.split("/").pop() || "";
+    const isPkzEntry = !virtualSub && leafSeg.startsWith("pkz:");
     const isContainerEntry =
       !virtualSub &&
       nodeId !== "root" &&
       nodeId !== "root:dat" &&
       nodeId !== "root:dtt" &&
-      (leafSeg.startsWith("dat:") || leafSeg.startsWith("pkz:") || leafSeg.startsWith("efffile:"));
+      (leafSeg.startsWith("dat:") || isPkzEntry || leafSeg.startsWith("efffile:"));
     const isContainer =
       kind === "DAT" ||
       kind === "DTT" ||
@@ -221,7 +239,7 @@ export function createMenuBuilders(assetDeps: AssetMenuDeps, fileDeps: FileMenuD
       ];
     }
 
-    // Standard leaf entry actions inside a parent container (NO Move Up/Down — drag & drop handles reordering!)
+    // Standard leaf entry actions inside a parent container
     const leafEntryMgmtItems: MenuItemSpec[] = isContainerEntry
       ? [
           {
@@ -232,11 +250,47 @@ export function createMenuBuilders(assetDeps: AssetMenuDeps, fileDeps: FileMenuD
                 title: "Select Replacement Sub-File",
                 extensions: null,
               });
-              if (src) {
+              if (!src) return;
+              if (isPkzEntry) {
+                openPkzCompressionModal(
+                  "Replace PKZ Entry",
+                  `Choose compression for replacement file '${src.split(/[\\/]/).pop()}'`,
+                  undefined,
+                  async (compression, level, forceCompression) => {
+                    await runContainerMutation(nodeId, "replace_subfile", src, {
+                      compression,
+                      level,
+                      force_compression: forceCompression,
+                    });
+                  }
+                );
+              } else {
                 await runContainerMutation(nodeId, "replace_subfile", src);
               }
             },
           },
+          ...(isPkzEntry
+            ? [
+                {
+                  label: "Recompress Entry...",
+                  action: () => {
+                    setContextMenu(null);
+                    openPkzCompressionModal(
+                      "Recompress PKZ Entry",
+                      "Select compression codec and level for this entry",
+                      undefined,
+                      async (compression, level, forceCompression) => {
+                        await runContainerMutation(nodeId, "set_pkz_compression", compression, {
+                          compression,
+                          level,
+                          force_compression: forceCompression,
+                        });
+                      }
+                    );
+                  },
+                },
+              ]
+            : []),
           {
             label: "Export Raw Sub-File...",
             action: async () => {
@@ -253,6 +307,7 @@ export function createMenuBuilders(assetDeps: AssetMenuDeps, fileDeps: FileMenuD
           },
           {
             label: "Rename Entry...",
+            shortcut: "F2",
             action: async () => {
               setContextMenu(null);
               const nextName = window.prompt("Enter new entry filename:");
@@ -263,16 +318,39 @@ export function createMenuBuilders(assetDeps: AssetMenuDeps, fileDeps: FileMenuD
               }
             },
           },
+          ...(isPkzEntry
+            ? [
+                {
+                  label: "Revert This Row",
+                  action: () => {
+                    setContextMenu(null);
+                    void runContainerMutation(nodeId, "revert_pkz_entries");
+                  },
+                },
+              ]
+            : []),
           {
             label: "Delete from Container",
-            action: () => runContainerMutation(nodeId, "remove_entry"),
+            shortcut: "Del",
+            action: () => {
+              setContextMenu(null);
+              if (isPkzEntry) {
+                const ok = window.confirm(
+                  `Delete '${nodeId}' from the PKZ archive?\n\nThe change is staged until you save.`
+                );
+                if (!ok) return;
+              }
+              void runContainerMutation(nodeId, "remove_entry");
+            },
           },
         ]
       : [];
 
     // 2B. PKZ Virtual Folder Node (`PKZ_FOLDER` / `pkzfolder:<prefix>`)
-    if (kind === "PKZ_FOLDER" || leafSeg.startsWith("pkzfolder:")) {
-      const folderPrefix = leafSeg.replace(/^pkzfolder:/, "");
+    if (kind === "PKZ_FOLDER" || nodeId.includes("pkzfolder:")) {
+      const folderPrefix = nodeId.includes("pkzfolder:")
+        ? nodeId.split("pkzfolder:").pop() || ""
+        : leafSeg.replace(/^pkzfolder:/, "");
       return [
         {
           label: `Add File(s) into '${folderPrefix}/'...`,
@@ -283,10 +361,45 @@ export function createMenuBuilders(assetDeps: AssetMenuDeps, fileDeps: FileMenuD
               extensions: null,
             });
             if (paths && paths.length > 0) {
-              await runContainerMutation(nodeId, "add_files", "", {
-                paths,
-                folder_prefix: folderPrefix,
-              });
+              openPkzCompressionModal(
+                `Add ${paths.length} File(s) to '${folderPrefix}/'`,
+                "Choose compression codec and level for added files",
+                undefined,
+                async (compression, level, forceCompression) => {
+                  await runContainerMutation(nodeId, "add_files", "", {
+                    paths,
+                    folder_prefix: folderPrefix,
+                    compression,
+                    level,
+                    force_compression: forceCompression,
+                  });
+                }
+              );
+            }
+          },
+        },
+        {
+          label: `Add Folder into '${folderPrefix}/'...`,
+          action: async () => {
+            setContextMenu(null);
+            const folder = await invoke<string | null>("pick_folder_dialog", {
+              title: `Select Folder whose contents will be added into '${folderPrefix}/'`,
+            });
+            if (folder) {
+              openPkzCompressionModal(
+                `Add Folder into '${folderPrefix}/'`,
+                "Choose compression codec and level for added folder contents",
+                undefined,
+                async (compression, level, forceCompression) => {
+                  await runContainerMutation(nodeId, "add_files", "", {
+                    paths: [folder],
+                    folder_prefix: folderPrefix,
+                    compression,
+                    level,
+                    force_compression: forceCompression,
+                  });
+                }
+              );
             }
           },
         },
@@ -307,10 +420,30 @@ export function createMenuBuilders(assetDeps: AssetMenuDeps, fileDeps: FileMenuD
           },
         },
         {
-          label: "Rename Folder Prefix...",
+          label: `Recompress Folder '${folderPrefix}/'...`,
+          action: () => {
+            setContextMenu(null);
+            openPkzCompressionModal(
+              `Recompress Folder '${folderPrefix}/'`,
+              "Change compression codec and level for all files under this folder",
+              undefined,
+              async (compression, level, forceCompression) => {
+                await runContainerMutation(nodeId, "set_pkz_compression", compression, {
+                  folder_prefix: folderPrefix,
+                  compression,
+                  level,
+                  force_compression: forceCompression,
+                });
+              }
+            );
+          },
+        },
+        {
+          label: "Rename Folder...",
+          shortcut: "F2",
           action: async () => {
             setContextMenu(null);
-            const nextPrefix = window.prompt("Enter new PKZ folder prefix:", folderPrefix);
+            const nextPrefix = window.prompt("Enter new PKZ folder path:", folderPrefix);
             if (nextPrefix !== null && nextPrefix.trim() !== folderPrefix) {
               await runContainerMutation(nodeId, "rename_pkz_folder", nextPrefix.trim(), {
                 folder_prefix: folderPrefix,
@@ -319,13 +452,44 @@ export function createMenuBuilders(assetDeps: AssetMenuDeps, fileDeps: FileMenuD
             }
           },
         },
+        {
+          label: `Revert Folder '${folderPrefix}/'`,
+          action: () => {
+            setContextMenu(null);
+            void runContainerMutation(nodeId, "revert_pkz_entries", "", {
+              folder_prefix: folderPrefix,
+            });
+          },
+        },
         { separator: true },
         {
           label: `Delete Folder '${folderPrefix}/' from PKZ`,
-          action: () =>
-            runContainerMutation(nodeId, "remove_pkz_folder", "", {
+          shortcut: "Del",
+          action: () => {
+            setContextMenu(null);
+            const ok = window.confirm(
+              `Delete the folder '${folderPrefix}' and all files under it?\n\nThe change is staged until you save.`
+            );
+            if (!ok) return;
+            void runContainerMutation(nodeId, "remove_pkz_folder", "", {
               folder_prefix: folderPrefix,
-            }),
+            });
+          },
+        },
+        { separator: true },
+        {
+          label: "Expand All",
+          action: () => {
+            setContextMenu(null);
+            onExpandAll();
+          },
+        },
+        {
+          label: "Collapse All",
+          action: () => {
+            setContextMenu(null);
+            onCollapseAll();
+          },
         },
       ];
     }
@@ -333,7 +497,85 @@ export function createMenuBuilders(assetDeps: AssetMenuDeps, fileDeps: FileMenuD
     // 3. Container Node (`DAT`, `DTT`, `PKZ`, `EFF`, `EFF_DIR`, `SCR`)
     if (isContainer) {
       const items: MenuItemSpec[] = [];
-      if (kind !== "SCR") {
+      if (kind === "PKZ") {
+        items.push(
+          {
+            label: "Add File(s)...",
+            action: async () => {
+              setContextMenu(null);
+              const paths = await invoke<string[]>("pick_multiple_files_dialog", {
+                title: "Select File(s) to Add to PKZ",
+                extensions: null,
+              });
+              if (paths && paths.length > 0) {
+                openPkzCompressionModal(
+                  "Add File(s) as",
+                  "Choose compression codec and level for added files",
+                  undefined,
+                  async (compression, level, forceCompression) => {
+                    await runContainerMutation(nodeId, "add_files", "", {
+                      paths,
+                      compression,
+                      level,
+                      force_compression: forceCompression,
+                    });
+                  }
+                );
+              }
+            },
+          },
+          {
+            label: "Add Folder...",
+            action: async () => {
+              setContextMenu(null);
+              const folder = await invoke<string | null>("pick_folder_dialog", {
+                title: "Select Folder to Add into PKZ",
+              });
+              if (folder) {
+                openPkzCompressionModal(
+                  "Add Folder Contents as",
+                  "Choose compression codec and level for added folder contents",
+                  undefined,
+                  async (compression, level, forceCompression) => {
+                    await runContainerMutation(nodeId, "add_files", "", {
+                      paths: [folder],
+                      compression,
+                      level,
+                      force_compression: forceCompression,
+                    });
+                  }
+                );
+              }
+            },
+          },
+          {
+            label: "Recompress All...",
+            action: () => {
+              setContextMenu(null);
+              openPkzCompressionModal(
+                "Recompress All PKZ Entries",
+                "Choose compression codec and level for all entries in this archive",
+                undefined,
+                async (compression, level, forceCompression) => {
+                  await runContainerMutation(nodeId, "set_pkz_compression", compression, {
+                    compression,
+                    level,
+                    force_compression: forceCompression,
+                  });
+                }
+              );
+            },
+          },
+          {
+            label: "Revert All Staged Changes",
+            action: () => {
+              setContextMenu(null);
+              void runContainerMutation(nodeId, "revert_pkz_entries");
+            },
+          },
+          { separator: true }
+        );
+      } else if (kind !== "SCR") {
         items.push({
           label: "Add File(s) to Container...",
           action: async () => {
@@ -727,8 +969,11 @@ export function createMenuBuilders(assetDeps: AssetMenuDeps, fileDeps: FileMenuD
           action: () => runCliOp("repack_folder_dat"),
         },
         {
-          label: "Pack Folder into .PKZ (ZStandard) Archive",
-          action: () => runCliOp("repack_folder_pkz"),
+          label: "Pack Folder into .PKZ Archive...",
+          action: () => {
+            setContextMenu(null);
+            void onPackFolderToPkz(entry.path);
+          },
         },
         { separator: true }
       );
