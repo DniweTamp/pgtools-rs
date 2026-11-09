@@ -10,6 +10,8 @@ export interface StudioSettings {
   asset_ratio: number;
   oodle_dll_path: string;
   nvtt_dll_path: string;
+  oodle_configured?: boolean;
+  nvtt_configured?: boolean;
   pkz_default_compression?: string;
   pkz_default_level?: number;
   core_dat_b1: string;

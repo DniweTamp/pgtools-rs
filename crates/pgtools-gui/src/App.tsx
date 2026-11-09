@@ -75,6 +75,8 @@ export default function App() {
     assetRatio,
     oodleDllPath,
     nvttDllPath,
+    oodleConfigured,
+    nvttConfigured,
     pkzDefaultCompression,
     pkzDefaultLevel,
     coreDatB1,
@@ -96,6 +98,8 @@ export default function App() {
     setAssetRatio,
     setOodleDllPath,
     setNvttDllPath,
+    setOodleConfigured,
+    setNvttConfigured,
     setPkzDefaultCompression,
     setPkzDefaultLevel,
     setCoreDatB1,
@@ -288,10 +292,72 @@ export default function App() {
     if (err) setStatusLeft(err);
   }
 
-  // Menus & Status
+  // Menus & Status (with appearing & disappearing animation transitions)
   const [activeTopMenu, setActiveTopMenu] = useState<"file" | "tools" | "help" | null>(null);
+  const [closingTopMenu, setClosingTopMenu] = useState<"file" | "tools" | "help" | null>(null);
+  const prevTopMenuRef = useRef<"file" | "tools" | "help" | null>(null);
+
   const [contextMenu, setContextMenu] = useState<ContextMenuState | null>(null);
+  const [closingContextMenu, setClosingContextMenu] = useState<ContextMenuState | null>(null);
+  const prevContextMenuRef = useRef<ContextMenuState | null>(null);
+
   const [hoverSubmenuIdx, setHoverSubmenuIdx] = useState<number | null>(null);
+  const [closingSubmenuIdx, setClosingSubmenuIdx] = useState<number | null>(null);
+  const prevSubmenuIdxRef = useRef<number | null>(null);
+
+  useEffect(() => {
+    if (hoverSubmenuIdx !== null) {
+      setClosingSubmenuIdx(null);
+      prevSubmenuIdxRef.current = hoverSubmenuIdx;
+    } else if (prevSubmenuIdxRef.current !== null) {
+      const prev = prevSubmenuIdxRef.current;
+      prevSubmenuIdxRef.current = null;
+      setClosingSubmenuIdx(prev);
+      const timer = window.setTimeout(() => {
+        setClosingSubmenuIdx((cur) => (cur === prev ? null : cur));
+      }, 115);
+      return () => window.clearTimeout(timer);
+    }
+  }, [hoverSubmenuIdx]);
+
+  const displayedSubmenuIdx = hoverSubmenuIdx ?? closingSubmenuIdx;
+  const isSubmenuClosing = hoverSubmenuIdx === null && closingSubmenuIdx !== null;
+
+  useEffect(() => {
+    if (activeTopMenu !== null) {
+      setClosingTopMenu(null);
+      prevTopMenuRef.current = activeTopMenu;
+      setHoverSubmenuIdx(null);
+    } else if (prevTopMenuRef.current !== null) {
+      const prev = prevTopMenuRef.current;
+      prevTopMenuRef.current = null;
+      setClosingTopMenu(prev);
+      const timer = window.setTimeout(() => {
+        setClosingTopMenu((cur) => (cur === prev ? null : cur));
+      }, 115);
+      return () => window.clearTimeout(timer);
+    }
+  }, [activeTopMenu]);
+
+  useEffect(() => {
+    if (contextMenu !== null) {
+      setClosingContextMenu(null);
+      prevContextMenuRef.current = contextMenu;
+    } else if (prevContextMenuRef.current !== null) {
+      const prev = prevContextMenuRef.current;
+      prevContextMenuRef.current = null;
+      setClosingContextMenu(prev);
+      const timer = window.setTimeout(() => {
+        setClosingContextMenu((cur) => (cur === prev ? null : cur));
+      }, 115);
+      return () => window.clearTimeout(timer);
+    }
+  }, [contextMenu]);
+
+  const displayedTopMenu = activeTopMenu ?? closingTopMenu;
+  const isTopMenuClosing = activeTopMenu === null && closingTopMenu !== null;
+  const displayedContextMenu = contextMenu ?? closingContextMenu;
+  const isContextMenuClosing = contextMenu === null && closingContextMenu !== null;
 
   // Suppress generic browser right-click context menu globally
   useEffect(() => {
@@ -439,7 +505,15 @@ export default function App() {
     if (!settingsLoaded) return;
     const payload = buildStudioSettingsPayload(currentDir);
     const timer = window.setTimeout(() => {
-      invoke("save_studio_settings", { settings: payload }).catch(() => {});
+      invoke<StudioSettings>("save_studio_settings", { settings: payload })
+        .then((saved) => {
+          setOodleConfigured(Boolean(saved.oodle_configured));
+          setNvttConfigured(Boolean(saved.nvtt_configured));
+        })
+        .catch(() => {
+          setOodleConfigured(false);
+          setNvttConfigured(false);
+        });
     }, 250);
     return () => window.clearTimeout(timer);
   }, [
@@ -1147,9 +1221,14 @@ export default function App() {
     });
     if (picked) {
       setOodleDllPath(picked);
-      await invoke("save_studio_settings", {
-        settings: buildStudioSettingsPayload(currentDir, { oodle_dll_path: picked }),
-      }).catch(() => {});
+      try {
+        const saved = await invoke<StudioSettings>("save_studio_settings", {
+          settings: buildStudioSettingsPayload(currentDir, { oodle_dll_path: picked }),
+        });
+        setOodleConfigured(Boolean(saved.oodle_configured ?? true));
+      } catch {
+        setOodleConfigured(true);
+      }
       await refreshOodleValidation(picked);
       setStatusLeft(`Configured Oodle DLL: ${picked}`);
       if (outline && !outline.dirty) {
@@ -1165,9 +1244,14 @@ export default function App() {
     });
     if (picked) {
       setNvttDllPath(picked);
-      await invoke("save_studio_settings", {
-        settings: buildStudioSettingsPayload(currentDir, { nvtt_dll_path: picked }),
-      }).catch(() => {});
+      try {
+        const saved = await invoke<StudioSettings>("save_studio_settings", {
+          settings: buildStudioSettingsPayload(currentDir, { nvtt_dll_path: picked }),
+        });
+        setNvttConfigured(Boolean(saved.nvtt_configured ?? true));
+      } catch {
+        setNvttConfigured(true);
+      }
       setStatusLeft(`Configured NVTT DLL: ${picked}`);
     }
   }
@@ -1602,15 +1686,33 @@ export default function App() {
         </div>
       )}
       <header className="studio-menubar" onClick={(e) => e.stopPropagation()}>
-        <div style={{ position: "relative" }}>
+        <div
+          style={{ position: "relative" }}
+          onMouseEnter={() => {
+            if (activeTopMenu !== null && activeTopMenu !== "file") {
+              setActiveTopMenu("file");
+            }
+          }}
+        >
           <button
             className={`menu-top-button ${activeTopMenu === "file" ? "active" : ""}`}
-            onClick={() => setActiveTopMenu(activeTopMenu === "file" ? null : "file")}
+            onClick={() => {
+              setContextMenu(null);
+              setActiveTopMenu(activeTopMenu === "file" ? null : "file");
+            }}
+            onMouseEnter={() => {
+              if (activeTopMenu !== null && activeTopMenu !== "file") {
+                setActiveTopMenu("file");
+              }
+            }}
           >
             File
           </button>
-          {activeTopMenu === "file" && (
-            <div className="context-menu" style={{ top: 28, left: 0 }}>
+          {displayedTopMenu === "file" && (
+            <div
+              className={`context-menu top-menu-dropdown ${isTopMenuClosing ? "closing" : ""}`}
+              style={{ top: 28, left: 0 }}
+            >
               <button className="context-menu-item" onClick={handleMenuOpenFile}>
                 <span>Open File...</span>
                 <span className="context-menu-shortcut">Ctrl+O</span>
@@ -1634,8 +1736,8 @@ export default function App() {
               >
                 <span>Open Recent</span>
                 <span className="context-menu-shortcut">›</span>
-                {hoverSubmenuIdx === 99 && (
-                  <div className="context-submenu">
+                {displayedSubmenuIdx === 99 && (
+                  <div className={`context-submenu ${isSubmenuClosing ? "closing" : ""}`}>
                     {recentFiles.length === 0 ? (
                       <button className="context-menu-item" disabled>
                         <span>(No recent files)</span>
@@ -1690,15 +1792,33 @@ export default function App() {
           )}
         </div>
 
-        <div style={{ position: "relative" }}>
+        <div
+          style={{ position: "relative" }}
+          onMouseEnter={() => {
+            if (activeTopMenu !== null && activeTopMenu !== "tools") {
+              setActiveTopMenu("tools");
+            }
+          }}
+        >
           <button
             className={`menu-top-button ${activeTopMenu === "tools" ? "active" : ""}`}
-            onClick={() => setActiveTopMenu(activeTopMenu === "tools" ? null : "tools")}
+            onClick={() => {
+              setContextMenu(null);
+              setActiveTopMenu(activeTopMenu === "tools" ? null : "tools");
+            }}
+            onMouseEnter={() => {
+              if (activeTopMenu !== null && activeTopMenu !== "tools") {
+                setActiveTopMenu("tools");
+              }
+            }}
           >
             Tools
           </button>
-          {activeTopMenu === "tools" && (
-            <div className="context-menu" style={{ top: 28, left: 0, minWidth: 265 }}>
+          {displayedTopMenu === "tools" && (
+            <div
+              className={`context-menu top-menu-dropdown ${isTopMenuClosing ? "closing" : ""}`}
+              style={{ top: 28, left: 0, minWidth: 280 }}
+            >
               <button
                 className="context-menu-item"
                 disabled={!activeTexture}
@@ -1761,21 +1881,33 @@ export default function App() {
               <div className="context-menu-sep" />
               <button
                 className="context-menu-item"
+                title={oodleDllPath ? `Configured: ${oodleDllPath}` : oodleConfigured ? "Oodle DLL detected" : "Not configured"}
                 onClick={() => {
                   setActiveTopMenu(null);
                   handlePickOodleDll();
                 }}
               >
                 <span>Configure Oodle Kraken DLL (oo2core)...</span>
+                {oodleConfigured && (
+                  <span className="menu-check-badge" aria-label="Configured">
+                    <IconCheck />
+                  </span>
+                )}
               </button>
               <button
                 className="context-menu-item"
+                title={nvttDllPath ? `Configured: ${nvttDllPath}` : nvttConfigured ? "NVTT DLL detected" : "Not configured"}
                 onClick={() => {
                   setActiveTopMenu(null);
                   handlePickNvttDll();
                 }}
               >
                 <span>Configure NVIDIA Texture Tools DLL (nvtt30205)...</span>
+                {nvttConfigured && (
+                  <span className="menu-check-badge" aria-label="Configured">
+                    <IconCheck />
+                  </span>
+                )}
               </button>
               <div className="context-menu-sep" />
               <button
@@ -1819,15 +1951,33 @@ export default function App() {
           )}
         </div>
 
-        <div style={{ position: "relative" }}>
+        <div
+          style={{ position: "relative" }}
+          onMouseEnter={() => {
+            if (activeTopMenu !== null && activeTopMenu !== "help") {
+              setActiveTopMenu("help");
+            }
+          }}
+        >
           <button
             className={`menu-top-button ${activeTopMenu === "help" ? "active" : ""}`}
-            onClick={() => setActiveTopMenu(activeTopMenu === "help" ? null : "help")}
+            onClick={() => {
+              setContextMenu(null);
+              setActiveTopMenu(activeTopMenu === "help" ? null : "help");
+            }}
+            onMouseEnter={() => {
+              if (activeTopMenu !== null && activeTopMenu !== "help") {
+                setActiveTopMenu("help");
+              }
+            }}
           >
             Help
           </button>
-          {activeTopMenu === "help" && (
-            <div className="context-menu" style={{ top: 28, left: 0, minWidth: 280 }}>
+          {displayedTopMenu === "help" && (
+            <div
+              className={`context-menu top-menu-dropdown ${isTopMenuClosing ? "closing" : ""}`}
+              style={{ top: 28, left: 0, minWidth: 280 }}
+            >
               <div style={{ padding: "8px 10px" }}>
                 <div style={{ fontWeight: 600, color: "var(--brush-heading)" }}>PGTools Studio</div>
                 <div style={{ color: "var(--brush-muted)", fontSize: 11.5, marginTop: 3 }}>
@@ -2124,8 +2274,10 @@ export default function App() {
           dll={{
             oodleDllPath,
             setOodleDllPath,
+            oodleConfigured,
             nvttDllPath,
             setNvttDllPath,
+            nvttConfigured,
             handlePickOodleDll,
             handlePickNvttDll,
           }}
@@ -2170,9 +2322,10 @@ export default function App() {
         </div>
       </footer>
 
-      {contextMenu && (
+      {displayedContextMenu && (
         <div
           className="context-menu-backdrop"
+          style={isContextMenuClosing ? { pointerEvents: "none" } : undefined}
           onClick={() => setContextMenu(null)}
           onContextMenu={(e) => {
             e.preventDefault();
@@ -2180,11 +2333,12 @@ export default function App() {
           }}
         >
           <div
-            className="context-menu"
-            style={{ left: contextMenu.x, top: contextMenu.y }}
+            key={`${displayedContextMenu.x}-${displayedContextMenu.y}`}
+            className={`context-menu ${isContextMenuClosing ? "closing" : ""}`}
+            style={{ left: displayedContextMenu.x, top: displayedContextMenu.y }}
             onClick={(e) => e.stopPropagation()}
           >
-            {contextMenu.items.map((item, idx) =>
+            {displayedContextMenu.items.map((item, idx) =>
               item.separator ? (
                 <div key={idx} className="context-menu-sep" />
               ) : (
@@ -2203,8 +2357,8 @@ export default function App() {
                     <span className="context-menu-shortcut">{item.shortcut}</span>
                   )}
                   {item.submenu && <span className="context-menu-shortcut">›</span>}
-                  {item.submenu && hoverSubmenuIdx === idx && (
-                    <div className="context-submenu">
+                  {item.submenu && displayedSubmenuIdx === idx && (
+                    <div className={`context-submenu ${isSubmenuClosing ? "closing" : ""}`}>
                       {item.submenu.map((sub, sIdx) =>
                         sub.separator ? (
                           <div key={sIdx} className="context-menu-sep" />

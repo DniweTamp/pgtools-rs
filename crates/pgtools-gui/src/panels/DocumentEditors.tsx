@@ -48,8 +48,10 @@ export interface DocumentLayout {
 export interface DocumentDllSettings {
   oodleDllPath: string;
   setOodleDllPath: (s: string) => void;
+  oodleConfigured?: boolean;
   nvttDllPath: string;
   setNvttDllPath: (s: string) => void;
+  nvttConfigured?: boolean;
   handlePickOodleDll: () => Promise<void>;
   handlePickNvttDll: () => Promise<void>;
 }
@@ -533,7 +535,14 @@ export function DocumentEditors({
               {openCards.dll_config && (
                 <div className="card-body">
                   <div className="inspector-row">
-                    <span className="inspector-row-label">Oodle DLL</span>
+                    <span className="inspector-row-label" style={{ display: "inline-flex", alignItems: "center", gap: 5 }}>
+                      <span>Oodle DLL</span>
+                      {dll.oodleConfigured && (
+                        <span style={{ color: "var(--brush-success-text)", display: "inline-flex" }} title="Oodle DLL configured">
+                          ✓
+                        </span>
+                      )}
+                    </span>
                     <div style={{ display: "flex", gap: 6, flex: 1 }}>
                       <input
                         type="text"
@@ -552,7 +561,14 @@ export function DocumentEditors({
                     </div>
                   </div>
                   <div className="inspector-row">
-                    <span className="inspector-row-label">NVTT DLL</span>
+                    <span className="inspector-row-label" style={{ display: "inline-flex", alignItems: "center", gap: 5 }}>
+                      <span>NVTT DLL</span>
+                      {dll.nvttConfigured && (
+                        <span style={{ color: "var(--brush-success-text)", display: "inline-flex" }} title="NVTT DLL configured">
+                          ✓
+                        </span>
+                      )}
+                    </span>
                     <div style={{ display: "flex", gap: 6, flex: 1 }}>
                       <input
                         type="text"

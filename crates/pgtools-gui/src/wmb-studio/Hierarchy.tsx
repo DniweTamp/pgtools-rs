@@ -178,10 +178,53 @@ export const Hierarchy: React.FC<HierarchyProps> = React.memo(function Hierarchy
   } | null>(null);
 
   const [contextMenu, setContextMenu] = useState<ContextMenuState | null>(null);
+  const [closingContextMenu, setClosingContextMenu] =
+    useState<ContextMenuState | null>(null);
+  const prevContextMenuRef = useRef<ContextMenuState | null>(null);
+
   const [slotDropModal, setSlotDropModal] =
     useState<TextureSlotDropModal | null>(null);
+  const [closingSlotDropModal, setClosingSlotDropModal] =
+    useState<TextureSlotDropModal | null>(null);
+  const prevSlotDropModalRef = useRef<TextureSlotDropModal | null>(null);
+
   const [matDeleteModal, setMatDeleteModal] =
     useState<MaterialDeleteModal | null>(null);
+
+  useEffect(() => {
+    if (contextMenu !== null) {
+      setClosingContextMenu(null);
+      prevContextMenuRef.current = contextMenu;
+    } else if (prevContextMenuRef.current !== null) {
+      const prev = prevContextMenuRef.current;
+      prevContextMenuRef.current = null;
+      setClosingContextMenu(prev);
+      const timer = window.setTimeout(() => {
+        setClosingContextMenu((cur) => (cur === prev ? null : cur));
+      }, 115);
+      return () => window.clearTimeout(timer);
+    }
+  }, [contextMenu]);
+
+  useEffect(() => {
+    if (slotDropModal !== null) {
+      setClosingSlotDropModal(null);
+      prevSlotDropModalRef.current = slotDropModal;
+    } else if (prevSlotDropModalRef.current !== null) {
+      const prev = prevSlotDropModalRef.current;
+      prevSlotDropModalRef.current = null;
+      setClosingSlotDropModal(prev);
+      const timer = window.setTimeout(() => {
+        setClosingSlotDropModal((cur) => (cur === prev ? null : cur));
+      }, 115);
+      return () => window.clearTimeout(timer);
+    }
+  }, [slotDropModal]);
+
+  const activeCtxMenu = contextMenu ?? closingContextMenu;
+  const isCtxMenuClosing = contextMenu === null && closingContextMenu !== null;
+  const activeSlotDrop = slotDropModal ?? closingSlotDropModal;
+  const isSlotDropClosing = slotDropModal === null && closingSlotDropModal !== null;
 
   useEffect(() => {
     const closeMenus = () => {
@@ -1941,25 +1984,25 @@ export const Hierarchy: React.FC<HierarchyProps> = React.memo(function Hierarchy
       </div>
 
       {/* Texture Drop onto Material -> Slot Picker Popover */}
-      {slotDropModal && (
+      {activeSlotDrop && (
         <div
-          className="wmb-context-menu"
+          className={`wmb-context-menu ${isSlotDropClosing ? "closing" : ""}`}
           style={{
-            left: Math.min(window.innerWidth - 260, slotDropModal.x),
-            top: Math.min(window.innerHeight - 240, slotDropModal.y),
+            left: Math.min(window.innerWidth - 260, activeSlotDrop.x),
+            top: Math.min(window.innerHeight - 240, activeSlotDrop.y),
           }}
           onClick={(e) => e.stopPropagation()}
         >
           <div className="wmb-ctx-header">
-            Assign {slotDropModal.textureName} to {slotDropModal.material.name}
+            Assign {activeSlotDrop.textureName} to {activeSlotDrop.material.name}
           </div>
-          {slotDropModal.material.textureSlots.map((slot) => (
+          {activeSlotDrop.material.textureSlots.map((slot) => (
             <button
               key={slot.slot}
               type="button"
               className="wmb-ctx-item"
               onClick={() => {
-                const modal = slotDropModal;
+                const modal = activeSlotDrop;
                 setSlotDropModal(null);
                 void onMutateOp({
                   op: "set_material_texture",
@@ -2049,16 +2092,17 @@ export const Hierarchy: React.FC<HierarchyProps> = React.memo(function Hierarchy
       )}
 
       {/* Context Menu */}
-      {contextMenu && (
+      {activeCtxMenu && (
         <div
-          className="wmb-context-menu"
+          key={`${activeCtxMenu.x}-${activeCtxMenu.y}`}
+          className={`wmb-context-menu ${isCtxMenuClosing ? "closing" : ""}`}
           style={{
-            left: Math.min(window.innerWidth - 260, contextMenu.x),
-            top: Math.min(window.innerHeight - 320, contextMenu.y),
+            left: Math.min(window.innerWidth - 260, activeCtxMenu.x),
+            top: Math.min(window.innerHeight - 320, activeCtxMenu.y),
           }}
           onClick={(e) => e.stopPropagation()}
         >
-          {contextMenu.targetType === "root" && (
+          {activeCtxMenu.targetType === "root" && (
             <>
               <button
                 type="button"
@@ -2119,7 +2163,7 @@ export const Hierarchy: React.FC<HierarchyProps> = React.memo(function Hierarchy
             </>
           )}
 
-          {contextMenu.targetType === "texturesHeader" && (
+          {activeCtxMenu.targetType === "texturesHeader" && (
             <button
               type="button"
               className="wmb-ctx-item"
@@ -2132,13 +2176,13 @@ export const Hierarchy: React.FC<HierarchyProps> = React.memo(function Hierarchy
             </button>
           )}
 
-          {contextMenu.targetType === "texture" && contextMenu.texture && (
+          {activeCtxMenu.targetType === "texture" && activeCtxMenu.texture && (
             <>
               <button
                 type="button"
                 className="wmb-ctx-item"
                 onClick={() => {
-                  const tex = contextMenu.texture!;
+                  const tex = activeCtxMenu.texture!;
                   setContextMenu(null);
                   void onOpenLegacyFlow(
                     `tex:${tex.textureId}`,
@@ -2152,7 +2196,7 @@ export const Hierarchy: React.FC<HierarchyProps> = React.memo(function Hierarchy
                 type="button"
                 className="wmb-ctx-item"
                 onClick={() => {
-                  const tex = contextMenu.texture!;
+                  const tex = activeCtxMenu.texture!;
                   setContextMenu(null);
                   void onOpenLegacyFlow(
                     `tex:${tex.textureId}`,
@@ -2166,9 +2210,9 @@ export const Hierarchy: React.FC<HierarchyProps> = React.memo(function Hierarchy
               <button
                 type="button"
                 className="wmb-ctx-item"
-                disabled={contextMenu.texture.usedByMaterialIds.length === 0}
+                disabled={activeCtxMenu.texture.usedByMaterialIds.length === 0}
                 onClick={() => {
-                  const tex = contextMenu.texture!;
+                  const tex = activeCtxMenu.texture!;
                   setContextMenu(null);
                   onSelect(
                     tex.usedByMaterialIds.map((id) => ({
@@ -2180,12 +2224,12 @@ export const Hierarchy: React.FC<HierarchyProps> = React.memo(function Hierarchy
                 }}
               >
                 Select materials using this texture (
-                {contextMenu.texture.usedByMaterialIds.length})
+                {activeCtxMenu.texture.usedByMaterialIds.length})
               </button>
             </>
           )}
 
-          {contextMenu.targetType === "materialsHeader" && (
+          {activeCtxMenu.targetType === "materialsHeader" && (
             <>
               <button
                 type="button"
@@ -2212,13 +2256,13 @@ export const Hierarchy: React.FC<HierarchyProps> = React.memo(function Hierarchy
             </>
           )}
 
-          {contextMenu.targetType === "material" && contextMenu.material && (
+          {activeCtxMenu.targetType === "material" && activeCtxMenu.material && (
             <>
               <button
                 type="button"
                 className="wmb-ctx-item"
                 onClick={() => {
-                  const mat = contextMenu.material!;
+                  const mat = activeCtxMenu.material!;
                   setContextMenu(null);
                   void onCopyItems([mat.id]);
                 }}
@@ -2229,7 +2273,7 @@ export const Hierarchy: React.FC<HierarchyProps> = React.memo(function Hierarchy
                 type="button"
                 className="wmb-ctx-item"
                 onClick={() => {
-                  const mat = contextMenu.material!;
+                  const mat = activeCtxMenu.material!;
                   setContextMenu(null);
                   void onMutateOp({ op: "duplicate_item", itemId: mat.id });
                 }}
@@ -2241,7 +2285,7 @@ export const Hierarchy: React.FC<HierarchyProps> = React.memo(function Hierarchy
                 className="wmb-ctx-item danger"
                 disabled={manifest.materials.length <= 1}
                 onClick={() => {
-                  const mat = contextMenu.material!;
+                  const mat = activeCtxMenu.material!;
                   setContextMenu(null);
                   void triggerDeleteSelected([{ kind: "material", id: mat.id }]);
                 }}
@@ -2252,9 +2296,9 @@ export const Hierarchy: React.FC<HierarchyProps> = React.memo(function Hierarchy
               <button
                 type="button"
                 className="wmb-ctx-item"
-                disabled={contextMenu.material.usedByBatchIds.length === 0}
+                disabled={activeCtxMenu.material.usedByBatchIds.length === 0}
                 onClick={() => {
-                  const mat = contextMenu.material!;
+                  const mat = activeCtxMenu.material!;
                   setContextMenu(null);
                   onSelect(
                     mat.usedByBatchIds.map((id) => ({ kind: "batch", id })),
@@ -2263,7 +2307,7 @@ export const Hierarchy: React.FC<HierarchyProps> = React.memo(function Hierarchy
                 }}
               >
                 Select batches using this material (
-                {contextMenu.material.usedByBatchIds.length})
+                {activeCtxMenu.material.usedByBatchIds.length})
               </button>
               <div className="wmb-ctx-sep" />
               <div className="wmb-ctx-header">
@@ -2275,7 +2319,7 @@ export const Hierarchy: React.FC<HierarchyProps> = React.memo(function Hierarchy
                   type="button"
                   className="wmb-ctx-item"
                   onClick={() => {
-                    const mat = contextMenu.material!;
+                    const mat = activeCtxMenu.material!;
                     setContextMenu(null);
                     void onConvertMaterialProfile(mat.index, g);
                   }}
@@ -2286,7 +2330,7 @@ export const Hierarchy: React.FC<HierarchyProps> = React.memo(function Hierarchy
             </>
           )}
 
-          {contextMenu.targetType === "bonesHeader" && (
+          {activeCtxMenu.targetType === "bonesHeader" && (
             <>
               <button
                 type="button"
@@ -2311,13 +2355,13 @@ export const Hierarchy: React.FC<HierarchyProps> = React.memo(function Hierarchy
             </>
           )}
 
-          {contextMenu.targetType === "bone" && contextMenu.bone && (
+          {activeCtxMenu.targetType === "bone" && activeCtxMenu.bone && (
             <>
               <button
                 type="button"
                 className="wmb-ctx-item"
                 onClick={() => {
-                  const b = contextMenu.bone!;
+                  const b = activeCtxMenu.bone!;
                   setContextMenu(null);
                   void onMutateOp({
                     op: "add_bone",
@@ -2333,7 +2377,7 @@ export const Hierarchy: React.FC<HierarchyProps> = React.memo(function Hierarchy
                 className="wmb-ctx-item danger"
                 disabled={manifest.bones.length <= 1}
                 onClick={() => {
-                  const b = contextMenu.bone!;
+                  const b = activeCtxMenu.bone!;
                   const bIdx = manifest.bones.indexOf(b);
                   setContextMenu(null);
                   void onMutateOp({
@@ -2347,7 +2391,7 @@ export const Hierarchy: React.FC<HierarchyProps> = React.memo(function Hierarchy
             </>
           )}
 
-          {contextMenu.targetType === "meshGroupsHeader" && (
+          {activeCtxMenu.targetType === "meshGroupsHeader" && (
             <>
               <button
                 type="button"
@@ -2384,13 +2428,13 @@ export const Hierarchy: React.FC<HierarchyProps> = React.memo(function Hierarchy
             </>
           )}
 
-          {contextMenu.targetType === "meshGroup" && contextMenu.meshGroup && (
+          {activeCtxMenu.targetType === "meshGroup" && activeCtxMenu.meshGroup && (
             <>
               <button
                 type="button"
                 className="wmb-ctx-item"
                 onClick={() => {
-                  const mg = contextMenu.meshGroup!;
+                  const mg = activeCtxMenu.meshGroup!;
                   setContextMenu(null);
                   beginInlineRename(mg.id, mg.name);
                 }}
@@ -2401,7 +2445,7 @@ export const Hierarchy: React.FC<HierarchyProps> = React.memo(function Hierarchy
                 type="button"
                 className="wmb-ctx-item"
                 onClick={() => {
-                  const mg = contextMenu.meshGroup!;
+                  const mg = activeCtxMenu.meshGroup!;
                   setContextMenu(null);
                   void onMutateOp({ op: "duplicate_item", itemId: mg.id });
                 }}
@@ -2413,7 +2457,7 @@ export const Hierarchy: React.FC<HierarchyProps> = React.memo(function Hierarchy
                 className="wmb-ctx-item danger"
                 disabled={manifest.meshGroups.length <= 1}
                 onClick={() => {
-                  const mg = contextMenu.meshGroup!;
+                  const mg = activeCtxMenu.meshGroup!;
                   setContextMenu(null);
                   void onMutateOp({ op: "delete_items", items: [mg.id] });
                 }}
@@ -2426,7 +2470,7 @@ export const Hierarchy: React.FC<HierarchyProps> = React.memo(function Hierarchy
                 disabled={!canPasteClipboard(clipboardStatus, manifest.game, "batches").allowed}
                 title={canPasteClipboard(clipboardStatus, manifest.game, "batches").reason}
                 onClick={() => {
-                  const mg = contextMenu.meshGroup!;
+                  const mg = activeCtxMenu.meshGroup!;
                   setContextMenu(null);
                   void onPasteInto(mg.lods[0]?.id ?? mg.id);
                 }}
@@ -2444,7 +2488,7 @@ export const Hierarchy: React.FC<HierarchyProps> = React.memo(function Hierarchy
                     type="button"
                     className="wmb-ctx-item"
                     onClick={() => {
-                      const mg = contextMenu.meshGroup!;
+                      const mg = activeCtxMenu.meshGroup!;
                       setContextMenu(null);
                       void onMutateOp({
                         op: "set_mesh_group_material",
@@ -2460,13 +2504,13 @@ export const Hierarchy: React.FC<HierarchyProps> = React.memo(function Hierarchy
             </>
           )}
 
-          {contextMenu.targetType === "lod" && contextMenu.lod && (
+          {activeCtxMenu.targetType === "lod" && activeCtxMenu.lod && (
             <>
               <button
                 type="button"
                 className="wmb-ctx-item"
                 onClick={() => {
-                  const l = contextMenu.lod!;
+                  const l = activeCtxMenu.lod!;
                   setContextMenu(null);
                   beginInlineRename(l.id, l.name);
                 }}
@@ -2479,7 +2523,7 @@ export const Hierarchy: React.FC<HierarchyProps> = React.memo(function Hierarchy
                 disabled={!canPasteClipboard(clipboardStatus, manifest.game, "batches").allowed}
                 title={canPasteClipboard(clipboardStatus, manifest.game, "batches").reason}
                 onClick={() => {
-                  const l = contextMenu.lod!;
+                  const l = activeCtxMenu.lod!;
                   setContextMenu(null);
                   void onPasteInto(l.id);
                 }}
@@ -2489,13 +2533,13 @@ export const Hierarchy: React.FC<HierarchyProps> = React.memo(function Hierarchy
             </>
           )}
 
-          {contextMenu.targetType === "batch" && contextMenu.batch && (
+          {activeCtxMenu.targetType === "batch" && activeCtxMenu.batch && (
             <>
               <button
                 type="button"
                 className="wmb-ctx-item"
                 onClick={() => {
-                  const b = contextMenu.batch!;
+                  const b = activeCtxMenu.batch!;
                   const batchSelIds = selection
                     .filter((s) => s.kind === "batch")
                     .map((s) => s.id);
@@ -2511,7 +2555,7 @@ export const Hierarchy: React.FC<HierarchyProps> = React.memo(function Hierarchy
                 type="button"
                 className="wmb-ctx-item"
                 onClick={() => {
-                  const b = contextMenu.batch!;
+                  const b = activeCtxMenu.batch!;
                   setContextMenu(null);
                   void onMutateOp({ op: "duplicate_item", itemId: b.id });
                 }}
@@ -2522,7 +2566,7 @@ export const Hierarchy: React.FC<HierarchyProps> = React.memo(function Hierarchy
                 type="button"
                 className="wmb-ctx-item danger"
                 onClick={() => {
-                  const b = contextMenu.batch!;
+                  const b = activeCtxMenu.batch!;
                   const batchSel = selection.filter((s) => s.kind === "batch");
                   setContextMenu(null);
                   void triggerDeleteSelected(
@@ -2543,7 +2587,7 @@ export const Hierarchy: React.FC<HierarchyProps> = React.memo(function Hierarchy
                     type="button"
                     className="wmb-ctx-item"
                     onClick={() => {
-                      const b = contextMenu.batch!;
+                      const b = activeCtxMenu.batch!;
                       setContextMenu(null);
                       void onMutateOp({
                         op: "set_batch_material",

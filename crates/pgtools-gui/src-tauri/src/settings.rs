@@ -19,6 +19,8 @@ pub struct StudioSettings {
     pub asset_ratio: f32,
     pub oodle_dll_path: String,
     pub nvtt_dll_path: String,
+    pub oodle_configured: bool,
+    pub nvtt_configured: bool,
     pub pkz_default_compression: String,
     pub pkz_default_level: i32,
     pub core_dat_b1: String,
@@ -60,11 +62,16 @@ impl StudioSettings {
             Some(Path::new(self.nvtt_dll_path.as_str()))
         }
     }
+
+    pub(crate) fn refresh_dll_status(&mut self) {
+        self.oodle_configured = check_oodle_dll_configured(&self.oodle_dll_path);
+        self.nvtt_configured = check_nvtt_dll_configured(&self.nvtt_dll_path);
+    }
 }
 
 impl Default for StudioSettings {
     fn default() -> Self {
-        Self {
+        let mut s = Self {
             theme: "Dark".to_string(),
             recent_files: Vec::new(),
             last_dir: String::new(),
@@ -76,6 +83,8 @@ impl Default for StudioSettings {
             asset_ratio: 0.50,
             oodle_dll_path: String::new(),
             nvtt_dll_path: String::new(),
+            oodle_configured: false,
+            nvtt_configured: false,
             pkz_default_compression: "ZStandard".to_string(),
             pkz_default_level: DEFAULT_ZSTD_LEVEL,
             core_dat_b1: String::new(),
@@ -90,8 +99,44 @@ impl Default for StudioSettings {
             default_encode_quality: "Normal".to_string(),
             sync_xt1_flags_on_import: true,
             asset_browser_zoom: 0,
+        };
+        s.refresh_dll_status();
+        s
+    }
+}
+
+fn check_oodle_dll_configured(path_str: &str) -> bool {
+    let trimmed = path_str.trim();
+    if trimmed.is_empty() {
+        return OodleLibrary::find_dll_path(None).is_some();
+    }
+    validate_optional_dll_setting(trimmed).is_ok()
+}
+
+fn check_nvtt_dll_configured(path_str: &str) -> bool {
+    let trimmed = path_str.trim();
+    if !trimmed.is_empty() {
+        return validate_optional_dll_setting(trimmed).is_ok();
+    }
+    let mut search_dirs: Vec<PathBuf> = vec![PathBuf::new()];
+    if let Ok(exe) = std::env::current_exe() {
+        if let Some(parent) = exe.parent() {
+            search_dirs.push(parent.to_path_buf());
         }
     }
+    for dir in &search_dirs {
+        for default_name in ["nvtt30205.dll", "nvtt.dll", "libnvtt.so", "libnvtt.dylib"] {
+            let pb = if dir.as_os_str().is_empty() {
+                Path::new(default_name).to_path_buf()
+            } else {
+                dir.join(default_name)
+            };
+            if pb.is_file() {
+                return true;
+            }
+        }
+    }
+    false
 }
 
 fn settings_file_path() -> PathBuf {
@@ -143,6 +188,7 @@ pub(crate) fn load_settings_from_disk() -> StudioSettings {
             }
             s.pkz_default_level =
                 clamp_compression_level(&s.pkz_default_compression, s.pkz_default_level);
+            s.refresh_dll_status();
             return s;
         }
     }
@@ -158,7 +204,9 @@ pub(crate) fn save_settings_to_disk(settings: &StudioSettings) {
 
 #[tauri::command]
 pub fn get_studio_settings(state: State<'_, AppState>) -> StudioSettings {
-    lock_session(&state).settings.clone()
+    let mut sess = lock_session(&state);
+    sess.settings.refresh_dll_status();
+    sess.settings.clone()
 }
 
 #[tauri::command]
@@ -168,6 +216,7 @@ pub fn save_studio_settings(
 ) -> Result<StudioSettings, String> {
     settings.oodle_dll_path = validate_optional_dll_setting(&settings.oodle_dll_path)?;
     settings.nvtt_dll_path = validate_optional_dll_setting(&settings.nvtt_dll_path)?;
+    settings.refresh_dll_status();
     settings.pkz_default_level = clamp_compression_level(
         &settings.pkz_default_compression,
         settings.pkz_default_level,

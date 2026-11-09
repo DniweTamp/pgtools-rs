@@ -10,6 +10,8 @@ export interface StudioSettingsState {
   assetRatio: number;
   oodleDllPath: string;
   nvttDllPath: string;
+  oodleConfigured: boolean;
+  nvttConfigured: boolean;
   pkzDefaultCompression: "None" | "ZStandard" | "OodleKraken";
   pkzDefaultLevel: number;
   coreDatB1: string;
@@ -35,6 +37,8 @@ export interface StudioSettingsApi extends StudioSettingsState {
   setAssetRatio: React.Dispatch<React.SetStateAction<number>>;
   setOodleDllPath: React.Dispatch<React.SetStateAction<string>>;
   setNvttDllPath: React.Dispatch<React.SetStateAction<string>>;
+  setOodleConfigured: React.Dispatch<React.SetStateAction<boolean>>;
+  setNvttConfigured: React.Dispatch<React.SetStateAction<boolean>>;
   setPkzDefaultCompression: React.Dispatch<
     React.SetStateAction<"None" | "ZStandard" | "OodleKraken">
   >;
@@ -92,6 +96,8 @@ export function useStudioSettings(): StudioSettingsApi {
   const [assetRatio, setAssetRatio] = useState(0.5);
   const [oodleDllPath, setOodleDllPath] = useState("");
   const [nvttDllPath, setNvttDllPath] = useState("");
+  const [oodleConfigured, setOodleConfigured] = useState(false);
+  const [nvttConfigured, setNvttConfigured] = useState(false);
   const [pkzDefaultCompression, setPkzDefaultCompression] = useState<
     "None" | "ZStandard" | "OodleKraken"
   >("ZStandard");
@@ -174,6 +180,8 @@ export function useStudioSettings(): StudioSettingsApi {
     if (s.asset_ratio >= 0.18 && s.asset_ratio <= 0.82) setAssetRatio(s.asset_ratio);
     setOodleDllPath(s.oodle_dll_path ?? "");
     setNvttDllPath(s.nvtt_dll_path ?? "");
+    setOodleConfigured(Boolean(s.oodle_configured ?? (s.oodle_dll_path && s.oodle_dll_path.trim().length > 0)));
+    setNvttConfigured(Boolean(s.nvtt_configured ?? (s.nvtt_dll_path && s.nvtt_dll_path.trim().length > 0)));
     const normCodec = normalizePkzCodec(s.pkz_default_compression);
     setPkzDefaultCompression(normCodec);
     setPkzDefaultLevel(clampPkzLevel(normCodec, s.pkz_default_level ?? 3));
@@ -244,6 +252,8 @@ export function useStudioSettings(): StudioSettingsApi {
     assetRatio,
     oodleDllPath,
     nvttDllPath,
+    oodleConfigured,
+    nvttConfigured,
     pkzDefaultCompression,
     pkzDefaultLevel,
     coreDatB1,
@@ -265,6 +275,8 @@ export function useStudioSettings(): StudioSettingsApi {
     setAssetRatio,
     setOodleDllPath,
     setNvttDllPath,
+    setOodleConfigured,
+    setNvttConfigured,
     setPkzDefaultCompression,
     setPkzDefaultLevel,
     setCoreDatB1,
