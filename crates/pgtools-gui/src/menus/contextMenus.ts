@@ -5,12 +5,14 @@ import {
   MaterialClipboardState,
   MenuItemSpec,
   Wmb3Material,
+  TextureNodeView,
   WmbSectionView,
 } from "../types";
 import { isVirtualSubNode } from "../utils/format";
 import { convertMaterialBetweenGames } from "../wmb-studio/contract";
 
 export interface AssetMenuDeps {
+  activeTexture?: TextureNodeView | null;
   activeWmb: WmbSectionView | null;
   wmbMatDraft: DecodedWmbMaterial | null;
   wmb3MatDraft: Wmb3Material | null;
@@ -23,7 +25,8 @@ export interface AssetMenuDeps {
   handleCrossGameMaterialConvert: (wmb: WmbSectionView, dstGame: "b1" | "b2" | "b3") => Promise<void>;
   runContainerMutation: (nodeId: string, action: string, targetPath?: string, payload?: any) => Promise<void>;
   promptAndRunTextureImport: (nodeId: string, action: "replace_file" | "add_texture") => Promise<void>;
-  handleTextureExport: (nodeId: string, scope: "single" | "bank", format: "png" | "dds" | "raw") => Promise<void>;
+  handleTextureExport: (nodeId: string, scope: "single" | "bank" | "container", format: "png" | "dds" | "raw") => Promise<void>;
+  openBatchReplaceModal?: (nodeId: string) => void;
   runTextureMutation: (nodeId: string, action: string, payload?: any) => Promise<void>;
   runClothMutation: (nodeId: string, operation: string, preset?: string, updatedJson?: any) => Promise<void>;
   openPkzCompressionModal: (
@@ -58,6 +61,7 @@ export interface FileMenuDeps {
 
 export function createMenuBuilders(assetDeps: AssetMenuDeps, fileDeps: FileMenuDeps) {
   const {
+    activeTexture,
     activeWmb,
     wmbMatDraft,
     wmb3MatDraft,
@@ -71,6 +75,7 @@ export function createMenuBuilders(assetDeps: AssetMenuDeps, fileDeps: FileMenuD
     runContainerMutation,
     promptAndRunTextureImport,
     handleTextureExport,
+    openBatchReplaceModal,
     runTextureMutation,
     runClothMutation,
     openPkzCompressionModal,
@@ -590,20 +595,39 @@ export function createMenuBuilders(assetDeps: AssetMenuDeps, fileDeps: FileMenuD
           },
         });
       }
-      items.push({
-        label: "Extract All to Folder...",
-        action: async () => {
-          setContextMenu(null);
-          const folder = await invoke<string | null>("pick_folder_dialog", {
-            title: "Extract Container Entries to Folder",
-          });
-          if (folder) {
-            await runContainerMutation(nodeId, "extract_all", folder);
-            setStatusLeft(`Extracted all entries to ${folder}`);
-            loadDirectory(currentDirRef.current);
-          }
+      items.push(
+        {
+          label: "Extract All to Folder...",
+          action: async () => {
+            setContextMenu(null);
+            const folder = await invoke<string | null>("pick_folder_dialog", {
+              title: "Extract Container Entries to Folder",
+            });
+            if (folder) {
+              await runContainerMutation(nodeId, "extract_all", folder);
+              setStatusLeft(`Extracted all entries to ${folder}`);
+              loadDirectory(currentDirRef.current);
+            }
+          },
         },
-      });
+        {
+          label: "Export every texture in this container",
+          submenu: [
+            {
+              label: "As PNG folder...",
+              action: () => handleTextureExport(nodeId, "container", "png"),
+            },
+            {
+              label: "As DDS folder...",
+              action: () => handleTextureExport(nodeId, "container", "dds"),
+            },
+            {
+              label: "As raw folder...",
+              action: () => handleTextureExport(nodeId, "container", "raw"),
+            },
+          ],
+        }
+      );
       if (nodeId !== "root") {
         items.push({
           label: "Export Raw Container...",
@@ -623,6 +647,23 @@ export function createMenuBuilders(assetDeps: AssetMenuDeps, fileDeps: FileMenuD
       if (leafEntryMgmtItems.length > 0) {
         items.push({ separator: true }, ...leafEntryMgmtItems);
       }
+      items.push(
+        { separator: true },
+        {
+          label: "Expand All",
+          action: () => {
+            setContextMenu(null);
+            onExpandAll();
+          },
+        },
+        {
+          label: "Collapse All",
+          action: () => {
+            setContextMenu(null);
+            onCollapseAll();
+          },
+        }
+      );
       return items;
     }
 
@@ -704,6 +745,16 @@ export function createMenuBuilders(assetDeps: AssetMenuDeps, fileDeps: FileMenuD
         },
         { separator: true },
         {
+          label: "Copy hash",
+          action: () => {
+            setContextMenu(null);
+            const h = activeTexture?.texture_id_hex || "0x00000000";
+            navigator.clipboard?.writeText(h);
+            setStatusLeft(`Copied texture hash ${h} to clipboard`);
+          },
+        },
+        { separator: true },
+        {
           label: "Export every texture in this bank",
           submenu: [
             {
@@ -721,6 +772,23 @@ export function createMenuBuilders(assetDeps: AssetMenuDeps, fileDeps: FileMenuD
           ],
         },
         {
+          label: "Export every texture in this container",
+          submenu: [
+            {
+              label: "As PNG folder...",
+              action: () => handleTextureExport(targetId, "container", "png"),
+            },
+            {
+              label: "As DDS folder...",
+              action: () => handleTextureExport(targetId, "container", "dds"),
+            },
+            {
+              label: "As raw folder...",
+              action: () => handleTextureExport(targetId, "container", "raw"),
+            },
+          ],
+        },
+        {
           label: "Convert Wii U (.gtx) bank to PC (.dds)",
           action: () => {
             setContextMenu(null);
@@ -731,10 +799,14 @@ export function createMenuBuilders(assetDeps: AssetMenuDeps, fileDeps: FileMenuD
           label: "Batch replace from folder...",
           action: async () => {
             setContextMenu(null);
-            const folder = await invoke<string | null>("pick_folder_dialog", {
-              title: "Select Folder of Replacement Textures (matched by tex<idx> or hash)",
-            });
-            if (folder) await runTextureMutation(targetId, "batch_replace_folder", { folder });
+            if (openBatchReplaceModal) {
+              openBatchReplaceModal(targetId);
+            } else {
+              const folder = await invoke<string | null>("pick_folder_dialog", {
+                title: "Select Folder of Replacement Textures (matched by tex<idx> or hash)",
+              });
+              if (folder) await runTextureMutation(targetId, "batch_replace_folder", { folder });
+            }
           },
         },
         ...(leafEntryMgmtItems.length > 0 ? [{ separator: true }, ...leafEntryMgmtItems] : []),

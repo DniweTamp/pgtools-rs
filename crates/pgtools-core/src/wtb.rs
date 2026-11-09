@@ -4,8 +4,16 @@
 
 use crate::io::{align, checked_count, BinReader, BinWriter, Endian};
 use crate::texture_conv::{
-    convert_gtx_to_dds, inspect_texture_blob, parse_bntx_textures, TextureMetadata,
+    convert_gtx_to_dds, inspect_texture_blob, parse_bntx_textures, TextureDimension,
+    TextureMetadata,
 };
+
+/// Bayonetta 3 / Astral Chain (`SwitchXt1`) `table2` (`flags`) bitmasks when read as a little-endian `u32`
+/// (`[b0, b1, b2, b3]` on disk -> `u32::from_le_bytes([b0, b1, b2, b3])`).
+pub const XT1_FLAG_HAS_CRC32: u32 = 0x0000_0020; // b0 & 0x20: texture carries a CRC32 hash in table3
+pub const XT1_FLAG_BASE: u32 = 0x6000_0000;      // b3 & 0x60: base bits, always set on valid XT1 records
+pub const XT1_FLAG_SRGB: u32 = 0x0400_0000;      // b3 & 0x04: sRGB color space
+pub const XT1_FLAG_CUBEMAP: u32 = 0x8000_0000;   // b3 & 0x80: cubemap / env-map usage
 use crate::{PgError, Result};
 use serde::{Deserialize, Serialize};
 use std::fs;
@@ -46,10 +54,33 @@ impl WtbGameProfile {
         }
     }
 
-    /// Returns true only when `table2` (`flags`) uses the confirmed XT1 Studio bitmask
-    /// (`0x80000000` Has CRC32, `0x02000000` sRGB, `0x00000200` Cubemap).
+    /// Returns true only when `table2` (`flags`) uses the confirmed Bayonetta 3 / XT1 Studio
+    /// little-endian `u32` bitmask (`0x00000020` Has CRC32, `0x60000000` Base, `0x04000000` sRGB, `0x80000000` Cubemap).
     pub fn has_confirmed_xt1_flags(&self) -> bool {
         matches!(self, Self::SwitchXt1)
+    }
+
+    pub fn default_entry_flags(self, is_split_wta_wtp: bool, has_table3_crc: bool) -> u32 {
+        match self {
+            Self::SwitchXt1 => {
+                XT1_FLAG_BASE | if has_table3_crc { XT1_FLAG_HAS_CRC32 } else { 0 }
+            }
+            Self::Bayo2WiiUGtx | Self::NierAutomataDds => {
+                if is_split_wta_wtp {
+                    0x6000_0020
+                } else {
+                    0x6000_0002
+                }
+            }
+            Self::Bayo2SwitchBntx => 0,
+            Self::Bayo1PcDds => {
+                if is_split_wta_wtp {
+                    0x2000_0000
+                } else {
+                    0x2000_0004
+                }
+            }
+        }
     }
 }
 
@@ -64,6 +95,30 @@ pub struct WtbTextureEntry {
     pub content_hash: String,
     #[serde(skip)]
     pub data: Vec<u8>,
+}
+
+impl WtbTextureEntry {
+    /// Synchronize `table2` (`flags`) sRGB (`0x0400_0000`) and cubemap (`0x8000_0000`) bits
+    /// from `self.metadata` ONLY when `game_profile == WtbGameProfile::SwitchXt1`.
+    /// Never modifies non-SwitchXt1 banks, and never enables the unknown `AF_L8` (`0x0800_0000`) bit by default.
+    pub fn sync_xt1_flags_from_metadata(&mut self, game_profile: WtbGameProfile) {
+        if game_profile != WtbGameProfile::SwitchXt1 {
+            return;
+        }
+        self.flags |= XT1_FLAG_BASE;
+        if let Some(ref meta) = self.metadata {
+            if meta.format.is_srgb() {
+                self.flags |= XT1_FLAG_SRGB;
+            } else {
+                self.flags &= !XT1_FLAG_SRGB;
+            }
+            if meta.dimension == TextureDimension::TexCube {
+                self.flags |= XT1_FLAG_CUBEMAP;
+            } else {
+                self.flags &= !XT1_FLAG_CUBEMAP;
+            }
+        }
+    }
 }
 
 fn compute_entry_hash(index: usize, data: &[u8]) -> String {
@@ -99,19 +154,54 @@ impl WtbFile {
         }
     }
 
+    pub fn new_empty(is_split_wta_wtp: bool, game_profile: WtbGameProfile) -> Self {
+        let endian = if game_profile == WtbGameProfile::Bayo2WiiUGtx {
+            Endian::Big
+        } else {
+            Endian::Little
+        };
+        let unknown = if game_profile == WtbGameProfile::SwitchXt1 {
+            3
+        } else {
+            1
+        };
+        Self {
+            endian,
+            is_split_wta_wtp,
+            game_profile,
+            unknown,
+            entries: Vec::new(),
+            texture_infos: Vec::new(),
+        }
+    }
+
     /// Construct a virtual `WtbFile` from a standalone Switch `.bntx` container so all `BRTI`
     /// textures inside the `.bntx` can be inspected, previewed, and exported individually.
     pub fn from_bntx_bytes(bntx_bytes: &[u8]) -> Result<Self> {
         let parsed = parse_bntx_textures(bntx_bytes)?;
         let mut entries = Vec::with_capacity(parsed.len());
         for (i, tex) in parsed.into_iter().enumerate() {
-            let tid = crc32fast::hash(tex.name.as_bytes());
+            let tid = crc32fast::hash(tex.name.trim().to_ascii_lowercase().as_bytes()) & 0x7FFF_FFFF;
+            let dimension = if tex.surface_dim == 3 || tex.array_length == 6 {
+                TextureDimension::TexCube
+            } else if tex.depth > 1 || tex.array_length > 1 {
+                TextureDimension::TexAnimatedLayers
+            } else {
+                TextureDimension::Tex2D
+            };
+            let layer_count = match dimension {
+                TextureDimension::TexCube => 6,
+                TextureDimension::TexAnimatedLayers => tex.depth.max(tex.array_length).max(1),
+                TextureDimension::Tex2D => 1,
+            };
             let meta = TextureMetadata {
                 container_ext: ".bntx".to_string(),
                 format: tex.format,
+                dimension,
                 width: tex.width,
                 height: tex.height,
                 depth: tex.depth,
+                layer_count,
                 mip_count: tex.mip_count as u32,
                 data_size: tex.image_size as usize,
                 name: Some(tex.name),
@@ -440,6 +530,7 @@ impl WtbFile {
             Some(b"Gfx2") => ".gtx",
             Some(b"DDS ") => ".dds",
             Some(b"BNTX") => ".bntx",
+            _ if data.len() >= 84 && &data[80..84] == b"BNTX" => ".bntx",
             _ => return Err(PgError::InvalidData("Unsupported texture magic in WTB::push".into())),
         };
         if self.entries.is_empty() {
@@ -450,22 +541,34 @@ impl WtbFile {
                 _ => WtbGameProfile::Bayo1PcDds,
             };
         }
-        if self.is_split_wta_wtp && flags == 0 {
-            flags = if ext == ".xt1" {
-                0x8000_0000
+        let has_crc = texture_id.is_some()
+            || self.entries.iter().any(|e| {
+                e.texture_id.is_some()
+                    || (self.game_profile == WtbGameProfile::SwitchXt1
+                        && (e.flags & XT1_FLAG_HAS_CRC32) != 0)
+            });
+        if flags == 0 {
+            if self.game_profile == WtbGameProfile::SwitchXt1 || ext == ".xt1" {
+                flags = self
+                    .game_profile
+                    .default_entry_flags(self.is_split_wta_wtp, has_crc);
+            } else if let Some(first) = self.entries.first() {
+                flags = first.flags;
             } else {
-                0x6000_0020
-            };
+                flags = self
+                    .game_profile
+                    .default_entry_flags(self.is_split_wta_wtp, has_crc);
+            }
         }
-        let tid = if (self.endian.is_big() || ext == ".xt1") && texture_id.is_none() {
-            Some(crc32fast::hash(&data))
+        let tid = if (self.endian.is_big() || ext == ".xt1") && texture_id.is_none() && has_crc {
+            Some(crc32fast::hash(&data) & 0x7FFF_FFFF)
         } else {
             texture_id
         };
         let metadata = inspect_texture_blob(&data).ok();
         let index = self.entries.len();
         let content_hash = compute_entry_hash(index, &data);
-        self.entries.push(WtbTextureEntry {
+        let mut entry = WtbTextureEntry {
             index,
             extension: ext.to_string(),
             flags,
@@ -473,18 +576,28 @@ impl WtbFile {
             metadata,
             content_hash,
             data,
-        });
+        };
+        if self.game_profile == WtbGameProfile::SwitchXt1 {
+            entry.sync_xt1_flags_from_metadata(self.game_profile);
+        }
+        self.entries.push(entry);
         Ok(())
     }
 
     /// Serialize into `(wtb_or_wta_bytes, optional_wtp_bytes)`.
     pub fn to_bytes(&self) -> (Vec<u8>, Option<Vec<u8>>) {
         let num_tex = self.entries.len();
+        let default_profile_ext = match self.game_profile {
+            WtbGameProfile::SwitchXt1 => ".xt1",
+            WtbGameProfile::Bayo2WiiUGtx => ".gtx",
+            WtbGameProfile::Bayo2SwitchBntx => ".bntx",
+            _ => ".dds",
+        };
         let first_ext = self
             .entries
             .first()
             .map(|e| e.extension.as_str())
-            .unwrap_or(".dds");
+            .unwrap_or(default_profile_ext);
         let has_idx = self.entries.iter().any(|e| e.texture_id.is_some());
 
         let mut last_offset = if self.is_split_wta_wtp && (self.endian.is_big() || first_ext == ".bntx") {

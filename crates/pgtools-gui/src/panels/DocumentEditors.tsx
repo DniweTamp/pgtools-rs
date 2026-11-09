@@ -34,6 +34,7 @@ export interface DocumentSelection {
   activeTexture: TextureNodeView | null;
   activeWmb: WmbSectionView | null;
   outline: DocumentOutline | null;
+  assetSearch: string;
 }
 
 export interface DocumentLayout {
@@ -90,7 +91,7 @@ export interface DocumentActions {
   ) => Promise<void>;
   handleTextureExport: (
     nodeId: string,
-    scope: "single" | "bank",
+    scope: "single" | "bank" | "container",
     format: "png" | "dds" | "raw"
   ) => Promise<void>;
   handleResetView: () => void;
@@ -139,6 +140,7 @@ export function DocumentEditors({
     activeTexture,
     activeWmb,
     outline,
+    assetSearch,
   } = selection;
 
   const {
@@ -151,18 +153,25 @@ export function DocumentEditors({
     setPan,
     isPanning,
     setIsPanning,
+    mipIndex,
+    layerIndex,
+    opaquePreview,
     hashDraft,
     setHashDraft,
     flagsDraft,
     setFlagsDraft,
     texEncodeFormat,
     setTexEncodeFormat,
+    texQuality,
+    setTexQuality,
     texGenerateMips,
     setTexGenerateMips,
     texSolidify,
     setTexSolidify,
     texMakeOpaque,
     setTexMakeOpaque,
+    texSyncFlags,
+    setTexSyncFlags,
     wmbMatDraft,
     setWmbMatDraft,
     wmb3MatDraft,
@@ -224,7 +233,7 @@ export function DocumentEditors({
                   onClick={() => setCenterTab("secondary")}
                 >
                   <IconCube size={12} />
-                  <span>Header &amp; Surface Layout</span>
+                  <span>Cube-3D</span>
                 </button>
               </>
             ) : nodePayload?.view_type === "BXM" ? (
@@ -275,6 +284,21 @@ export function DocumentEditors({
             <TextureCenterView
               activeTexture={activeTexture}
               centerTab={centerTab}
+              mipIndex={mipIndex}
+              layerIndex={layerIndex}
+              opaquePreview={opaquePreview}
+              onChangeLayer={(newLayer) => {
+                drafts.setLayerIndex(newLayer);
+                void actions.selectAndInspectNode(
+                  activeTexture.node_id,
+                  mipIndex,
+                  drafts.channelMode,
+                  opaquePreview,
+                  wmbB2Override,
+                  undefined,
+                  newLayer
+                );
+              }}
               zoom={zoom}
               setZoom={setZoom}
               pan={pan}
@@ -286,6 +310,7 @@ export function DocumentEditors({
               buildAssetNodeContextMenu={actions.buildAssetNodeContextMenu}
               setContextMenu={actions.setContextMenu}
               setHoverSubmenuIdx={actions.setHoverSubmenuIdx}
+              onStatus={actions.setStatusLeft}
             />
           ) : activeWmb && centerTab === "primary" ? (
             <div
@@ -362,6 +387,7 @@ export function DocumentEditors({
               nodePayload={nodePayload}
               setNodePayload={setNodePayload}
               centerTab={centerTab}
+              assetSearch={assetSearch}
               csvHeadersDraft={csvHeadersDraft}
               setCsvHeadersDraft={setCsvHeadersDraft}
               csvRowsDraft={csvRowsDraft}
@@ -432,12 +458,16 @@ export function DocumentEditors({
             setFlagsDraft={setFlagsDraft}
             texEncodeFormat={texEncodeFormat}
             setTexEncodeFormat={setTexEncodeFormat}
+            texQuality={texQuality}
+            setTexQuality={setTexQuality}
             texGenerateMips={texGenerateMips}
             setTexGenerateMips={setTexGenerateMips}
             texSolidify={texSolidify}
             setTexSolidify={setTexSolidify}
             texMakeOpaque={texMakeOpaque}
             setTexMakeOpaque={setTexMakeOpaque}
+            texSyncFlags={texSyncFlags}
+            setTexSyncFlags={setTexSyncFlags}
             runTextureMutation={actions.runTextureMutation}
             promptAndRunTextureImport={actions.promptAndRunTextureImport}
             handleTextureExport={actions.handleTextureExport}

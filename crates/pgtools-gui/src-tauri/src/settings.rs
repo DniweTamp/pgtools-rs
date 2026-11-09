@@ -29,6 +29,10 @@ pub struct StudioSettings {
     pub wmb_normals_view: bool,
     pub wmb_skeleton_overlay: bool,
     pub wmb_grid_visible: bool,
+    pub default_import_format: String,
+    pub default_encode_quality: String,
+    pub sync_xt1_flags_on_import: bool,
+    pub asset_browser_zoom: u8,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -49,6 +53,13 @@ impl StudioSettings {
         }
     }
 
+    pub(crate) fn nvtt_path(&self) -> Option<&Path> {
+        if self.nvtt_dll_path.trim().is_empty() {
+            None
+        } else {
+            Some(Path::new(self.nvtt_dll_path.as_str()))
+        }
+    }
 }
 
 impl Default for StudioSettings {
@@ -75,6 +86,10 @@ impl Default for StudioSettings {
             wmb_normals_view: false,
             wmb_skeleton_overlay: false,
             wmb_grid_visible: true,
+            default_import_format: "Auto".to_string(),
+            default_encode_quality: "Normal".to_string(),
+            sync_xt1_flags_on_import: true,
+            asset_browser_zoom: 0,
         }
     }
 }

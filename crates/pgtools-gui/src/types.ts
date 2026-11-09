@@ -20,6 +20,10 @@ export interface StudioSettings {
   wmb_normals_view?: boolean;
   wmb_skeleton_overlay?: boolean;
   wmb_grid_visible?: boolean;
+  default_import_format?: string;
+  default_encode_quality?: string;
+  sync_xt1_flags_on_import?: boolean;
+  asset_browser_zoom?: number;
 }
 
 export interface OodleValidationReport {
@@ -109,8 +113,12 @@ export interface TextureNodeView {
   container_ext: string;
   game_profile: string;
   has_confirmed_xt1_flags: boolean;
+  dimension: string;
   width: number;
   height: number;
+  depth: number;
+  layer_count: number;
+  current_layer: number;
   mip_count: number;
   mips: MipLevelDesc[];
   size_bytes: number;
@@ -120,8 +128,36 @@ export interface TextureNodeView {
   srgb_flag: boolean;
   cubemap_flag: boolean;
   texture_id_hex: string;
+  embedded_name: string | null;
+  nvtt_status: string;
   preview_data_url: string | null;
   raw_header_hex: string;
+}
+
+export interface CubemapPreviewPayload {
+  face_data_urls: string[];
+  auto_exposure_scale: number;
+  width: number;
+  height: number;
+}
+
+export interface BatchReplaceScanResult {
+  bank_label: string;
+  has_confirmed_xt1_flags: boolean;
+  matched: number;
+  missing: number;
+  ambiguous: number;
+  unsupported: number;
+  unused: number;
+  log_lines: string[];
+}
+
+export interface BatchOperationReport {
+  files_processed: number;
+  converted: number;
+  skipped: number;
+  log_lines: string[];
+  updated_outline: DocumentOutline | null;
 }
 
 export interface DecodedMaterialParameter {
@@ -286,9 +322,12 @@ export interface TexModalState {
   path: string;
   fileName: string;
   encodeFormat: string;
+  quality: string;
   generateMips: boolean;
   solidify: boolean;
   makeOpaque: boolean;
+  syncFlags: boolean;
+  textureName?: string;
 }
 
 export interface MaterialClipboardState {

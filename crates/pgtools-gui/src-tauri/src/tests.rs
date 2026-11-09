@@ -329,3 +329,36 @@ fn pkz_build_from_dir_recursive_and_selective_revert() {
 
     let _ = fs::remove_dir_all(&dir);
 }
+
+#[test]
+fn switch_xt1_flags_and_batch_replace_stem_parsing() {
+    use crate::texture_cmd::parse_replacement_filename_stem;
+    use pgtools_core::wtb::{
+        WtbFile, WtbGameProfile, XT1_FLAG_BASE, XT1_FLAG_CUBEMAP, XT1_FLAG_HAS_CRC32,
+        XT1_FLAG_SRGB,
+    };
+
+    // Exact stem parsing: tex1 must NOT match tex10
+    assert_eq!(
+        parse_replacement_filename_stem("tex1_0x482960f9"),
+        (Some(1), Some(0x482960F9))
+    );
+    assert_eq!(parse_replacement_filename_stem("tex10"), (Some(10), None));
+    assert_eq!(
+        parse_replacement_filename_stem("0x482960F9"),
+        (None, Some(0x482960F9))
+    );
+    assert_eq!(parse_replacement_filename_stem("unmatched_name"), (None, None));
+
+    // SwitchXt1 table2 LE u32 bitmasks: [0x20, 0x00, 0x00, 0x64] -> 0x6400_0020
+    let w = u32::from_le_bytes([0x20, 0x00, 0x00, 0x64]);
+    assert_eq!(w, XT1_FLAG_BASE | XT1_FLAG_HAS_CRC32 | XT1_FLAG_SRGB);
+    assert_eq!(w & XT1_FLAG_CUBEMAP, 0);
+
+    // Empty bank round-trip
+    let empty_wtb = WtbFile::new_empty(false, WtbGameProfile::SwitchXt1);
+    let (bytes, wtp) = empty_wtb.to_bytes();
+    assert!(wtp.is_none());
+    let parsed = WtbFile::from_bytes(&bytes, None).expect("parse empty WTB");
+    assert_eq!(parsed.entries.len(), 0);
+}

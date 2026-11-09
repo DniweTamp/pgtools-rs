@@ -342,13 +342,68 @@ impl TextureFormat {
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+pub enum TextureDimension {
+    #[default]
+    Tex2D,
+    TexAnimatedLayers,
+    TexCube,
+}
+
+impl TextureDimension {
+    pub const fn label(self) -> &'static str {
+        match self {
+            Self::Tex2D => "2D",
+            Self::TexAnimatedLayers => "Animated 2D",
+            Self::TexCube => "Cube",
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+pub enum EncodeQuality {
+    Fastest = 0,
+    #[default]
+    Normal = 1,
+    Production = 2,
+    Highest = 3,
+}
+
+impl EncodeQuality {
+    pub fn from_str_name(s: &str) -> Self {
+        match s.trim().to_ascii_lowercase().as_str() {
+            "fast" | "fastest" | "0" => Self::Fastest,
+            "production" | "prod" | "2" => Self::Production,
+            "highest" | "high" | "best" | "3" => Self::Highest,
+            _ => Self::Normal,
+        }
+    }
+
+    pub const fn label(self) -> &'static str {
+        match self {
+            Self::Fastest => "Fast",
+            Self::Normal => "Normal",
+            Self::Production => "Production",
+            Self::Highest => "Highest",
+        }
+    }
+}
+
+fn default_layer_count() -> u32 {
+    1
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct TextureMetadata {
     pub container_ext: String,
     pub format: TextureFormat,
+    #[serde(default)]
+    pub dimension: TextureDimension,
     pub width: u32,
     pub height: u32,
     pub depth: u32,
+    #[serde(default = "default_layer_count")]
+    pub layer_count: u32,
     pub mip_count: u32,
     pub data_size: usize,
     pub name: Option<String>,
@@ -1473,83 +1528,403 @@ pub fn generate_mip_chain(base_image: &RgbaImage, max_mips: u32) -> Vec<RgbaImag
 // NVTT 3.2.5 DLL DYNAMIC ENCODER + PURE-RUST FALLBACK BLOCK ENCODER
 // ============================================================================
 
-/// Attempt to compress a linear RGBA8 image into BC1–BC7 blocks via external `nvtt30205.dll` / `nvtt.dll`
-/// (using NVTT 3 C API symbols when present on disk), returning `None` if the library or symbol is unavailable
-/// so the caller seamlessly falls back to the pure-Rust block encoders.
-fn try_encode_with_nvtt_dll(
+pub const NVTT_DEFAULT_INSTALL_DIRS: [&str; 2] = [
+    r"C:\Program Files\NVIDIA Corporation\NVIDIA Texture Tools",
+    r"C:\Program Files (x86)\NVIDIA Corporation\NVIDIA Texture Tools",
+];
+
+/// Locate `nvtt30205.dll` / `nvtt.dll` using `XT1 Studio` `ToolLocator` lookup order:
+/// 1. Explicit configured path (`nvtt_dll_path`)
+/// 2. Application executable directory
+/// 3. Current working directory
+/// 4. Standard NVIDIA Texture Tools install directories
+/// 5. System `PATH`
+pub fn locate_nvtt_dll(explicit_path: Option<&Path>) -> Option<std::path::PathBuf> {
+    if let Some(p) = explicit_path {
+        if !p.as_os_str().is_empty() && p.is_file() {
+            return Some(p.to_path_buf());
+        }
+    }
+    let dll_names = ["nvtt30205.dll", "nvtt.dll", "libnvtt.so", "libnvtt.dylib"];
+    let mut search_dirs = Vec::new();
+    if let Ok(exe) = std::env::current_exe() {
+        if let Some(parent) = exe.parent() {
+            search_dirs.push(parent.to_path_buf());
+        }
+    }
+    if let Ok(cwd) = std::env::current_dir() {
+        search_dirs.push(cwd);
+    }
+    for d in NVTT_DEFAULT_INSTALL_DIRS {
+        search_dirs.push(Path::new(d).to_path_buf());
+    }
+    if let Some(path_os) = std::env::var_os("PATH") {
+        for dir in std::env::split_paths(&path_os) {
+            if !dir.as_os_str().is_empty() {
+                search_dirs.push(dir);
+            }
+        }
+    }
+    for dir in search_dirs {
+        for name in dll_names {
+            let cand = dir.join(name);
+            if cand.is_file() {
+                return Some(cand);
+            }
+        }
+    }
+    None
+}
+
+fn open_nvtt_library(path: &Path) -> std::result::Result<libloading::Library, String> {
+    #[cfg(target_os = "windows")]
+    {
+        // LOAD_WITH_ALTERED_SEARCH_PATH (0x00000008) so sibling DLLs (vcomp140.dll, etc.)
+        // next to nvtt30205.dll in Program Files resolve automatically.
+        unsafe {
+            libloading::os::windows::Library::load_with_flags(path, 0x0000_0008)
+                .map(libloading::Library::from)
+                .map_err(|e| e.to_string())
+        }
+    }
+    #[cfg(not(target_os = "windows"))]
+    {
+        unsafe { libloading::Library::new(path).map_err(|e| e.to_string()) }
+    }
+}
+
+/// Probe whether `nvtt30205.dll` is available and exports the NVTT 3 C API, returning
+/// `(is_nvtt_active, human_readable_status)`.
+pub fn get_nvtt_status_description(explicit_path: Option<&Path>) -> (bool, String) {
+    let Some(dll_path) = locate_nvtt_dll(explicit_path) else {
+        return (
+            false,
+            "Built-in pure-Rust encoder active (nvtt30205.dll not found)".to_string(),
+        );
+    };
+    match open_nvtt_library(&dll_path) {
+        Ok(lib) => unsafe {
+            type VersionFn = unsafe extern "C" fn() -> u32;
+            if let Ok(ver_fn) = lib.get::<VersionFn>(b"nvttVersion\0") {
+                let v = ver_fn();
+                return (
+                    true,
+                    format!("NVTT {v} active ({})", dll_path.display()),
+                );
+            }
+            if lib
+                .get::< unsafe extern "C" fn()>(b"pgtools_nvtt_encode_rgba8\0")
+                .is_ok()
+            {
+                return (
+                    true,
+                    format!("NVTT wrapper active ({})", dll_path.display()),
+                );
+            }
+            (
+                false,
+                format!(
+                    "Built-in encoder active ({} missing nvttVersion export)",
+                    dll_path.display()
+                ),
+            )
+        },
+        Err(e) => (
+            false,
+            format!(
+                "Built-in encoder active (failed to load {}: {e})",
+                dll_path.display()
+            ),
+        ),
+    }
+}
+
+/// Map `TextureFormat` to `NvttFormat` enum (`nvtt_wrapper.h` 3.2.5), promoting `BC1` (1) to `BC1a` (2)
+/// when `has_alpha` is true, and mapping all 14 ASTC LDR footprints (`17..=30`).
+fn to_nvtt_c_format(format: TextureFormat, has_alpha: bool) -> Option<i32> {
+    match format {
+        TextureFormat::Bc1 | TextureFormat::Bc1Srgb => Some(if has_alpha { 2 } else { 1 }),
+        TextureFormat::Bc2 | TextureFormat::Bc2Srgb => Some(3),
+        TextureFormat::Bc3 | TextureFormat::Bc3Srgb => Some(4),
+        TextureFormat::Bc4 => Some(6),
+        TextureFormat::Bc5 => Some(9),
+        TextureFormat::Bc6hUf16 => Some(13), // NvttFormat_BC6U
+        TextureFormat::Bc6hSf16 => Some(14), // NvttFormat_BC6S
+        TextureFormat::Bc7 | TextureFormat::Bc7Srgb => Some(15),
+        TextureFormat::Astc(bw, bh, _) => {
+            let idx = ASTC_FOOTPRINTS
+                .iter()
+                .position(|&(w, h, _)| w == bw && h == bh)?;
+            Some(17 + idx as i32) // NvttFormat_ASTC_LDR_4x4 = 17 .. 12x12 = 30
+        }
+        _ => None,
+    }
+}
+
+thread_local! {
+    static NVTT_CAPTURE_BUF: std::cell::RefCell<Vec<u8>> = const { std::cell::RefCell::new(Vec::new()) };
+}
+
+unsafe extern "C" fn nvtt_cb_begin_image(
+    size: i32,
+    _width: i32,
+    _height: i32,
+    _depth: i32,
+    _face: i32,
+    _mip: i32,
+) {
+    NVTT_CAPTURE_BUF.with(|cell| {
+        let mut buf = cell.borrow_mut();
+        buf.clear();
+        if size > 0 {
+            buf.reserve(size as usize);
+        }
+    });
+}
+
+unsafe extern "C" fn nvtt_cb_write_data(data: *const u8, size: i32) -> i32 {
+    if !data.is_null() && size > 0 {
+        let slice = std::slice::from_raw_parts(data, size as usize);
+        NVTT_CAPTURE_BUF.with(|cell| {
+            cell.borrow_mut().extend_from_slice(slice);
+        });
+    }
+    1
+}
+
+unsafe extern "C" fn nvtt_cb_end_image() {}
+
+/// Compress a linear `RgbaImage` into raw compressed blocks using official `nvtt30205.dll`
+/// (`nvtt_wrapper.h` 3.2.5 C API), matching `Xt1.Core/Nvtt/NvttNative.cs`.
+/// Returns `None` if `nvtt30205.dll` is not present or does not support `format`.
+pub fn try_encode_with_nvtt_dll_quality(
     img: &RgbaImage,
     format: TextureFormat,
+    quality: EncodeQuality,
     nvtt_dll_path: Option<&Path>,
 ) -> Option<Vec<u8>> {
-    let nvtt_format_id: i32 = match format {
-        TextureFormat::Bc1 | TextureFormat::Bc1Srgb => 1, // NVTT_Format_BC1
-        TextureFormat::Bc2 | TextureFormat::Bc2Srgb => 3, // NVTT_Format_BC2
-        TextureFormat::Bc3 | TextureFormat::Bc3Srgb => 4, // NVTT_Format_BC3
-        TextureFormat::Bc4 => 6,                          // NVTT_Format_BC4
-        TextureFormat::Bc5 => 7,                          // NVTT_Format_BC5
-        TextureFormat::Bc6hUf16 | TextureFormat::Bc6hSf16 => 10, // NVTT_Format_BC6U/S
-        TextureFormat::Bc7 | TextureFormat::Bc7Srgb => 11, // NVTT_Format_BC7
-        _ => return None,
-    };
+    let has_alpha = img.pixels().any(|p| p.0[3] < 255);
+    let nvtt_format_id = to_nvtt_c_format(format, has_alpha)?;
+    let dll_path = locate_nvtt_dll(nvtt_dll_path)?;
+    let lib = open_nvtt_library(&dll_path).ok()?;
 
-    let mut candidates = Vec::new();
-    if let Some(p) = nvtt_dll_path {
-        if !p.as_os_str().is_empty() && p.is_file() {
-            candidates.push(p.to_path_buf());
-        }
-    }
-    for default_name in ["nvtt30205.dll", "nvtt.dll", "libnvtt.so", "libnvtt.dylib"] {
-        let pb = Path::new(default_name).to_path_buf();
-        if pb.is_file() {
-            candidates.push(pb);
-        }
-    }
-    let dll_path = candidates.into_iter().next()?;
-    let lib = unsafe { libloading::Library::new(&dll_path).ok()? };
-
-    // Optional single-call C helper if exported by the NVTT wrapper DLL
-    type NvttEncodeRgba8 = unsafe extern "C" fn(
-        rgba_ptr: *const u8,
-        width: u32,
-        height: u32,
-        format: i32,
-        out_ptr: *mut u8,
-        out_cap: usize,
-    ) -> usize;
-
-    let sym: libloading::Symbol<NvttEncodeRgba8> =
-        unsafe { lib.get(b"pgtools_nvtt_encode_rgba8 ").ok()? };
     let (bw, bh) = format.block_dimensions();
     let bx = ((img.width() as usize) + bw - 1) / bw;
     let by = ((img.height() as usize) + bh - 1) / bh;
     let expected_bytes = bx * by * format.bytes_per_block();
-    let mut out = vec![0u8; expected_bytes];
-    let written = unsafe {
-        sym(
-            img.as_raw().as_ptr(),
-            img.width(),
-            img.height(),
-            nvtt_format_id,
-            out.as_mut_ptr(),
-            out.len(),
-        )
-    };
-    if written == expected_bytes && expected_bytes > 0 {
-        Some(out)
-    } else {
-        None
+    if expected_bytes == 0 {
+        return None;
     }
+
+    // 1. Official NVTT 3.2.5 C API (`nvttCreateSurface`, `nvttContextCompress`, etc.)
+    unsafe {
+        type CreateSurfaceFn = unsafe extern "C" fn() -> *mut std::ffi::c_void;
+        type DestroySurfaceFn = unsafe extern "C" fn(*mut std::ffi::c_void);
+        type SetImageDataFn = unsafe extern "C" fn(
+            *mut std::ffi::c_void,
+            i32,
+            i32,
+            i32,
+            i32,
+            *const std::ffi::c_void,
+            i32,
+            *mut std::ffi::c_void,
+        ) -> i32;
+        type SetSurfaceAlphaModeFn = unsafe extern "C" fn(*mut std::ffi::c_void, i32);
+        type CreateContextFn = unsafe extern "C" fn() -> *mut std::ffi::c_void;
+        type DestroyContextFn = unsafe extern "C" fn(*mut std::ffi::c_void);
+        type CreateCompOptsFn = unsafe extern "C" fn() -> *mut std::ffi::c_void;
+        type DestroyCompOptsFn = unsafe extern "C" fn(*mut std::ffi::c_void);
+        type SetCompFormatFn = unsafe extern "C" fn(*mut std::ffi::c_void, i32);
+        type SetCompQualityFn = unsafe extern "C" fn(*mut std::ffi::c_void, i32);
+        type SetCompQuantFn = unsafe extern "C" fn(*mut std::ffi::c_void, i32, i32, i32, i32);
+        type CreateOutOptsFn = unsafe extern "C" fn() -> *mut std::ffi::c_void;
+        type DestroyOutOptsFn = unsafe extern "C" fn(*mut std::ffi::c_void);
+        type SetOutContainerFn = unsafe extern "C" fn(*mut std::ffi::c_void, i32);
+        type SetOutHeaderFn = unsafe extern "C" fn(*mut std::ffi::c_void, i32);
+        type SetOutSrgbFn = unsafe extern "C" fn(*mut std::ffi::c_void, i32);
+        type BeginCb = unsafe extern "C" fn(i32, i32, i32, i32, i32, i32);
+        type WriteCb = unsafe extern "C" fn(*const u8, i32) -> i32;
+        type EndCb = unsafe extern "C" fn();
+        type SetOutHandlerFn =
+            unsafe extern "C" fn(*mut std::ffi::c_void, BeginCb, WriteCb, EndCb);
+        type ContextOutputHeaderFn = unsafe extern "C" fn(
+            *mut std::ffi::c_void,
+            *mut std::ffi::c_void,
+            i32,
+            *mut std::ffi::c_void,
+            *mut std::ffi::c_void,
+        ) -> i32;
+        type ContextCompressFn = unsafe extern "C" fn(
+            *mut std::ffi::c_void,
+            *mut std::ffi::c_void,
+            i32,
+            i32,
+            *mut std::ffi::c_void,
+            *mut std::ffi::c_void,
+        ) -> i32;
+
+        if let (
+            Ok(create_surface),
+            Ok(destroy_surface),
+            Ok(set_image_data),
+            Ok(set_alpha_mode),
+            Ok(create_context),
+            Ok(destroy_context),
+            Ok(create_comp),
+            Ok(destroy_comp),
+            Ok(set_comp_format),
+            Ok(set_comp_quality),
+            Ok(set_comp_quant),
+            Ok(create_out),
+            Ok(destroy_out),
+            Ok(set_out_container),
+            Ok(set_out_header),
+            Ok(set_out_srgb),
+            Ok(set_out_handler),
+            Ok(ctx_out_header),
+            Ok(ctx_compress),
+        ) = (
+            lib.get::<CreateSurfaceFn>(b"nvttCreateSurface\0"),
+            lib.get::<DestroySurfaceFn>(b"nvttDestroySurface\0"),
+            lib.get::<SetImageDataFn>(b"nvttSurfaceSetImageData\0"),
+            lib.get::<SetSurfaceAlphaModeFn>(b"nvttSetSurfaceAlphaMode\0"),
+            lib.get::<CreateContextFn>(b"nvttCreateContext\0"),
+            lib.get::<DestroyContextFn>(b"nvttDestroyContext\0"),
+            lib.get::<CreateCompOptsFn>(b"nvttCreateCompressionOptions\0"),
+            lib.get::<DestroyCompOptsFn>(b"nvttDestroyCompressionOptions\0"),
+            lib.get::<SetCompFormatFn>(b"nvttSetCompressionOptionsFormat\0"),
+            lib.get::<SetCompQualityFn>(b"nvttSetCompressionOptionsQuality\0"),
+            lib.get::<SetCompQuantFn>(b"nvttSetCompressionOptionsQuantization\0"),
+            lib.get::<CreateOutOptsFn>(b"nvttCreateOutputOptions\0"),
+            lib.get::<DestroyOutOptsFn>(b"nvttDestroyOutputOptions\0"),
+            lib.get::<SetOutContainerFn>(b"nvttSetOutputOptionsContainer\0"),
+            lib.get::<SetOutHeaderFn>(b"nvttSetOutputOptionsOutputHeader\0"),
+            lib.get::<SetOutSrgbFn>(b"nvttSetOutputOptionsSrgbFlag\0"),
+            lib.get::<SetOutHandlerFn>(b"nvttSetOutputOptionsOutputHandler\0"),
+            lib.get::<ContextOutputHeaderFn>(b"nvttContextOutputHeader\0"),
+            lib.get::<ContextCompressFn>(b"nvttContextCompress\0"),
+        ) {
+            // NVTT's 8-bit input expects BGRA channel order (`NvttInputFormat::Bgra8Ub = 0`).
+            let raw = img.as_raw();
+            let mut bgra = vec![0u8; raw.len()];
+            for (dst, src) in bgra.chunks_exact_mut(4).zip(raw.chunks_exact(4)) {
+                dst[0] = src[2];
+                dst[1] = src[1];
+                dst[2] = src[0];
+                dst[3] = src[3];
+            }
+
+            let surface = create_surface();
+            let context = create_context();
+            let comp = create_comp();
+            let out = create_out();
+
+            let result = (|| -> Option<Vec<u8>> {
+                if surface.is_null() || context.is_null() || comp.is_null() || out.is_null() {
+                    return None;
+                }
+                set_alpha_mode(surface, if has_alpha { 1 } else { 0 });
+                let ok_img = set_image_data(
+                    surface,
+                    0, // NvttInputFormat_Bgra8Ub
+                    img.width() as i32,
+                    img.height() as i32,
+                    1,
+                    bgra.as_ptr() as *const std::ffi::c_void,
+                    0,
+                    std::ptr::null_mut(),
+                );
+                if ok_img == 0 {
+                    return None;
+                }
+                set_comp_format(comp, nvtt_format_id);
+                set_comp_quality(comp, quality as i32);
+                set_comp_quant(comp, 0, 0, 0, 127);
+
+                set_out_container(out, 1); // NvttContainer_Dds10
+                set_out_header(out, 0);    // Raw blocks only (no DDS header)
+                set_out_srgb(out, if format.is_srgb() { 1 } else { 0 });
+                set_out_handler(out, nvtt_cb_begin_image, nvtt_cb_write_data, nvtt_cb_end_image);
+
+                if ctx_out_header(context, surface, 1, comp, out) == 0 {
+                    return None;
+                }
+                if ctx_compress(context, surface, 0, 0, comp, out) == 0 {
+                    return None;
+                }
+                NVTT_CAPTURE_BUF.with(|cell| {
+                    let captured = cell.borrow();
+                    if captured.len() == expected_bytes {
+                        Some(captured.clone())
+                    } else {
+                        None
+                    }
+                })
+            })();
+
+            if !out.is_null() {
+                destroy_out(out);
+            }
+            if !comp.is_null() {
+                destroy_comp(comp);
+            }
+            if !context.is_null() {
+                destroy_context(context);
+            }
+            if !surface.is_null() {
+                destroy_surface(surface);
+            }
+            if result.is_some() {
+                return result;
+            }
+        }
+
+        // 2. Fallback check for single-call wrapper symbol if present
+        type NvttEncodeRgba8 = unsafe extern "C" fn(
+            rgba_ptr: *const u8,
+            width: u32,
+            height: u32,
+            format: i32,
+            out_ptr: *mut u8,
+            out_cap: usize,
+        ) -> usize;
+        if let Ok(sym) = lib.get::<NvttEncodeRgba8>(b"pgtools_nvtt_encode_rgba8\0") {
+            let mut out = vec![0u8; expected_bytes];
+            let written = sym(
+                img.as_raw().as_ptr(),
+                img.width(),
+                img.height(),
+                nvtt_format_id,
+                out.as_mut_ptr(),
+                out.len(),
+            );
+            if written == expected_bytes {
+                return Some(out);
+            }
+        }
+    }
+    None
 }
 
 /// Encode an `RgbaImage` into linear compressed/uncompressed blocks for `format`.
-/// Attempts to use `nvtt30205.dll` / `nvtt.dll` if available, falling back automatically
+/// Attempts to use `nvtt30205.dll` if available, falling back automatically
 /// to our pure-Rust BC1–BC7 / ASTC / RGBA8 / BGRA8 / R8 encoder.
 pub fn encode_linear_surface(
     img: &RgbaImage,
     format: TextureFormat,
     nvtt_dll_path: Option<&Path>,
 ) -> Vec<u8> {
-    if let Some(hw_encoded) = try_encode_with_nvtt_dll(img, format, nvtt_dll_path) {
+    encode_linear_surface_with_quality(img, format, EncodeQuality::Normal, nvtt_dll_path)
+}
+
+pub fn encode_linear_surface_with_quality(
+    img: &RgbaImage,
+    format: TextureFormat,
+    quality: EncodeQuality,
+    nvtt_dll_path: Option<&Path>,
+) -> Vec<u8> {
+    if let Some(hw_encoded) = try_encode_with_nvtt_dll_quality(img, format, quality, nvtt_dll_path) {
         return hw_encoded;
     }
     let w = img.width() as usize;
@@ -2228,8 +2603,243 @@ pub fn swizzle_dds_to_xt1(
     Ok(full)
 }
 
+/// Rebuild a `.bntx` container when one or more `BRTI` sub-textures change format, dimensions,
+/// mip count, or byte size (e.g., ASTC -> BC recompression or cross-format texture replacement).
+/// Automatically updates `BRTI` headers, `u64` `mip_offsets`, `BRTD` size, and trailing `_RLT` relocation section.
+pub fn rebuild_bntx_container_subtexture(
+    bntx_bytes: &[u8],
+    sub_index: usize,
+    new_format: TextureFormat,
+    new_width: u32,
+    new_height: u32,
+    new_block_height_log2: u32,
+    new_swizzled_mips: &[Vec<u8>],
+) -> Result<Vec<u8>> {
+    let base_off = if bntx_bytes.len() >= 0x28 && &bntx_bytes[0..4] == b"BNTX" {
+        0usize
+    } else if bntx_bytes.len() >= 80 + 0x28 && &bntx_bytes[80..84] == b"BNTX" {
+        80usize
+    } else {
+        return Err(PgError::InvalidData("Missing BNTX magic".into()));
+    };
+
+    let recs = parse_bntx_textures(bntx_bytes)?;
+    let target_idx = sub_index.min(recs.len().saturating_sub(1));
+    let target_rec = &recs[target_idx];
+
+    // Check if the new mips fit the exact existing layout & dimensions for fast in-place overwrite
+    let same_geom = new_width == target_rec.width
+        && new_height == target_rec.height
+        && new_swizzled_mips.len() == target_rec.mip_offsets.len()
+        && new_format.block_dimensions() == target_rec.format.block_dimensions()
+        && new_format.bytes_per_block() == target_rec.format.bytes_per_block();
+
+    if same_geom {
+        let mut out = bntx_bytes.to_vec();
+        let new_surf_fmt = new_format.to_bntx_surface_format();
+        if target_rec.brti_offset + 32 <= out.len()
+            && &out[target_rec.brti_offset..target_rec.brti_offset + 4] == b"BRTI"
+        {
+            out[target_rec.brti_offset + 28..target_rec.brti_offset + 32]
+                .copy_from_slice(&new_surf_fmt.to_le_bytes());
+        }
+        for (m, &mip_off) in target_rec.mip_offsets.iter().enumerate() {
+            if let Some(swizzled) = new_swizzled_mips.get(m) {
+                if mip_off < out.len() {
+                    let copy_len = (out.len() - mip_off).min(swizzled.len());
+                    out[mip_off..mip_off + copy_len].copy_from_slice(&swizzled[..copy_len]);
+                }
+            }
+        }
+        return Ok(out);
+    }
+
+    // Full relocating BRTD repack for changed block footprint (e.g. ASTC -> BC), mip count, or dimensions:
+    // 1. Collect existing swizzled mip surfaces for all other sub-textures
+    let mut all_tex_mips: Vec<Vec<Vec<u8>>> = Vec::with_capacity(recs.len());
+    for (idx, rec) in recs.iter().enumerate() {
+        if idx == target_idx {
+            all_tex_mips.push(new_swizzled_mips.to_vec());
+        } else {
+            let (bw, bh) = rec.format.block_dimensions();
+            let bpb = rec.format.bytes_per_block();
+            let bh_mip0 = 1usize << rec.block_height_log2;
+            let mut mips = Vec::with_capacity(rec.mip_offsets.len());
+            for (m, &mip_off) in rec.mip_offsets.iter().enumerate() {
+                let mw = (rec.width >> m).max(1) as usize;
+                let mh = (rec.height >> m).max(1) as usize;
+                let wb = (mw + bw - 1) / bw;
+                let hb = (mh + bh - 1) / bh;
+                let mip_bh = gob_swizzle::mip_block_height(hb, bh_mip0);
+                let pitch = align(wb * bpb, 64);
+                let surf_size = pitch * align(hb, mip_bh * 8);
+                let mut buf = vec![0u8; surf_size];
+                if mip_off < bntx_bytes.len() {
+                    let avail = (bntx_bytes.len() - mip_off).min(surf_size);
+                    buf[..avail].copy_from_slice(&bntx_bytes[mip_off..mip_off + avail]);
+                }
+                mips.push(buf);
+            }
+            all_tex_mips.push(mips);
+        }
+    }
+
+    // 2. Locate first mip offset, BRTD block header, and trailing _RLT relocation table
+    let first_mip_off = recs
+        .iter()
+        .filter_map(|r| r.mip_offsets.first().copied())
+        .min()
+        .ok_or_else(|| PgError::InvalidData("BNTX has no mip offsets".into()))?;
+
+    let mut brtd_off = None;
+    let search_limit = first_mip_off.min(bntx_bytes.len().saturating_sub(16));
+    for pos in (base_off..search_limit).rev() {
+        if &bntx_bytes[pos..pos + 4] == b"BRTD" {
+            brtd_off = Some(pos);
+            break;
+        }
+    }
+
+    let rlt_off_18 = if base_off + 0x1C <= bntx_bytes.len() {
+        u32::from_le_bytes(bntx_bytes[base_off + 0x18..base_off + 0x1C].try_into().unwrap()) as usize
+    } else {
+        0
+    };
+    let rlt_off_14 = if base_off + 0x18 <= bntx_bytes.len() {
+        u32::from_le_bytes(bntx_bytes[base_off + 0x14..base_off + 0x18].try_into().unwrap()) as usize
+    } else {
+        0
+    };
+    let (old_rlt_abs, rlt_hdr_field_off) = if rlt_off_18 > 0
+        && base_off + rlt_off_18 + 4 <= bntx_bytes.len()
+        && &bntx_bytes[base_off + rlt_off_18..base_off + rlt_off_18 + 4] == b"_RLT"
+    {
+        (Some(base_off + rlt_off_18), 0x18usize)
+    } else if rlt_off_14 > 0
+        && base_off + rlt_off_14 + 4 <= bntx_bytes.len()
+        && &bntx_bytes[base_off + rlt_off_14..base_off + rlt_off_14 + 4] == b"_RLT"
+    {
+        (Some(base_off + rlt_off_14), 0x14usize)
+    } else {
+        (None, 0x18usize)
+    };
+    let rlt_tail = old_rlt_abs.map(|off| bntx_bytes[off..].to_vec());
+
+    // 3. Build output starting with everything up to `first_mip_off`
+    let mut out = bntx_bytes[..first_mip_off].to_vec();
+    let mut new_mip_tables: Vec<Vec<u64>> = Vec::with_capacity(recs.len());
+    let mut new_image_sizes: Vec<u32> = Vec::with_capacity(recs.len());
+
+    for (idx, mips) in all_tex_mips.iter().enumerate() {
+        let align_bytes = (recs[idx].alignment.max(512) as usize).next_power_of_two();
+        let tex_start = align(out.len() - base_off, align_bytes) + base_off;
+        if out.len() < tex_start {
+            out.resize(tex_start, 0);
+        }
+        let mut mip_ptrs = Vec::with_capacity(mips.len());
+        let first_m_pos = out.len();
+        for (m, surf) in mips.iter().enumerate() {
+            if m > 0 {
+                let m_pos = align(out.len() - base_off, 512) + base_off;
+                if out.len() < m_pos {
+                    out.resize(m_pos, 0);
+                }
+            }
+            let cur_rel = (out.len() - base_off) as u64;
+            mip_ptrs.push(cur_rel);
+            out.extend_from_slice(surf);
+        }
+        let total_img_sz = (out.len() - first_m_pos) as u32;
+        new_mip_tables.push(mip_ptrs);
+        new_image_sizes.push(total_img_sz);
+    }
+
+    // 4. Patch BRTI headers and mip pointer tables (matching parse_bntx_textures field offsets)
+    for (idx, rec) in recs.iter().enumerate() {
+        let bo = rec.brti_offset;
+        if bo + 0x78 <= out.len() && &out[bo..bo + 4] == b"BRTI" {
+            let mip_ptrs_rel =
+                u64::from_le_bytes(out[bo + 0x70..bo + 0x78].try_into().unwrap()) as usize;
+            let mip_ptrs_abs = base_off + mip_ptrs_rel;
+            let new_ptrs = &new_mip_tables[idx];
+            let cap_mips = new_ptrs.len().min(rec.mip_count as usize);
+            let fallback_rel = (first_mip_off.saturating_sub(base_off)) as u64;
+            let last_valid_ptr = new_ptrs
+                .get(cap_mips.saturating_sub(1))
+                .copied()
+                .unwrap_or(fallback_rel);
+            // Fill all rec.mip_count slots so _RLT relocation never points outside BRTD when mip count shrinks
+            for m in 0..(rec.mip_count as usize) {
+                let ptr = if m < cap_mips { new_ptrs[m] } else { last_valid_ptr };
+                let slot = mip_ptrs_abs + m * 8;
+                if slot + 8 <= out.len() {
+                    out[slot..slot + 8].copy_from_slice(&ptr.to_le_bytes());
+                }
+            }
+            out[bo + 0x50..bo + 0x54].copy_from_slice(&new_image_sizes[idx].to_le_bytes());
+
+            if idx == target_idx {
+                let new_mip_cnt = (cap_mips.max(1)) as u16;
+                let new_surf_fmt = new_format.to_bntx_surface_format();
+                let old_layout = u32::from_le_bytes(out[bo + 0x34..bo + 0x38].try_into().unwrap());
+                let patched_layout = (old_layout & !7u32) | (new_block_height_log2 & 7);
+                out[bo + 0x16..bo + 0x18].copy_from_slice(&new_mip_cnt.to_le_bytes());
+                out[bo + 0x1C..bo + 0x20].copy_from_slice(&new_surf_fmt.to_le_bytes());
+                out[bo + 0x24..bo + 0x28].copy_from_slice(&new_width.to_le_bytes());
+                out[bo + 0x28..bo + 0x2C].copy_from_slice(&new_height.to_le_bytes());
+                out[bo + 0x34..bo + 0x38].copy_from_slice(&patched_layout.to_le_bytes());
+            }
+        }
+    }
+
+    // 5. Align end of BRTD, update BRTD size, and re-attach _RLT relocation table
+    if let Some(mut rlt) = rlt_tail {
+        let new_rlt_rel = align(out.len() - base_off, 4096);
+        let new_rlt_abs = base_off + new_rlt_rel;
+        if out.len() < new_rlt_abs {
+            out.resize(new_rlt_abs, 0);
+        }
+        if let Some(b_off) = brtd_off {
+            let brtd_size = (new_rlt_abs - b_off) as u64;
+            if b_off + 16 <= out.len() {
+                out[b_off + 8..b_off + 16].copy_from_slice(&brtd_size.to_le_bytes());
+            }
+            if rlt.len() >= 0x38 {
+                let sec1_pos = u32::from_le_bytes(rlt[0x30..0x34].try_into().unwrap()) as usize;
+                if sec1_pos == b_off.saturating_sub(base_off) && new_rlt_rel >= sec1_pos {
+                    let sec1_size = (new_rlt_rel - sec1_pos) as u32;
+                    rlt[0x34..0x38].copy_from_slice(&sec1_size.to_le_bytes());
+                }
+            }
+        }
+        if rlt.len() >= 8 {
+            let new_rlt_u32 = new_rlt_rel as u32;
+            rlt[4..8].copy_from_slice(&new_rlt_u32.to_le_bytes());
+        }
+        out.extend_from_slice(&rlt);
+        let total_bntx_len = (out.len() - base_off) as u32;
+        if base_off + rlt_hdr_field_off + 8 <= out.len() {
+            out[base_off + rlt_hdr_field_off..base_off + rlt_hdr_field_off + 4]
+                .copy_from_slice(&(new_rlt_rel as u32).to_le_bytes());
+            out[base_off + rlt_hdr_field_off + 4..base_off + rlt_hdr_field_off + 8]
+                .copy_from_slice(&total_bntx_len.to_le_bytes());
+        }
+    } else if let Some(b_off) = brtd_off {
+        let brtd_size = (out.len() - b_off) as u64;
+        if b_off + 16 <= out.len() {
+            out[b_off + 8..b_off + 16].copy_from_slice(&brtd_size.to_le_bytes());
+        }
+        let total_bntx_len = (out.len() - base_off) as u32;
+        if base_off + 0x20 <= out.len() {
+            out[base_off + 0x1C..base_off + 0x20].copy_from_slice(&total_bntx_len.to_le_bytes());
+        }
+    }
+
+    Ok(out)
+}
+
 /// Replace sub-texture `sub_index` inside a `.bntx` container from either a raw `.dds` (lossless GOB swizzle)
-/// or an `RgbaImage` encoded with `target_format`.
+/// or an `RgbaImage` encoded with `target_format` (supporting both in-place and relocating format/size changes).
 pub fn replace_bntx_subtexture(
     bntx_bytes: &[u8],
     sub_index: usize,
@@ -2239,31 +2849,48 @@ pub fn replace_bntx_subtexture(
     apply_solidify: bool,
     make_opaque: bool,
 ) -> Result<Vec<u8>> {
+    replace_bntx_subtexture_with_options(
+        bntx_bytes,
+        sub_index,
+        dds_or_img,
+        target_format,
+        generate_mips,
+        apply_solidify,
+        make_opaque,
+        EncodeQuality::Normal,
+        None,
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+pub fn replace_bntx_subtexture_with_options(
+    bntx_bytes: &[u8],
+    sub_index: usize,
+    dds_or_img: std::result::Result<&[u8], &RgbaImage>,
+    target_format: Option<TextureFormat>,
+    generate_mips: bool,
+    apply_solidify: bool,
+    make_opaque: bool,
+    quality: EncodeQuality,
+    nvtt_dll_path: Option<&Path>,
+) -> Result<Vec<u8>> {
     let recs = parse_bntx_textures(bntx_bytes)?;
     let tex = recs.get(sub_index).unwrap_or(&recs[0]);
-    let mut out = bntx_bytes.to_vec();
-
-    let fmt = target_format.unwrap_or(tex.format);
-    if fmt.block_dimensions() != tex.format.block_dimensions()
-        || fmt.bytes_per_block() != tex.format.bytes_per_block()
-    {
-        return Err(PgError::InvalidData(format!(
-            "In-place BNTX replacement requires matching block footprint/size (existing {:?}, requested {:?})",
-            tex.format, fmt
-        )));
-    }
-    let (bw, bh) = fmt.block_dimensions();
-    let bpb = fmt.bytes_per_block();
-    let bh_mip0 = 1usize << tex.block_height_log2;
-
-    let new_surf_fmt = fmt.to_bntx_surface_format();
-    if tex.brti_offset + 32 <= out.len() && &out[tex.brti_offset..tex.brti_offset + 4] == b"BRTI" {
-        out[tex.brti_offset + 28..tex.brti_offset + 32]
-            .copy_from_slice(&new_surf_fmt.to_le_bytes());
-    }
 
     match dds_or_img {
         Ok(dds_bytes) => {
+            let dds_meta = inspect_texture_blob(dds_bytes)?;
+            let fmt = target_format.unwrap_or(dds_meta.format);
+            let (bw, bh) = fmt.block_dimensions();
+            let bpb = fmt.bytes_per_block();
+            let hb0 = ((dds_meta.height as usize) + bh - 1) / bh;
+            let bh_log2 = if dds_meta.height == tex.height && fmt.block_dimensions() == tex.format.block_dimensions() {
+                tex.block_height_log2
+            } else {
+                gob_swizzle::block_height_log2(hb0)
+            };
+            let bh_mip0 = 1usize << bh_log2;
+
             let header_size = if dds_bytes.len() >= 148 && &dds_bytes[84..88] == b"DX10" {
                 148usize
             } else {
@@ -2273,10 +2900,12 @@ pub fn replace_bntx_subtexture(
                 return Err(PgError::InvalidData("Truncated DDS header".into()));
             }
             let dds_payload = &dds_bytes[header_size..];
+            let mip_cnt = (dds_meta.mip_count as usize).min(tex.mip_offsets.len().max(1));
+            let mut swizzled_mips = Vec::with_capacity(mip_cnt);
             let mut cursor = 0usize;
-            for (m, &mip_off) in tex.mip_offsets.iter().enumerate() {
-                let mip_w = (tex.width >> m).max(1) as usize;
-                let mip_h = (tex.height >> m).max(1) as usize;
+            for m in 0..mip_cnt {
+                let mip_w = (dds_meta.width >> m).max(1) as usize;
+                let mip_h = (dds_meta.height >> m).max(1) as usize;
                 let wb = (mip_w + bw - 1) / bw;
                 let hb = (mip_h + bh - 1) / bh;
                 let mip_bh = gob_swizzle::mip_block_height(hb, bh_mip0);
@@ -2291,13 +2920,22 @@ pub fn replace_bntx_subtexture(
                 }
                 let mut swizzled = vec![0u8; surf_size];
                 gob_swizzle::swizzle_volume(&linear, &mut swizzled, wb, hb, 1, bpb, mip_bh, 1, pitch);
-                if mip_off < out.len() {
-                    let copy_len = (out.len() - mip_off).min(surf_size);
-                    out[mip_off..mip_off + copy_len].copy_from_slice(&swizzled[..copy_len]);
-                }
+                swizzled_mips.push(swizzled);
             }
+            rebuild_bntx_container_subtexture(
+                bntx_bytes,
+                sub_index,
+                fmt,
+                dds_meta.width,
+                dds_meta.height,
+                bh_log2,
+                &swizzled_mips,
+            )
         }
         Err(base_img) => {
+            let fmt = target_format.unwrap_or(tex.format);
+            let (bw, bh) = fmt.block_dimensions();
+            let bpb = fmt.bytes_per_block();
             let mut processed = if apply_solidify {
                 solidify_rgba_image(base_img, 0)
             } else {
@@ -2314,26 +2952,39 @@ pub fn replace_bntx_subtexture(
                 1
             };
             let mip_images = generate_mip_chain(&processed, max_mips);
-            for (m, &mip_off) in tex.mip_offsets.iter().enumerate() {
-                let Some(mip_img) = mip_images.get(m) else {
-                    break;
-                };
+            let hb0 = ((processed.height() as usize) + bh - 1) / bh;
+            let bh_log2 = if processed.height() == tex.height
+                && fmt.block_dimensions() == tex.format.block_dimensions()
+            {
+                tex.block_height_log2
+            } else {
+                gob_swizzle::block_height_log2(hb0)
+            };
+            let bh_mip0 = 1usize << bh_log2;
+
+            let mut swizzled_mips = Vec::with_capacity(mip_images.len());
+            for mip_img in &mip_images {
                 let wb = ((mip_img.width() as usize) + bw - 1) / bw;
                 let hb = ((mip_img.height() as usize) + bh - 1) / bh;
                 let mip_bh = gob_swizzle::mip_block_height(hb, bh_mip0);
                 let pitch = align(wb * bpb, 64);
                 let surf_size = pitch * align(hb, mip_bh * 8);
-                let linear = encode_linear_surface(mip_img, fmt, None);
+                let linear = encode_linear_surface_with_quality(mip_img, fmt, quality, nvtt_dll_path);
                 let mut swizzled = vec![0u8; surf_size];
                 gob_swizzle::swizzle_volume(&linear, &mut swizzled, wb, hb, 1, bpb, mip_bh, 1, pitch);
-                if mip_off < out.len() {
-                    let copy_len = (out.len() - mip_off).min(surf_size);
-                    out[mip_off..mip_off + copy_len].copy_from_slice(&swizzled[..copy_len]);
-                }
+                swizzled_mips.push(swizzled);
             }
+            rebuild_bntx_container_subtexture(
+                bntx_bytes,
+                sub_index,
+                fmt,
+                processed.width(),
+                processed.height(),
+                bh_log2,
+                &swizzled_mips,
+            )
         }
     }
-    Ok(out)
 }
 
 /// Inspect a `.dds`, `.gtx`, `.xt1`, or `.bntx` texture blob and extract its metadata.
@@ -2376,12 +3027,40 @@ pub fn inspect_texture_blob(data: &[u8]) -> Result<TextureMetadata> {
                     TextureFormat::Rgba8
                 }
             };
+            let caps2 = if data.len() >= 116 {
+                u32::from_le_bytes(data[112..116].try_into().unwrap())
+            } else {
+                0
+            };
+            let (dx10_misc, dx10_array_size) = if data.len() >= 148 && &data[84..88] == b"DX10" {
+                (
+                    u32::from_le_bytes(data[136..140].try_into().unwrap()),
+                    u32::from_le_bytes(data[140..144].try_into().unwrap()).max(1),
+                )
+            } else {
+                (0, 1)
+            };
+            let is_cube = (caps2 & 0x200) != 0 || (dx10_misc & 0x4) != 0;
+            let dimension = if is_cube {
+                TextureDimension::TexCube
+            } else if depth > 1 || dx10_array_size > 1 {
+                TextureDimension::TexAnimatedLayers
+            } else {
+                TextureDimension::Tex2D
+            };
+            let layer_count = match dimension {
+                TextureDimension::TexCube => 6,
+                TextureDimension::TexAnimatedLayers => depth.max(dx10_array_size).max(1),
+                TextureDimension::Tex2D => 1,
+            };
             Ok(TextureMetadata {
                 container_ext: ".dds".into(),
                 format,
+                dimension,
                 width,
                 height,
                 depth,
+                layer_count,
                 mip_count,
                 data_size: data.len(),
                 name: None,
@@ -2392,19 +3071,33 @@ pub fn inspect_texture_blob(data: &[u8]) -> Result<TextureMetadata> {
                 return Err(PgError::InvalidData("Truncated GTX container".into()));
             }
             let mut r = BinReader::new(&data[0x40..0x40 + 0x9C], Endian::Big);
-            let _dim = r.read_u32()?;
+            let dim = r.read_u32()?;
             let width = r.read_u32()?;
             let height = r.read_u32()?;
             let depth = r.read_u32()?.max(1);
             let mip_count = r.read_u32()?.max(1);
             let gx2_fmt = r.read_u32()?;
             let format = gx2_addrlib::gx2_format_to_texture_format(gx2_fmt);
+            let dimension = if dim == 3 || depth == 6 {
+                TextureDimension::TexCube
+            } else if depth > 1 {
+                TextureDimension::TexAnimatedLayers
+            } else {
+                TextureDimension::Tex2D
+            };
+            let layer_count = match dimension {
+                TextureDimension::TexCube => 6,
+                TextureDimension::TexAnimatedLayers => depth,
+                TextureDimension::Tex2D => 1,
+            };
             Ok(TextureMetadata {
                 container_ext: ".gtx".into(),
                 format,
+                dimension,
                 width,
                 height,
                 depth,
+                layer_count,
                 mip_count,
                 data_size: data.len(),
                 name: None,
@@ -2418,18 +3111,32 @@ pub fn inspect_texture_blob(data: &[u8]) -> Result<TextureMetadata> {
             r.seek(0x14)?;
             let mip_word = r.read_u32()?;
             let mip_count = (mip_word & 0xFFFF).max(1);
-            let _tex_type = r.read_u32()?;
+            let tex_type = r.read_u32()?;
             let xt1_fmt = r.read_u32()?;
             let width = r.read_u32()?;
             let height = r.read_u32()?;
             let depth = r.read_u32()?.max(1);
             let format = TextureFormat::from_xt1_code(xt1_fmt);
+            let dimension = if tex_type == 3 || tex_type == 8 {
+                TextureDimension::TexCube
+            } else if tex_type == 2 || tex_type == 5 || depth > 1 {
+                TextureDimension::TexAnimatedLayers
+            } else {
+                TextureDimension::Tex2D
+            };
+            let layer_count = match dimension {
+                TextureDimension::TexCube => 6,
+                TextureDimension::TexAnimatedLayers => depth,
+                TextureDimension::Tex2D => 1,
+            };
             Ok(TextureMetadata {
                 container_ext: ".xt1".into(),
                 format,
+                dimension,
                 width,
                 height,
                 depth,
+                layer_count,
                 mip_count,
                 data_size: data.len(),
                 name: None,
@@ -2440,12 +3147,26 @@ pub fn inspect_texture_blob(data: &[u8]) -> Result<TextureMetadata> {
         {
             let recs = parse_bntx_textures(data)?;
             let first = &recs[0];
+            let dimension = if first.surface_dim == 3 || first.array_length == 6 {
+                TextureDimension::TexCube
+            } else if first.depth > 1 || first.array_length > 1 {
+                TextureDimension::TexAnimatedLayers
+            } else {
+                TextureDimension::Tex2D
+            };
+            let layer_count = match dimension {
+                TextureDimension::TexCube => 6,
+                TextureDimension::TexAnimatedLayers => first.depth.max(first.array_length).max(1),
+                TextureDimension::Tex2D => 1,
+            };
             Ok(TextureMetadata {
                 container_ext: ".bntx".into(),
                 format: first.format,
+                dimension,
                 width: first.width,
                 height: first.height,
                 depth: first.depth,
+                layer_count,
                 mip_count: first.mip_count as u32,
                 data_size: data.len(),
                 name: Some(first.name.clone()),
@@ -2467,38 +3188,65 @@ pub fn convert_gtx_to_dds(gtx_bytes: &[u8]) -> Result<Vec<u8>> {
     let width = r.read_u32()?;
     let height = r.read_u32()?;
     let depth = r.read_u32()?.max(1);
-    let _mip_count = r.read_u32()?;
+    let num_mips = r.read_u32()?.max(1);
     let gx2_fmt = r.read_u32()?;
     let aa = r.read_u32()?;
     let use_flags = r.read_u32()?;
     let data_length = r.read_u32()? as usize;
     let _data_ptr = r.read_u32()?;
-    let _mip_length = r.read_u32()?;
+    let mip_length = r.read_u32()? as usize;
     let _mip_ptr = r.read_u32()?;
     let tile_mode = r.read_u32()?;
     let swizzle_val = r.read_u32()?;
     let _alignment = r.read_u32()?;
     let pitch = r.read_u32()?;
+    let mut mip_offsets = [0u32; 13];
+    for slot in &mut mip_offsets {
+        *slot = r.read_u32()?;
+    }
 
-    let payload_start = 0x40 + 0x9C + 0x20;
-    let avail = gtx_bytes.len().saturating_sub(payload_start);
-    let swizzled = &gtx_bytes[payload_start..payload_start + data_length.min(avail)];
-
-    let linear = gx2_addrlib::deswizzle_gx2_surface(
-        width,
-        height,
-        depth,
-        gx2_fmt,
-        aa,
-        use_flags,
-        tile_mode,
-        swizzle_val,
-        pitch,
-        0,
-        swizzled,
-    );
     let fmt = gx2_addrlib::gx2_format_to_texture_format(gx2_fmt);
-    Ok(build_dds_file(width, height, 1, fmt, &linear))
+    let base_start = 0x40 + 0x9C + 0x20;
+    let base_end = (base_start + data_length).min(gtx_bytes.len());
+    let mip_blk_start = base_end + 0x20;
+    let export_mips = if mip_length == 0 || mip_blk_start >= gtx_bytes.len() {
+        1
+    } else {
+        num_mips.min(14)
+    };
+
+    let mut dds_payload = Vec::new();
+    for m in 0..export_mips {
+        let mip_w = (width >> m).max(1);
+        let mip_h = (height >> m).max(1);
+        let (swizzled_slice, mip_pitch) = if m == 0 {
+            (&gtx_bytes[base_start..base_end], pitch)
+        } else {
+            let rel_off = if m == 1 {
+                0usize
+            } else {
+                (mip_offsets[(m - 1) as usize] as usize).saturating_sub(data_length)
+            };
+            let start = (mip_blk_start + rel_off).min(gtx_bytes.len());
+            (&gtx_bytes[start..], (pitch >> m).max(32))
+        };
+        let linear = gx2_addrlib::deswizzle_gx2_surface(
+            mip_w,
+            mip_h,
+            depth,
+            gx2_fmt,
+            aa,
+            use_flags,
+            tile_mode,
+            swizzle_val,
+            mip_pitch,
+            0,
+            swizzled_slice,
+        );
+        dds_payload.extend_from_slice(&linear);
+    }
+
+    Ok(build_dds_file(width, height, export_mips, fmt, &dds_payload))
 }
 
 /// Decode linear block/pixel bytes of known `width`, `height`, and `TextureFormat` into an `RgbaImage`.
@@ -2947,16 +3695,29 @@ pub fn decode_texture_mip_filtered(
     Ok((img, w, h))
 }
 
-/// Decode a specific `BRTI` sub-texture (`sub_index`) inside a `.bntx` container at `mip_index`.
-pub fn decode_bntx_subtexture_mip_filtered(
+/// Decode a specific `BRTI` sub-texture (`sub_index`) inside a `.bntx` container at `mip_index` and `layer_index`.
+pub fn decode_bntx_subtexture_layer_mip_filtered(
     blob: &[u8],
     sub_index: usize,
     mip_index: u32,
+    layer_index: u32,
     channel: &str,
     opaque: bool,
-) -> Result<(RgbaImage, u32, u32)> {
+) -> Result<(RgbaImage, u32, u32, u32)> {
     let recs = parse_bntx_textures(blob)?;
     let tex = recs.get(sub_index).unwrap_or(&recs[0]);
+    let layer_count = if tex.surface_dim == 3 || tex.array_length == 6 {
+        6u32
+    } else {
+        tex.depth.max(tex.array_length).max(1)
+    };
+    let clamped_layer = (layer_index as usize).min((layer_count as usize).saturating_sub(1));
+    let layer_stride = if layer_count > 1 && (tex.image_size as usize) >= (layer_count as usize) {
+        (tex.image_size as usize) / (layer_count as usize)
+    } else {
+        0
+    };
+
     let clamped_mip = (mip_index as usize).min(tex.mip_offsets.len().saturating_sub(1));
     let mip_w = (tex.width >> clamped_mip).max(1);
     let mip_h = (tex.height >> clamped_mip).max(1);
@@ -2971,10 +3732,11 @@ pub fn decode_bntx_subtexture_mip_filtered(
 
     let mut linear = vec![0u8; wb * hb * bpb];
     if let Some(&mip_off) = tex.mip_offsets.get(clamped_mip) {
-        if mip_off < blob.len() {
-            let avail = (blob.len() - mip_off).min(surf_size);
+        let slice_off = mip_off + clamped_layer * layer_stride;
+        if slice_off < blob.len() {
+            let avail = (blob.len() - slice_off).min(surf_size);
             let mut surface = vec![0u8; surf_size];
-            surface[..avail].copy_from_slice(&blob[mip_off..mip_off + avail]);
+            surface[..avail].copy_from_slice(&blob[slice_off..slice_off + avail]);
             gob_swizzle::deswizzle_volume(
                 &surface,
                 &mut linear,
@@ -2989,20 +3751,21 @@ pub fn decode_bntx_subtexture_mip_filtered(
         }
     }
     let mut img = decode_linear_blocks_to_rgba8(&linear, mip_w, mip_h, tex.format)?;
-    if channel != "RGBA" || opaque {
-        for p in img.pixels_mut() {
-            let [r, g, b, a] = p.0;
-            p.0 = match channel {
-                "RGB" => [r, g, b, 255],
-                "R" => [r, r, r, 255],
-                "G" => [g, g, g, 255],
-                "B" => [b, b, b, 255],
-                "A" => [a, a, a, 255],
-                _ => [r, g, b, if opaque { 255 } else { a }],
-            };
-        }
-    }
-    Ok((img, mip_w, mip_h))
+    apply_channel_and_opaque_filter(&mut img, channel, opaque);
+    Ok((img, mip_w, mip_h, layer_count))
+}
+
+/// Decode a specific `BRTI` sub-texture (`sub_index`) inside a `.bntx` container at `mip_index`.
+pub fn decode_bntx_subtexture_mip_filtered(
+    blob: &[u8],
+    sub_index: usize,
+    mip_index: u32,
+    channel: &str,
+    opaque: bool,
+) -> Result<(RgbaImage, u32, u32)> {
+    let (img, w, h, _) =
+        decode_bntx_subtexture_layer_mip_filtered(blob, sub_index, mip_index, 0, channel, opaque)?;
+    Ok((img, w, h))
 }
 
 /// Decode base mip 0 of a texture blob into an `RgbaImage`.
@@ -3113,4 +3876,883 @@ fn decode_bc4_block(b: &[u8]) -> [u8; 16] {
         out[i] = lut[idx];
     }
     out
+}
+
+
+// ============================================================================
+// QUALITY-AWARE ENCODERS, LOSSLESS DDS EXPORTERS, CUBEMAP & LAYER DECODERS,
+// AND BATCH ASTC -> BC RECOMPRESSOR (XT1 & BNTX)
+// ============================================================================
+
+#[allow(clippy::too_many_arguments)]
+pub fn encode_rgba_to_xt1_with_options(
+    base_img: &RgbaImage,
+    target_format: TextureFormat,
+    mip_count_override: Option<u32>,
+    generate_mips: bool,
+    apply_solidify: bool,
+    make_opaque: bool,
+    quality: EncodeQuality,
+    template_header: Option<&[u8]>,
+    nvtt_dll_path: Option<&Path>,
+) -> Vec<u8> {
+    let mut processed = if apply_solidify {
+        solidify_rgba_image(base_img, 0)
+    } else {
+        base_img.clone()
+    };
+    if make_opaque {
+        for p in processed.pixels_mut() {
+            p.0[3] = 255;
+        }
+    }
+
+    let max_mips = if let Some(explicit_mips) = mip_count_override {
+        explicit_mips.max(1)
+    } else if generate_mips {
+        (processed.width().max(processed.height()) as f32)
+            .log2()
+            .floor() as u32
+            + 1
+    } else {
+        1
+    };
+    let mip_images = generate_mip_chain(&processed, max_mips);
+    encode_mip_levels_to_xt1(&mip_images, target_format, quality, template_header, nvtt_dll_path)
+}
+
+/// Encode an explicit slice of pre-existing mip `RgbaImage` levels into a `.xt1` blob.
+/// Used by both `encode_rgba_to_xt1_with_options` and `BatchRecompressor` (which reuses existing mip levels).
+pub fn encode_mip_levels_to_xt1(
+    mip_images: &[RgbaImage],
+    target_format: TextureFormat,
+    quality: EncodeQuality,
+    template_header: Option<&[u8]>,
+    nvtt_dll_path: Option<&Path>,
+) -> Vec<u8> {
+    let base = &mip_images[0];
+    let mip_count = mip_images.len().max(1) as u32;
+    let enc_format = target_format;
+
+    let (_, bh) = enc_format.block_dimensions();
+    let hb0 = ((base.height() as usize) + bh - 1) / bh;
+    let blk_log2 = gob_swizzle::block_height_log2(hb0);
+
+    let layout_res = compute_xt1_layout(
+        base.width(),
+        base.height(),
+        1,
+        mip_count,
+        1,
+        blk_log2,
+        enc_format,
+        0,
+    );
+
+    let bpb = enc_format.bytes_per_block();
+    let mut payload = vec![0u8; layout_res.computed_image_size];
+    for (m, mip_info) in layout_res.mips.iter().enumerate() {
+        let linear = encode_linear_surface_with_quality(&mip_images[m], enc_format, quality, nvtt_dll_path);
+        let mut swizzled = vec![0u8; mip_info.slice_surface_size];
+        gob_swizzle::swizzle_volume(
+            &linear,
+            &mut swizzled,
+            mip_info.width_blocks,
+            mip_info.height_blocks,
+            1,
+            bpb,
+            mip_info.block_height,
+            1,
+            mip_info.pitch,
+        );
+        if mip_info.offset + swizzled.len() <= payload.len() {
+            payload[mip_info.offset..mip_info.offset + swizzled.len()].copy_from_slice(&swizzled);
+        }
+    }
+
+    let mut hdr = [0u8; 0x38];
+    if let Some(tpl) = template_header {
+        if tpl.len() >= 0x38 {
+            hdr.copy_from_slice(&tpl[0..0x38]);
+        }
+    } else {
+        hdr[0..4].copy_from_slice(b"XT1\0");
+        hdr[4..8].copy_from_slice(&0x01000101u32.to_le_bytes());
+        hdr[0x34..0x38].copy_from_slice(&0x00010007u32.to_le_bytes());
+    }
+    hdr[0..4].copy_from_slice(b"XT1\0");
+    hdr[0x08..0x10].copy_from_slice(&(payload.len() as u64).to_le_bytes());
+    hdr[0x10..0x14].copy_from_slice(&0x38u32.to_le_bytes());
+    let codec_tag: u16 = if enc_format == TextureFormat::AfL8Unorm {
+        0x6661
+    } else {
+        0
+    };
+    let mip_word = (mip_count & 0xFFFF) | ((codec_tag as u32) << 16);
+    hdr[0x14..0x18].copy_from_slice(&mip_word.to_le_bytes());
+    hdr[0x18..0x1C].copy_from_slice(&1u32.to_le_bytes()); // T_2D
+    hdr[0x1C..0x20].copy_from_slice(&enc_format.to_xt1_code().to_le_bytes());
+    hdr[0x20..0x24].copy_from_slice(&base.width().to_le_bytes());
+    hdr[0x24..0x28].copy_from_slice(&base.height().to_le_bytes());
+    hdr[0x28..0x2C].copy_from_slice(&1u32.to_le_bytes());
+    let prev_layout = u32::from_le_bytes(hdr[0x30..0x34].try_into().unwrap());
+    let new_layout = (prev_layout & !0x407u32) | blk_log2;
+    hdr[0x30..0x34].copy_from_slice(&new_layout.to_le_bytes());
+
+    let mut full = Vec::with_capacity(0x38 + payload.len());
+    full.extend_from_slice(&hdr);
+    full.extend_from_slice(&payload);
+    full
+}
+
+pub fn encode_rgba_to_dds_with_quality(
+    base_img: &RgbaImage,
+    target_format: TextureFormat,
+    mip_count_override: Option<u32>,
+    generate_mips: bool,
+    apply_solidify: bool,
+    make_opaque: bool,
+    quality: EncodeQuality,
+    nvtt_dll_path: Option<&Path>,
+) -> Vec<u8> {
+    let mut processed = if apply_solidify {
+        solidify_rgba_image(base_img, 0)
+    } else {
+        base_img.clone()
+    };
+    if make_opaque {
+        for p in processed.pixels_mut() {
+            p.0[3] = 255;
+        }
+    }
+
+    let max_mips = if let Some(explicit_mips) = mip_count_override {
+        explicit_mips.max(1)
+    } else if generate_mips {
+        (processed.width().max(processed.height()) as f32)
+            .log2()
+            .floor() as u32
+            + 1
+    } else {
+        1
+    };
+    let mip_images = generate_mip_chain(&processed, max_mips);
+    let mip_count = mip_images.len() as u32;
+
+    let mut payload = Vec::new();
+    for mip_img in &mip_images {
+        payload.extend_from_slice(&encode_linear_surface_with_quality(
+            mip_img,
+            target_format,
+            quality,
+            nvtt_dll_path,
+        ));
+    }
+    build_dds_file(
+        processed.width(),
+        processed.height(),
+        mip_count,
+        target_format,
+        &payload,
+    )
+}
+
+/// Losslessly deswizzle an `.xt1` texture (all mip levels, and all 6 faces for cubemaps) into a
+/// DX9/DX10 `.dds` file without decoding or re-encoding blocks (matching `XT1 Studio`'s `DdsExport.Build`).
+pub fn deswizzle_xt1_to_dds(xt1_bytes: &[u8]) -> Result<Vec<u8>> {
+    if xt1_bytes.len() < 0x38 || &xt1_bytes[0..4] != b"XT1\0" {
+        return Err(PgError::InvalidData("Invalid XT1 header".into()));
+    }
+    let mut r = BinReader::new(xt1_bytes, Endian::Little);
+    r.seek(0x08)?;
+    let stored_image_size = r.read_u64()?;
+    let header_size = r.read_u32()? as usize;
+    let mip_word = r.read_u32()?;
+    let mip_count = (mip_word & 0xFFFF).max(1);
+    let tex_type = r.read_u32()?;
+    let xt1_fmt = r.read_u32()?;
+    let width = r.read_u32()?;
+    let height = r.read_u32()?;
+    let depth = r.read_u32()?.max(1);
+    let _tex_flag = r.read_u32()?;
+    let layout_word = r.read_u32()?;
+    let format = TextureFormat::from_xt1_code(xt1_fmt);
+    if matches!(format, TextureFormat::Unknown(_)) {
+        return Err(PgError::InvalidData(format!("Unsupported XT1 format 0x{xt1_fmt:X} for DDS export")));
+    }
+
+    let layout = compute_xt1_layout(
+        width,
+        height,
+        depth,
+        mip_count,
+        tex_type,
+        layout_word,
+        format,
+        stored_image_size,
+    );
+    let payload = if header_size <= xt1_bytes.len() {
+        &xt1_bytes[header_size..]
+    } else {
+        &[]
+    };
+    let bpb = format.bytes_per_block();
+    let is_cube = tex_type == 3 || tex_type == 8;
+    let is_3d = tex_type == 2;
+    let face_count = if is_cube { 6 } else { 1 };
+
+    let mut dds_payload = Vec::new();
+    for face in 0..face_count {
+        let face_base = if is_cube { face * layout.face_stride } else { 0 };
+        for mip_info in &layout.mips {
+            let linear_len = mip_info.width_blocks
+                * mip_info.height_blocks
+                * (if is_3d { mip_info.slice_count } else { 1 })
+                * bpb;
+            let mut linear = vec![0u8; linear_len];
+            let mip_off = face_base + mip_info.offset;
+            if is_3d && mip_info.block_depth > 1 {
+                let total_surf = mip_info.slice_surface_size * mip_info.slice_count;
+                let mut surface = vec![0u8; total_surf];
+                if mip_off < payload.len() {
+                    let avail = (payload.len() - mip_off).min(total_surf);
+                    surface[..avail].copy_from_slice(&payload[mip_off..mip_off + avail]);
+                }
+                gob_swizzle::deswizzle_volume(
+                    &surface,
+                    &mut linear,
+                    mip_info.width_blocks,
+                    mip_info.height_blocks,
+                    mip_info.slice_count,
+                    bpb,
+                    mip_info.block_height,
+                    mip_info.block_depth,
+                    mip_info.pitch,
+                );
+            } else {
+                let slice_cnt = if is_3d { mip_info.slice_count } else { 1 };
+                let single_linear = mip_info.width_blocks * mip_info.height_blocks * bpb;
+                for s in 0..slice_cnt {
+                    let s_off = mip_off + s * mip_info.slice_surface_size;
+                    let mut surface = vec![0u8; mip_info.slice_surface_size];
+                    if s_off < payload.len() {
+                        let avail = (payload.len() - s_off).min(mip_info.slice_surface_size);
+                        surface[..avail].copy_from_slice(&payload[s_off..s_off + avail]);
+                    }
+                    gob_swizzle::deswizzle_volume(
+                        &surface,
+                        &mut linear[s * single_linear..(s + 1) * single_linear],
+                        mip_info.width_blocks,
+                        mip_info.height_blocks,
+                        1,
+                        bpb,
+                        mip_info.block_height,
+                        1,
+                        mip_info.pitch,
+                    );
+                }
+            }
+            dds_payload.extend_from_slice(&linear);
+        }
+    }
+
+    Ok(build_dds_file_ex(
+        width,
+        height,
+        if is_3d { depth } else { 1 },
+        layout.mips.len() as u32,
+        is_cube,
+        format,
+        &dds_payload,
+    ))
+}
+
+/// Losslessly deswizzle sub-texture `sub_index` from a Switch `.bntx` container into a multi-mip `.dds`.
+pub fn deswizzle_bntx_to_dds(bntx_bytes: &[u8], sub_index: usize) -> Result<Vec<u8>> {
+    let recs = parse_bntx_textures(bntx_bytes)?;
+    let tex = recs.get(sub_index).unwrap_or(&recs[0]);
+    let (bw, bh) = tex.format.block_dimensions();
+    let bpb = tex.format.bytes_per_block();
+    let bh_mip0 = 1usize << tex.block_height_log2;
+    let is_cube = tex.surface_dim == 3 || tex.array_length == 6;
+    let face_count = if is_cube { 6usize } else { 1usize };
+    let layer_stride = if face_count > 1 && (tex.image_size as usize) >= face_count {
+        (tex.image_size as usize) / face_count
+    } else {
+        0
+    };
+
+    let mut dds_payload = Vec::new();
+    for face in 0..face_count {
+        let face_base = face * layer_stride;
+        for (m, &mip_off) in tex.mip_offsets.iter().enumerate() {
+            let mip_w = (tex.width >> m).max(1) as usize;
+            let mip_h = (tex.height >> m).max(1) as usize;
+            let wb = (mip_w + bw - 1) / bw;
+            let hb = (mip_h + bh - 1) / bh;
+            let mip_bh = gob_swizzle::mip_block_height(hb, bh_mip0);
+            let pitch = align(wb * bpb, 64);
+            let surf_size = pitch * align(hb, mip_bh * 8);
+            let mut linear = vec![0u8; wb * hb * bpb];
+            let slice_off = mip_off + face_base;
+            if slice_off < bntx_bytes.len() {
+                let avail = (bntx_bytes.len() - slice_off).min(surf_size);
+                let mut surface = vec![0u8; surf_size];
+                surface[..avail].copy_from_slice(&bntx_bytes[slice_off..slice_off + avail]);
+                gob_swizzle::deswizzle_volume(&surface, &mut linear, wb, hb, 1, bpb, mip_bh, 1, pitch);
+            }
+            dds_payload.extend_from_slice(&linear);
+        }
+    }
+
+    Ok(build_dds_file_ex(
+        tex.width,
+        tex.height,
+        1,
+        tex.mip_offsets.len().max(1) as u32,
+        is_cube,
+        tex.format,
+        &dds_payload,
+    ))
+}
+
+/// Export any `.dds`, `.xt1`, `.bntx`, or `.gtx` texture blob into a lossless `.dds` file.
+pub fn export_texture_to_dds_lossless(blob: &[u8], sub_index: usize) -> Result<Vec<u8>> {
+    if blob.starts_with(b"DDS ") {
+        return Ok(blob.to_vec());
+    }
+    if blob.starts_with(b"XT1\0") {
+        return deswizzle_xt1_to_dds(blob);
+    }
+    if blob.starts_with(b"Gfx2") {
+        return convert_gtx_to_dds(blob);
+    }
+    if (blob.len() >= 4 && &blob[0..4] == b"BNTX")
+        || (blob.len() >= 84 && &blob[80..84] == b"BNTX")
+    {
+        return deswizzle_bntx_to_dds(blob, sub_index);
+    }
+    let (img, _, _) = decode_texture_mip_filtered(blob, 0, "RGBA", false)?;
+    Ok(encode_rgba8_to_dds(&img))
+}
+
+pub fn build_dds_file_ex(
+    width: u32,
+    height: u32,
+    depth: u32,
+    mip_count: u32,
+    is_cubemap: bool,
+    format: TextureFormat,
+    payload: &[u8],
+) -> Vec<u8> {
+    if !is_cubemap && depth <= 1 {
+        return build_dds_file(width, height, mip_count, format, payload);
+    }
+    let mut w = BinWriter::with_capacity(148 + payload.len(), Endian::Little);
+    w.write_bytes(b"DDS ");
+    w.write_u32(124);
+    let (bw, bh) = format.block_dimensions();
+    let is_block = bw > 1 || bh > 1;
+    let flags = 0x1
+        | 0x2
+        | 0x4
+        | 0x1000
+        | if is_block { 0x80000 } else { 0x8 }
+        | if mip_count > 1 { 0x20000 } else { 0 }
+        | if depth > 1 { 0x800000 } else { 0 };
+    w.write_u32(flags);
+    w.write_u32(height);
+    w.write_u32(width);
+
+    let pitch_or_linear = if is_block {
+        (((width as usize) + bw - 1) / bw)
+            * (((height as usize) + bh - 1) / bh)
+            * format.bytes_per_block()
+    } else {
+        (width as usize) * format.bytes_per_block()
+    };
+    w.write_u32(pitch_or_linear as u32);
+    w.write_u32(depth.max(1));
+    w.write_u32(mip_count.max(1));
+    for _ in 0..11 {
+        w.write_u32(0);
+    }
+
+    let dx10_code = match format {
+        TextureFormat::Bc6hUf16
+        | TextureFormat::Bc6hSf16
+        | TextureFormat::Bc7
+        | TextureFormat::Bc7Srgb
+        | TextureFormat::Astc(_, _, _)
+        | TextureFormat::Rgba16Float
+        | TextureFormat::Rg8Unorm
+        | TextureFormat::R8Unorm
+        | TextureFormat::AfL8Unorm => format.to_dxgi_format(),
+        _ => None,
+    };
+
+    w.write_u32(32);
+    if dx10_code.is_some() {
+        w.write_u32(0x4);
+        w.write_bytes(b"DX10");
+        for _ in 0..5 {
+            w.write_u32(0);
+        }
+    } else {
+        match format {
+            TextureFormat::Bc1 | TextureFormat::Bc1Srgb => {
+                w.write_u32(0x4);
+                w.write_bytes(b"DXT1");
+                for _ in 0..5 {
+                    w.write_u32(0);
+                }
+            }
+            TextureFormat::Bc2 | TextureFormat::Bc2Srgb => {
+                w.write_u32(0x4);
+                w.write_bytes(b"DXT3");
+                for _ in 0..5 {
+                    w.write_u32(0);
+                }
+            }
+            TextureFormat::Bc3 | TextureFormat::Bc3Srgb => {
+                w.write_u32(0x4);
+                w.write_bytes(b"DXT5");
+                for _ in 0..5 {
+                    w.write_u32(0);
+                }
+            }
+            TextureFormat::Bc4 => {
+                w.write_u32(0x4);
+                w.write_bytes(b"ATI1");
+                for _ in 0..5 {
+                    w.write_u32(0);
+                }
+            }
+            TextureFormat::Bc5 => {
+                w.write_u32(0x4);
+                w.write_bytes(b"ATI2");
+                for _ in 0..5 {
+                    w.write_u32(0);
+                }
+            }
+            _ => {
+                w.write_u32(0x41);
+                w.write_u32(0);
+                w.write_u32(32);
+                w.write_u32(0x0000_00FF);
+                w.write_u32(0x0000_FF00);
+                w.write_u32(0x00FF_0000);
+                w.write_u32(0xFF00_0000);
+            }
+        }
+    }
+
+    let caps1 = 0x1000
+        | if mip_count > 1 || is_cubemap { 0x8 } else { 0 }
+        | if mip_count > 1 { 0x400000 } else { 0 };
+    let caps2 = if is_cubemap {
+        0xFE00
+    } else if depth > 1 {
+        0x200000
+    } else {
+        0
+    };
+    w.write_u32(caps1);
+    w.write_u32(caps2);
+    for _ in 0..3 {
+        w.write_u32(0);
+    }
+
+    if let Some(dxgi) = dx10_code {
+        w.write_u32(dxgi);
+        w.write_u32(if depth > 1 { 4 } else { 3 });
+        w.write_u32(if is_cubemap { 0x4 } else { 0 });
+        w.write_u32(1);
+        w.write_u32(0);
+    }
+
+    w.write_bytes(payload);
+    w.into_inner()
+}
+
+/// Decode a specific `mip_index` and `layer_index` (animation slice or cubemap face) of any
+/// `.xt1`, `.bntx`, `.gtx`, or `.dds` blob, returning `(RgbaImage, mip_width, mip_height, layer_count_at_mip)`.
+pub fn decode_texture_layer_filtered(
+    blob: &[u8],
+    sub_index: usize,
+    mip_index: u32,
+    layer_index: u32,
+    channel: &str,
+    opaque: bool,
+) -> Result<(RgbaImage, u32, u32, u32)> {
+    if blob.len() < 16 {
+        return Err(PgError::InvalidData("Texture blob too short".into()));
+    }
+
+    if &blob[0..4] == b"XT1\0" {
+        if blob.len() < 0x38 {
+            return Err(PgError::InvalidData("Truncated XT1 header".into()));
+        }
+        let mut r = BinReader::new(blob, Endian::Little);
+        r.seek(0x08)?;
+        let stored_image_size = r.read_u64()?;
+        let header_size = r.read_u32()? as usize;
+        let mip_word = r.read_u32()?;
+        let mip_count = (mip_word & 0xFFFF).max(1);
+        let tex_type = r.read_u32()?;
+        let xt1_fmt = r.read_u32()?;
+        let width = r.read_u32()?;
+        let height = r.read_u32()?;
+        let depth = r.read_u32()?.max(1);
+        let _tex_flag = r.read_u32()?;
+        let layout_word = r.read_u32()?;
+        let format = TextureFormat::from_xt1_code(xt1_fmt);
+
+        let layout = compute_xt1_layout(
+            width,
+            height,
+            depth,
+            mip_count,
+            tex_type,
+            layout_word,
+            format,
+            stored_image_size,
+        );
+        let clamped_mip = (mip_index as usize).min(layout.mips.len().saturating_sub(1));
+        let mip_info = &layout.mips[clamped_mip];
+        let payload = if header_size <= blob.len() {
+            &blob[header_size..]
+        } else {
+            &[]
+        };
+
+        let is_cube = tex_type == 3 || tex_type == 8;
+        let is_3d = tex_type == 2;
+        let layer_count = if is_cube {
+            6
+        } else if is_3d {
+            mip_info.slice_count.max(1) as u32
+        } else {
+            1
+        };
+        let clamped_layer = (layer_index as usize).min((layer_count as usize).saturating_sub(1));
+        let bpb = format.bytes_per_block();
+        let single_slice_bytes = mip_info.width_blocks * mip_info.height_blocks * bpb;
+        let mut linear = vec![0u8; single_slice_bytes];
+
+        if is_3d && mip_info.block_depth > 1 {
+            let total_vol_bytes = single_slice_bytes * mip_info.slice_count;
+            let mut vol_linear = vec![0u8; total_vol_bytes];
+            let total_surf = mip_info.slice_surface_size * mip_info.slice_count;
+            let mut surface = vec![0u8; total_surf];
+            if mip_info.offset < payload.len() {
+                let avail = (payload.len() - mip_info.offset).min(total_surf);
+                surface[..avail].copy_from_slice(&payload[mip_info.offset..mip_info.offset + avail]);
+            }
+            gob_swizzle::deswizzle_volume(
+                &surface,
+                &mut vol_linear,
+                mip_info.width_blocks,
+                mip_info.height_blocks,
+                mip_info.slice_count,
+                bpb,
+                mip_info.block_height,
+                mip_info.block_depth,
+                mip_info.pitch,
+            );
+            let slice_start = clamped_layer * single_slice_bytes;
+            if slice_start + single_slice_bytes <= vol_linear.len() {
+                linear.copy_from_slice(&vol_linear[slice_start..slice_start + single_slice_bytes]);
+            }
+        } else {
+            let sub_offset = if is_cube {
+                clamped_layer * layout.face_stride + mip_info.offset
+            } else if is_3d {
+                mip_info.offset + clamped_layer * mip_info.slice_surface_size
+            } else {
+                mip_info.offset
+            };
+            if sub_offset < payload.len() {
+                let avail = (payload.len() - sub_offset).min(mip_info.slice_surface_size);
+                let mut surface = vec![0u8; mip_info.slice_surface_size];
+                surface[..avail].copy_from_slice(&payload[sub_offset..sub_offset + avail]);
+                gob_swizzle::deswizzle_volume(
+                    &surface,
+                    &mut linear,
+                    mip_info.width_blocks,
+                    mip_info.height_blocks,
+                    1,
+                    bpb,
+                    mip_info.block_height,
+                    1,
+                    mip_info.pitch,
+                );
+            }
+        }
+
+        let mut img = decode_linear_blocks_to_rgba8(&linear, mip_info.width, mip_info.height, format)?;
+        apply_channel_and_opaque_filter(&mut img, channel, opaque);
+        return Ok((img, mip_info.width, mip_info.height, layer_count));
+    }
+
+    if (blob.len() >= 4 && &blob[0..4] == b"BNTX")
+        || (blob.len() >= 84 && &blob[80..84] == b"BNTX")
+    {
+        return decode_bntx_subtexture_layer_mip_filtered(
+            blob,
+            sub_index,
+            mip_index,
+            layer_index,
+            channel,
+            opaque,
+        );
+    }
+
+    let meta = inspect_texture_blob(blob).ok();
+    let layer_count = meta.as_ref().map(|m| m.layer_count.max(1)).unwrap_or(1);
+    let (img, w, h) = decode_texture_mip_filtered(blob, mip_index, channel, opaque)?;
+    Ok((img, w, h, layer_count))
+}
+
+fn apply_channel_and_opaque_filter(img: &mut RgbaImage, channel: &str, opaque: bool) {
+    if channel != "RGBA" || opaque {
+        for p in img.pixels_mut() {
+            let [r, g, b, a] = p.0;
+            p.0 = match channel {
+                "RGB" => [r, g, b, 255],
+                "R" => [r, r, r, 255],
+                "G" => [g, g, g, 255],
+                "B" => [b, b, b, 255],
+                "A" => [a, a, a, 255],
+                _ => [r, g, b, if opaque { 255 } else { a }],
+            };
+        }
+    }
+}
+
+/// Compute scene-referred auto-exposure scale factor matching `Xt1.Core/Imaging/AutoExposure.cs`.
+pub fn compute_auto_exposure_scale(faces: &[RgbaImage]) -> f32 {
+    const MIDDLE_GREY: f64 = 0.18;
+    const MIN_LUM: f64 = 1e-4;
+    const MIN_SCALE: f32 = 1.0 / 32.0;
+    const MAX_SCALE: f32 = 32.0;
+
+    let mut log_sum = 0.0f64;
+    let mut count = 0u64;
+    for face in faces {
+        for p in face.pixels() {
+            let r = (p.0[0] as f64) / 255.0;
+            let g = (p.0[1] as f64) / 255.0;
+            let b = (p.0[2] as f64) / 255.0;
+            let lum = (0.2126 * r + 0.7152 * g + 0.0722 * b).max(MIN_LUM);
+            log_sum += lum.ln();
+            count += 1;
+        }
+    }
+    if count == 0 {
+        return 1.0;
+    }
+    let log_avg = log_sum / (count as f64);
+    let scale = (MIDDLE_GREY / log_avg.exp()) as f32;
+    if scale.is_nan() || scale.is_infinite() {
+        1.0
+    } else {
+        scale.clamp(MIN_SCALE, MAX_SCALE)
+    }
+}
+
+/// Decode all 6 faces (`+X, -X, +Y, -Y, +Z, -Z`) of a cubemap at `mip_index`, returning
+/// `(six_face_images, auto_exposure_scale)`.
+pub fn decode_cubemap_six_faces(
+    blob: &[u8],
+    sub_index: usize,
+    mip_index: u32,
+    opaque: bool,
+) -> Result<(Vec<RgbaImage>, f32)> {
+    let mut faces = Vec::with_capacity(6);
+    for face_idx in 0..6 {
+        let (img, _, _, _) =
+            decode_texture_layer_filtered(blob, sub_index, mip_index, face_idx, "RGBA", opaque)?;
+        faces.push(img);
+    }
+    let scale = compute_auto_exposure_scale(&faces);
+    Ok((faces, scale))
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize)]
+pub struct AstcRecompressConfig {
+    pub opaque_bc7: bool,
+    pub alpha_bc7: bool,
+    pub opaque_quality: EncodeQuality,
+    pub alpha_quality: EncodeQuality,
+    pub downscale: bool,
+    pub skip_downscale_without_mips: bool,
+}
+
+/// Recompress an `.xt1` or `.bntx` texture blob from `ASTC` to `BC1`/`BC3`/`BC7` in place,
+/// reusing existing mip levels and optionally dropping mip 0 (or box-filtering single-mip images)
+/// when `cfg.downscale` is enabled. Returns `Ok(Some((new_blob, log_msg)))` if converted, or `Ok(None)` if skipped.
+pub fn recompress_astc_texture_blob_to_bc(
+    blob: &[u8],
+    sub_index: usize,
+    cfg: &AstcRecompressConfig,
+    nvtt_dll_path: Option<&Path>,
+) -> Result<Option<(Vec<u8>, String)>> {
+    if blob.starts_with(b"XT1\0") {
+        let meta = inspect_texture_blob(blob)?;
+        let TextureFormat::Astc(_, _, is_srgb) = meta.format else {
+            return Ok(None);
+        };
+        if meta.dimension != TextureDimension::Tex2D {
+            return Ok(None);
+        }
+        let mips = meta.mip_count.max(1);
+        let mut levels = Vec::with_capacity(mips as usize);
+        for m in 0..mips {
+            let (img, _, _) = decode_texture_mip_filtered(blob, m, "RGBA", false)?;
+            levels.push(img);
+        }
+        let has_alpha = levels[0].pixels().any(|p| p.0[3] < 255);
+        let target_fmt = if has_alpha {
+            if cfg.alpha_bc7 {
+                if is_srgb { TextureFormat::Bc7Srgb } else { TextureFormat::Bc7 }
+            } else if is_srgb {
+                TextureFormat::Bc3Srgb
+            } else {
+                TextureFormat::Bc3
+            }
+        } else if cfg.opaque_bc7 {
+            if is_srgb { TextureFormat::Bc7Srgb } else { TextureFormat::Bc7 }
+        } else if is_srgb {
+            TextureFormat::Bc1Srgb
+        } else {
+            TextureFormat::Bc1
+        };
+        let quality = if has_alpha {
+            cfg.alpha_quality
+        } else {
+            cfg.opaque_quality
+        };
+
+        let working: Vec<RgbaImage> = if cfg.downscale {
+            if levels.len() > 1 {
+                levels[1..].to_vec()
+            } else if !cfg.skip_downscale_without_mips {
+                let chain = generate_mip_chain(&levels[0], 2);
+                vec![chain.into_iter().last().unwrap()]
+            } else {
+                levels
+            }
+        } else {
+            levels
+        };
+
+        let new_xt1 = encode_mip_levels_to_xt1(&working, target_fmt, quality, Some(blob), nvtt_dll_path);
+        let msg = format!(
+            "{} -> {} ({} quality, {} mip(s))",
+            meta.format.display_name(),
+            target_fmt.display_name(),
+            quality.label(),
+            working.len()
+        );
+        return Ok(Some((new_xt1, msg)));
+    }
+
+    if (blob.len() >= 4 && &blob[0..4] == b"BNTX")
+        || (blob.len() >= 84 && &blob[80..84] == b"BNTX")
+    {
+        let recs = parse_bntx_textures(blob)?;
+        let idx = sub_index.min(recs.len().saturating_sub(1));
+        let rec = &recs[idx];
+        let TextureFormat::Astc(_, _, is_srgb) = rec.format else {
+            return Ok(None);
+        };
+        if rec.surface_dim == 3 || rec.depth > 1 || rec.array_length > 1 {
+            return Ok(None);
+        }
+        let mips = rec.mip_offsets.len().max(1);
+        let mut levels = Vec::with_capacity(mips);
+        for m in 0..mips {
+            let (img, _, _) =
+                decode_bntx_subtexture_mip_filtered(blob, idx, m as u32, "RGBA", false)?;
+            levels.push(img);
+        }
+        let has_alpha = levels[0].pixels().any(|p| p.0[3] < 255);
+        let target_fmt = if has_alpha {
+            if cfg.alpha_bc7 {
+                if is_srgb { TextureFormat::Bc7Srgb } else { TextureFormat::Bc7 }
+            } else if is_srgb {
+                TextureFormat::Bc3Srgb
+            } else {
+                TextureFormat::Bc3
+            }
+        } else if cfg.opaque_bc7 {
+            if is_srgb { TextureFormat::Bc7Srgb } else { TextureFormat::Bc7 }
+        } else if is_srgb {
+            TextureFormat::Bc1Srgb
+        } else {
+            TextureFormat::Bc1
+        };
+        let quality = if has_alpha {
+            cfg.alpha_quality
+        } else {
+            cfg.opaque_quality
+        };
+
+        let working: Vec<RgbaImage> = if cfg.downscale {
+            if levels.len() > 1 {
+                levels[1..].to_vec()
+            } else if !cfg.skip_downscale_without_mips {
+                let chain = generate_mip_chain(&levels[0], 2);
+                vec![chain.into_iter().last().unwrap()]
+            } else {
+                levels
+            }
+        } else {
+            levels
+        };
+
+        let base_w = working[0].width();
+        let base_h = working[0].height();
+        let (bw, bh) = target_fmt.block_dimensions();
+        let bpb = target_fmt.bytes_per_block();
+        let hb0 = ((base_h as usize) + bh - 1) / bh;
+        let bh_log2 = gob_swizzle::block_height_log2(hb0);
+        let bh_mip0 = 1usize << bh_log2;
+
+        let mut swizzled_mips = Vec::with_capacity(working.len());
+        for mip_img in &working {
+            let wb = ((mip_img.width() as usize) + bw - 1) / bw;
+            let hb = ((mip_img.height() as usize) + bh - 1) / bh;
+            let mip_bh = gob_swizzle::mip_block_height(hb, bh_mip0);
+            let pitch = align(wb * bpb, 64);
+            let surf_size = pitch * align(hb, mip_bh * 8);
+            let linear =
+                encode_linear_surface_with_quality(mip_img, target_fmt, quality, nvtt_dll_path);
+            let mut swizzled = vec![0u8; surf_size];
+            gob_swizzle::swizzle_volume(&linear, &mut swizzled, wb, hb, 1, bpb, mip_bh, 1, pitch);
+            swizzled_mips.push(swizzled);
+        }
+
+        let new_bntx = rebuild_bntx_container_subtexture(
+            blob,
+            idx,
+            target_fmt,
+            base_w,
+            base_h,
+            bh_log2,
+            &swizzled_mips,
+        )?;
+        let msg = format!(
+            "{} ({}) -> {} ({} quality, {} mip(s))",
+            rec.name,
+            rec.format.display_name(),
+            target_fmt.display_name(),
+            quality.label(),
+            working.len()
+        );
+        return Ok(Some((new_bntx, msg)));
+    }
+
+    Ok(None)
 }

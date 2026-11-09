@@ -24,6 +24,7 @@ export interface StudioSettingsState {
   hideUnsupported: boolean;
   fileSortCol: FileSortCol;
   fileSortAsc: boolean;
+  assetBrowserZoom: number;
   // last_dir is owned by file browser; passed in for persistence
 }
 
@@ -50,6 +51,7 @@ export interface StudioSettingsApi extends StudioSettingsState {
   setHideUnsupported: React.Dispatch<React.SetStateAction<boolean>>;
   setFileSortCol: React.Dispatch<React.SetStateAction<FileSortCol>>;
   setFileSortAsc: React.Dispatch<React.SetStateAction<boolean>>;
+  setAssetBrowserZoom: React.Dispatch<React.SetStateAction<number>>;
   buildStudioSettingsPayload: (
     currentDir: string,
     overrides?: Partial<StudioSettings>
@@ -106,6 +108,7 @@ export function useStudioSettings(): StudioSettingsApi {
   const [hideUnsupported, setHideUnsupported] = useState(true);
   const [fileSortCol, setFileSortCol] = useState<FileSortCol>("name");
   const [fileSortAsc, setFileSortAsc] = useState(true);
+  const [assetBrowserZoom, setAssetBrowserZoom] = useState<number>(0);
 
   // Keep a ref to the latest values for the debounced save so we do not
   // re-subscribe the effect on every keystroke of a path field.
@@ -130,6 +133,7 @@ export function useStudioSettings(): StudioSettingsApi {
     wmbNormalsView,
     wmbSkeletonOverlay,
     wmbGridVisible,
+    assetBrowserZoom,
   });
   stateRef.current = {
     theme,
@@ -152,6 +156,7 @@ export function useStudioSettings(): StudioSettingsApi {
     wmbNormalsView,
     wmbSkeletonOverlay,
     wmbGridVisible,
+    assetBrowserZoom,
   };
 
   const applyLoadedSettings = useCallback((s: StudioSettings) => {
@@ -186,6 +191,7 @@ export function useStudioSettings(): StudioSettingsApi {
     if (typeof s.wmb_normals_view === "boolean") setWmbNormalsView(s.wmb_normals_view);
     if (typeof s.wmb_skeleton_overlay === "boolean") setWmbSkeletonOverlay(s.wmb_skeleton_overlay);
     if (typeof s.wmb_grid_visible === "boolean") setWmbGridVisible(s.wmb_grid_visible);
+    if (typeof s.asset_browser_zoom === "number" && s.asset_browser_zoom >= 0 && s.asset_browser_zoom <= 4) setAssetBrowserZoom(s.asset_browser_zoom);
   }, []);
 
   const markLoaded = useCallback(() => setSettingsLoaded(true), []);
@@ -219,6 +225,7 @@ export function useStudioSettings(): StudioSettingsApi {
         wmb_normals_view: s.wmbNormalsView,
         wmb_skeleton_overlay: s.wmbSkeletonOverlay,
         wmb_grid_visible: s.wmbGridVisible,
+        asset_browser_zoom: s.assetBrowserZoom,
         ...overrides,
       };
     },
@@ -251,6 +258,7 @@ export function useStudioSettings(): StudioSettingsApi {
     hideUnsupported,
     fileSortCol,
     fileSortAsc,
+    assetBrowserZoom,
     setTheme,
     setLeftWidth,
     setRightWidth,
@@ -271,6 +279,7 @@ export function useStudioSettings(): StudioSettingsApi {
     setHideUnsupported,
     setFileSortCol,
     setFileSortAsc,
+    setAssetBrowserZoom,
     buildStudioSettingsPayload,
     applyLoadedSettings,
     markLoaded,

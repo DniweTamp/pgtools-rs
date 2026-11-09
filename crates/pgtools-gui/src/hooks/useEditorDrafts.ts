@@ -19,18 +19,24 @@ export interface EditorDraftsApi {
   setFlagsDraft: React.Dispatch<React.SetStateAction<string>>;
   mipIndex: number;
   setMipIndex: React.Dispatch<React.SetStateAction<number>>;
+  layerIndex: number;
+  setLayerIndex: React.Dispatch<React.SetStateAction<number>>;
   channelMode: string;
   setChannelMode: React.Dispatch<React.SetStateAction<string>>;
   opaquePreview: boolean;
   setOpaquePreview: React.Dispatch<React.SetStateAction<boolean>>;
   texEncodeFormat: string;
   setTexEncodeFormat: React.Dispatch<React.SetStateAction<string>>;
+  texQuality: string;
+  setTexQuality: React.Dispatch<React.SetStateAction<string>>;
   texGenerateMips: boolean;
   setTexGenerateMips: React.Dispatch<React.SetStateAction<boolean>>;
   texSolidify: boolean;
   setTexSolidify: React.Dispatch<React.SetStateAction<boolean>>;
   texMakeOpaque: boolean;
   setTexMakeOpaque: React.Dispatch<React.SetStateAction<boolean>>;
+  texSyncFlags: boolean;
+  setTexSyncFlags: React.Dispatch<React.SetStateAction<boolean>>;
   zoom: number;
   setZoom: React.Dispatch<React.SetStateAction<number>>;
   pan: { x: number; y: number };
@@ -102,12 +108,15 @@ export function useEditorDrafts(): EditorDraftsApi {
   const [hashDraft, setHashDraft] = useState("");
   const [flagsDraft, setFlagsDraft] = useState("");
   const [mipIndex, setMipIndex] = useState(0);
+  const [layerIndex, setLayerIndex] = useState(0);
   const [channelMode, setChannelMode] = useState("RGBA");
   const [opaquePreview, setOpaquePreview] = useState(false);
   const [texEncodeFormat, setTexEncodeFormat] = useState("Auto");
+  const [texQuality, setTexQuality] = useState("Normal");
   const [texGenerateMips, setTexGenerateMips] = useState(true);
   const [texSolidify, setTexSolidify] = useState(true);
   const [texMakeOpaque, setTexMakeOpaque] = useState(false);
+  const [texSyncFlags, setTexSyncFlags] = useState(true);
   const [zoom, setZoom] = useState(1.0);
   const [pan, setPan] = useState({ x: 0, y: 0 });
   const [isPanning, setIsPanning] = useState(false);
@@ -251,18 +260,24 @@ export function useEditorDrafts(): EditorDraftsApi {
     setFlagsDraft,
     mipIndex,
     setMipIndex,
+    layerIndex,
+    setLayerIndex,
     channelMode,
     setChannelMode,
     opaquePreview,
     setOpaquePreview,
     texEncodeFormat,
     setTexEncodeFormat,
+    texQuality,
+    setTexQuality,
     texGenerateMips,
     setTexGenerateMips,
     texSolidify,
     setTexSolidify,
     texMakeOpaque,
     setTexMakeOpaque,
+    texSyncFlags,
+    setTexSyncFlags,
     zoom,
     setZoom,
     pan,

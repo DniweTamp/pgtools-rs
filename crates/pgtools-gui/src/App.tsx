@@ -31,6 +31,12 @@ import {
   getBxmNodeByPath,
 } from "./bxm/xml";
 import { TextureImportModal } from "./editors/TextureEditor";
+import {
+  BatchRecompressModal,
+  BatchReplaceModal,
+  ExportTexturesModal,
+  NewBankModal,
+} from "./modals/TextureBatchModals";
 import { createMenuBuilders } from "./menus/contextMenus";
 import {
   IconCheck,
@@ -83,6 +89,7 @@ export default function App() {
     hideUnsupported,
     fileSortCol,
     fileSortAsc,
+    assetBrowserZoom,
     setTheme,
     setLeftWidth,
     setRightWidth,
@@ -103,6 +110,7 @@ export default function App() {
     setHideUnsupported,
     setFileSortCol,
     setFileSortAsc,
+    setAssetBrowserZoom,
     buildStudioSettingsPayload,
     applyLoadedSettings,
     markLoaded,
@@ -111,9 +119,14 @@ export default function App() {
   const [draggingSplit, setDraggingSplit] = useState<"left" | "right" | "left-row" | null>(null);
   const leftColRef = useRef<HTMLDivElement | null>(null);
   const assetBrowserCardRef = useRef<HTMLDivElement | null>(null);
+  const assetSearchInputRef = useRef<HTMLInputElement | null>(null);
 
   const [wmbDocGeneration, setWmbDocGeneration] = useState<number>(0);
   const [coreDatModalOpen, setCoreDatModalOpen] = useState<boolean>(false);
+  const [batchReplaceNodeId, setBatchReplaceNodeId] = useState<string | null>(null);
+  const [batchRecompressOpen, setBatchRecompressOpen] = useState<boolean>(false);
+  const [exportFolderModalOpen, setExportFolderModalOpen] = useState<boolean>(false);
+  const [newBankModalOpen, setNewBankModalOpen] = useState<boolean>(false);
   const [pkzCompModal, setPkzCompModal] = useState<PkzCompressionModalState | null>(null);
   const [pkzConflictModal, setPkzConflictModal] = useState<PkzConflictModalState | null>(null);
   const [oodleValidation, setOodleValidation] = useState<OodleValidationReport | null>(null);
@@ -204,18 +217,24 @@ export default function App() {
     setFlagsDraft,
     mipIndex,
     setMipIndex,
+    layerIndex,
+    setLayerIndex,
     channelMode,
     setChannelMode,
     opaquePreview,
     setOpaquePreview,
     texEncodeFormat,
     setTexEncodeFormat,
+    texQuality,
+    setTexQuality,
     texGenerateMips,
     setTexGenerateMips,
     texSolidify,
     setTexSolidify,
     texMakeOpaque,
     setTexMakeOpaque,
+    texSyncFlags,
+    setTexSyncFlags,
     zoom,
     setZoom,
     pan,
@@ -447,6 +466,7 @@ export default function App() {
     wmbNormalsView,
     wmbSkeletonOverlay,
     wmbGridVisible,
+    assetBrowserZoom,
   ]);
 
   const shortcutHandlersRef = useRef<{
@@ -740,6 +760,7 @@ export default function App() {
       setWmbDocGeneration((g) => g + 1);
       setExpandedNodes(nextExpanded);
       setMipIndex(0);
+      setLayerIndex(0);
       await selectAndInspectNode(
         defaultTargetId,
         0,
@@ -806,14 +827,20 @@ export default function App() {
     channel = channelMode,
     opaque = opaquePreview,
     b2Override: boolean | null = wmbB2Override,
-    docLabel?: string
+    docLabel?: string,
+    layer = layerIndex
   ) {
     const reqSeq = ++inspectSeqRef.current;
+    if (nodeId !== selectedNodeId) {
+      setLayerIndex(0);
+      layer = 0;
+    }
     setSelectedNodeId(nodeId);
     try {
       const res = await invoke<NodeInspectPayload>("inspect_asset_node", {
         nodeId,
         mipIndex: mip,
+        layerIndex: layer,
         channel,
         opaque,
         b2Override,
@@ -1043,6 +1070,10 @@ export default function App() {
     redo: () => {
       void handleRedo();
     },
+    focusSearch: () => {
+      assetSearchInputRef.current?.focus();
+      assetSearchInputRef.current?.select();
+    },
     selectAllPkz: () => {
       if (nodePayload?.format === "PKZ" && Array.isArray(nodePayload.entries)) {
         setPkzSelectedIndices(nodePayload.entries.map((e: any) => e.index));
@@ -1145,9 +1176,11 @@ export default function App() {
     try {
       const fullPayload = {
         encode_format: texEncodeFormat,
+        quality: texQuality,
         generate_mips: texGenerateMips,
         solidify: texSolidify,
         make_opaque: texMakeOpaque,
+        sync_flags: texSyncFlags,
         ...payload,
       };
       const updated = await invoke<DocumentOutline>("mutate_texture_node", {
@@ -1185,30 +1218,44 @@ export default function App() {
       return;
     }
     const fileName = path.split(/[\\/]/).pop() || path;
+    const defaultStem = (path.split(/[\\/]/).pop() || "")
+      .replace(/\.[^.]+$/, "")
+      .replace(/^tex\d+_0x[0-9a-fA-F]+$/i, "");
     setTexModalState({
       nodeId,
       action,
       path,
       fileName,
       encodeFormat: action === "add_texture" && texEncodeFormat === "Auto" ? "BC3_UNORM" : texEncodeFormat,
+      quality: texQuality,
       generateMips: texGenerateMips,
       solidify: texSolidify,
       makeOpaque: texMakeOpaque,
+      syncFlags: texSyncFlags,
+      textureName: action === "add_texture" ? defaultStem : undefined,
     });
   }
 
   async function handleTextureExport(
     nodeId: string,
-    scope: "single" | "bank",
+    scope: "single" | "bank" | "container",
     format: "png" | "dds" | "raw"
   ) {
     setContextMenu(null);
     try {
       if (scope === "single") {
-        const ext = format === "png" ? "png" : format === "dds" ? "dds" : "bin";
+        const rawExt = (activeTexture?.container_ext || ".xt1").replace(/^\./, "");
+        const ext = format === "png" ? "png" : format === "dds" ? "dds" : rawExt;
+        const hashSuffix =
+          activeTexture?.has_crc32_flag && activeTexture?.texture_id_hex
+            ? `_${activeTexture.texture_id_hex}`
+            : "";
+        const defName = activeTexture
+          ? `tex${activeTexture.index}${hashSuffix}.${ext}`
+          : `texture.${ext}`;
         const dest = await invoke<string | null>("save_file_dialog", {
           title: `Export Texture (.${ext})`,
-          defaultName: `texture.${ext}`,
+          defaultName: defName,
         });
         if (!dest) return;
         const msg = await invoke<string>("export_texture_action", {
@@ -1467,6 +1514,7 @@ export default function App() {
 
   const { buildAssetNodeContextMenu, buildFileBrowserContextMenu } = createMenuBuilders(
     {
+      activeTexture,
       activeWmb,
       wmbMatDraft,
       wmb3MatDraft,
@@ -1480,6 +1528,7 @@ export default function App() {
       runContainerMutation,
       promptAndRunTextureImport,
       handleTextureExport,
+      openBatchReplaceModal: (targetNodeId: string) => setBatchReplaceNodeId(targetNodeId),
       runTextureMutation,
       runClothMutation,
       openPkzCompressionModal,
@@ -1568,6 +1617,15 @@ export default function App() {
               </button>
               <button className="context-menu-item" onClick={handleMenuOpenFolder}>
                 <span>Open Folder...</span>
+              </button>
+              <button
+                className="context-menu-item"
+                onClick={() => {
+                  setActiveTopMenu(null);
+                  setNewBankModalOpen(true);
+                }}
+              >
+                <span>New empty bank...</span>
               </button>
               <div
                 className="context-menu-item"
@@ -1660,6 +1718,24 @@ export default function App() {
                 }}
               >
                 <span>Export all textures in bank to DDS...</span>
+              </button>
+              <button
+                className="context-menu-item"
+                onClick={() => {
+                  setActiveTopMenu(null);
+                  setExportFolderModalOpen(true);
+                }}
+              >
+                <span>Export textures from folder...</span>
+              </button>
+              <button
+                className="context-menu-item"
+                onClick={() => {
+                  setActiveTopMenu(null);
+                  setBatchRecompressOpen(true);
+                }}
+              >
+                <span>Batch recompress (ASTC to BC)...</span>
               </button>
               <div className="context-menu-sep" />
               <button
@@ -1888,16 +1964,22 @@ export default function App() {
         <div className="left-column" ref={leftColRef} style={{ width: leftWidth }}>
           <AssetBrowserPanel
             cardRef={assetBrowserCardRef}
+            searchInputRef={assetSearchInputRef}
             outline={outline}
             expandedNodes={expandedNodes}
             selectedNodeId={selectedNodeId}
             assetSearch={assetSearch}
             pointerDrag={pointerDrag}
             assetRatio={assetRatio}
+            zoomLevel={assetBrowserZoom}
+            docGeneration={wmbDocGeneration}
+            onChangeZoomLevel={setAssetBrowserZoom}
             onSearchChange={setAssetSearch}
             onToggleExpand={(nodeId) =>
               setExpandedNodes((p) => ({ ...p, [nodeId]: !p[nodeId] }))
             }
+            onExpandAll={handleExpandAll}
+            onCollapseAll={handleCollapseAll}
             onSelectNode={(nodeId) => void selectAndInspectNode(nodeId)}
             onContextMenu={(e, nodeId, kind) => {
               setHoverSubmenuIdx(null);
@@ -2028,6 +2110,7 @@ export default function App() {
             activeTexture,
             activeWmb,
             outline,
+            assetSearch,
           }}
           drafts={drafts}
           meshUi={meshUi}
@@ -2153,16 +2236,65 @@ export default function App() {
           setTexModalState={setTexModalState}
           activeTexture={activeTexture}
           setTexEncodeFormat={setTexEncodeFormat}
+          setTexQuality={setTexQuality}
           setTexGenerateMips={setTexGenerateMips}
           setTexSolidify={setTexSolidify}
           setTexMakeOpaque={setTexMakeOpaque}
+          setTexSyncFlags={setTexSyncFlags}
           runTextureMutation={runTextureMutation}
         />
       )}
 
+      {batchReplaceNodeId && (
+        <BatchReplaceModal
+          nodeId={batchReplaceNodeId}
+          initialFolder={currentDir}
+          onClose={() => setBatchReplaceNodeId(null)}
+          onRunReplace={async (targetNodeId, folder, quality, solidify, syncFlags) => {
+            await runTextureMutation(targetNodeId, "batch_replace_folder", {
+              folder,
+              quality,
+              solidify,
+              sync_flags: syncFlags,
+            });
+          }}
+        />
+      )}
 
+      {batchRecompressOpen && (
+        <BatchRecompressModal
+          hasOpenDocument={Boolean(outline)}
+          defaultFolder={currentDir}
+          onClose={() => setBatchRecompressOpen(false)}
+          onOutlineUpdated={(updated, statusMsg) => {
+            setOutline(updated);
+            setWmbDocGeneration((g) => g + 1);
+            void selectAndInspectNode(selectedNodeId);
+            setStatusLeft(statusMsg);
+          }}
+        />
+      )}
 
+      {exportFolderModalOpen && (
+        <ExportTexturesModal
+          defaultSourceFolder={currentDir}
+          onClose={() => setExportFolderModalOpen(false)}
+        />
+      )}
 
+      {newBankModalOpen && (
+        <NewBankModal
+          onClose={() => setNewBankModalOpen(false)}
+          onCreated={(opened) => {
+            setOutline(opened);
+            const { nextExpanded, defaultTargetId } = expandForOpen(opened);
+            setExpandedNodes(nextExpanded);
+            void selectAndInspectNode(defaultTargetId);
+            loadDirectory(currentDirRef.current);
+          }}
+          onStatus={setStatusLeft}
+        />
+      )}
 
       {/* PKZ Compression Type & Level Modal (matching PKZ Explorer CompressionDialog) */}
       {pkzCompModal && (

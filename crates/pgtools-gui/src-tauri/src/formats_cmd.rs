@@ -185,6 +185,7 @@ pub(crate) fn serialize_csv_table(headers: &[String], rows: &[Vec<String>]) -> V
 pub fn inspect_asset_node(
     node_id: String,
     mip_index: Option<u32>,
+    layer_index: Option<u32>,
     channel: Option<String>,
     opaque: Option<bool>,
     b2_override: Option<bool>,
@@ -199,6 +200,8 @@ pub fn inspect_asset_node(
         .and_then(|s| s.to_str())
         .unwrap_or("document");
     let oodle_path_opt = sess.settings.oodle_path();
+    let nvtt_path_opt = sess.settings.nvtt_path();
+    let req_layer = layer_index.unwrap_or(0);
 
     let (sub_name, sub_bytes, sub_wtp, leaf) = resolve_subblob(snap, &node_id, oodle_path_opt)?;
     let display_name = if sub_name == "root" {
@@ -218,15 +221,17 @@ pub fn inspect_asset_node(
         let view = build_texture_node_view(
             &node_id,
             tex_idx,
-            &format!("{doc_name} / {display_name} / 2D"),
+            &format!("{doc_name} / {display_name}"),
             &entry.data,
             entry.flags,
             entry.texture_id,
             &entry.extension,
             wtb.game_profile,
             mip_index.unwrap_or(0),
+            req_layer,
             channel.as_deref().unwrap_or("RGBA"),
             opaque.unwrap_or(false),
+            nvtt_path_opt,
         );
         return Ok(serde_json::json!({
             "view_type": "TEXTURE",
@@ -244,15 +249,17 @@ pub fn inspect_asset_node(
         let view = build_texture_node_view(
             &node_id,
             0,
-            &format!("{doc_name} / 2D"),
+            &format!("{doc_name}"),
             &sub_bytes,
             0,
             None,
             &format!(".{}", tag.to_ascii_lowercase()),
             profile,
             mip_index.unwrap_or(0),
+            req_layer,
             channel.as_deref().unwrap_or("RGBA"),
             opaque.unwrap_or(false),
+            nvtt_path_opt,
         );
         return Ok(serde_json::json!({
             "view_type": "TEXTURE",
@@ -272,15 +279,17 @@ pub fn inspect_asset_node(
             let view = build_texture_node_view(
                 &first_id,
                 0,
-                &format!("{doc_name} / {display_name} / 2D"),
+                &format!("{doc_name} / {display_name}"),
                 &e.data,
                 e.flags,
                 e.texture_id,
                 &e.extension,
                 wtb.game_profile,
                 mip_index.unwrap_or(0),
+                req_layer,
                 channel.as_deref().unwrap_or("RGBA"),
                 opaque.unwrap_or(false),
+                nvtt_path_opt,
             );
             return Ok(serde_json::json!({
                 "view_type": "TEXTURE",
