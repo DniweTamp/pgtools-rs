@@ -7,6 +7,7 @@ export interface AssetBrowserPanelProps {
   outline: { tree: AssetTreeNode[]; file_name?: string; dirty?: boolean } | null;
   expandedNodes: Record<string, boolean>;
   selectedNodeId: string;
+  selectedNodeIds?: string[];
   assetSearch: string;
   pointerDrag: PointerDragState | null;
   assetRatio: number;
@@ -18,7 +19,7 @@ export interface AssetBrowserPanelProps {
   onToggleExpand: (nodeId: string) => void;
   onExpandAll: () => void;
   onCollapseAll: () => void;
-  onSelectNode: (nodeId: string) => void;
+  onSelectNode: (nodeId: string, e?: React.MouseEvent) => void;
   onContextMenu: (e: React.MouseEvent, nodeId: string, kind: string) => void;
   onPointerDownNode: (e: React.PointerEvent, node: AssetTreeNode) => void;
   cardRef?: React.RefObject<HTMLDivElement | null>;
@@ -76,6 +77,7 @@ export function AssetBrowserPanel({
   outline,
   expandedNodes,
   selectedNodeId,
+  selectedNodeIds,
   assetSearch,
   pointerDrag,
   assetRatio,
@@ -147,8 +149,14 @@ export function AssetBrowserPanel({
     return nodes.map((node) => {
       const hasChildren = node.children && node.children.length > 0;
       const isExpanded = !!expandedNodes[node.id];
-      const isSelected = selectedNodeId === node.id;
-      const canDragNode = node.id !== "root" && !isVirtualSubNode(node.id);
+      const isSelected =
+        selectedNodeId === node.id ||
+        Boolean(selectedNodeIds && selectedNodeIds.includes(node.id));
+      const canDragNode =
+        node.id !== "root" &&
+        (!isVirtualSubNode(node.id) ||
+          node.kind === "UVD_GROUP" ||
+          node.kind === "UVD_ITEM");
       const isDragOverBefore =
         pointerDrag?.active &&
         pointerDrag.kind === "asset" &&
@@ -181,14 +189,21 @@ export function AssetBrowserPanel({
               isDragOverBefore ? "drag-insert-before" : ""
             } ${isDragOverAfter ? "drag-insert-after" : ""}`}
             onPointerDown={(e) => {
-              if (e.button !== 0 || !canDragNode) return;
+              if (e.button !== 0 || !canDragNode || e.ctrlKey || e.metaKey || e.shiftKey) return;
               onPointerDownNode(e, node);
             }}
-            onClick={() => {
-              if (hasChildren && !expandedNodes[node.id]) {
+            onClick={(e) => {
+              const isMultiClick = e.ctrlKey || e.metaKey || e.shiftKey;
+              if (
+                !isMultiClick &&
+                hasChildren &&
+                !expandedNodes[node.id] &&
+                node.kind !== "UVD" &&
+                node.kind !== "UVD_GROUP"
+              ) {
                 onToggleExpand(node.id);
               }
-              onSelectNode(node.id);
+              onSelectNode(node.id, e);
             }}
             onDoubleClick={() => {
               if (hasChildren) {
@@ -198,7 +213,9 @@ export function AssetBrowserPanel({
             onContextMenu={(e) => {
               e.preventDefault();
               e.stopPropagation();
-              onSelectNode(node.id);
+              if (!(selectedNodeIds && selectedNodeIds.includes(node.id))) {
+                onSelectNode(node.id);
+              }
               onContextMenu(e, node.id, node.kind);
             }}
             title={

@@ -100,10 +100,6 @@ export interface EditorDraftsApi {
   hydrateFromInspect: (res: NodeInspectPayload) => void;
 }
 
-/**
- * Groups all center/inspector draft state that used to live as
- * independent useStates in App. Hydration from inspect stays in one place.
- */
 export function useEditorDrafts(): EditorDraftsApi {
   const [hashDraft, setHashDraft] = useState("");
   const [flagsDraft, setFlagsDraft] = useState("");
@@ -148,6 +144,8 @@ export function useEditorDrafts(): EditorDraftsApi {
     flags: true,
     encoding: true,
     advanced: false,
+    uvd_panel: true,
+    uvd_settings: true,
     wmb_props: true,
     wmb_params: true,
     bxm_node: true,

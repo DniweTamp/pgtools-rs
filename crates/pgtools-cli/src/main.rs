@@ -19,7 +19,11 @@ use pgtools_core::{
     pkz::PkzArchive,
     scene::{build_wmb3_scene, build_wmb_scene, fnv1a_64_hex, TextureRefDesc, UidMap},
     scr::ScrFile,
-    texture_conv::decode_dds_to_rgba8,
+    texture_conv::{decode_dds_to_rgba8, texture_blob_has_pixel_payload},
+    uvd::{
+        extract_group_to_dir, repack_uvd_group_from_dir, UvdFile, DEFAULT_UVD_MAX_SIZE,
+        DEFAULT_UVD_PADDING,
+    },
     wmb::WmbFile,
     wmb3::Wmb3File,
     wtb::WtbFile,
@@ -304,6 +308,272 @@ enum Commands {
         #[arg(short, long)]
         output: Option<PathBuf>,
     },
+    /// Display summary information for a .uvd file (or .dat containing a .uvd)
+    UvdInfo {
+        file: PathBuf,
+    },
+    /// List groups and sprite items inside a .uvd file
+    UvdList {
+        file: PathBuf,
+        /// Optional group name or ID (hex 0x... or decimal) to filter by
+        #[arg(short, long)]
+        group: Option<String>,
+    },
+    /// Extract sprite PNGs (and optional .uvd.json) from a .uvd file per group
+    UvdExtract {
+        file: PathBuf,
+        /// Optional group name(s) or ID(s) to extract (extracts all groups if omitted)
+        #[arg(short, long)]
+        group: Vec<String>,
+        /// Optional texture source file(s) (.png, .dds, .xt1, .gtx, .bntx, .wta, .wtb, .dat) or directory
+        #[arg(short, long)]
+        texture: Vec<PathBuf>,
+        /// Output directory (defaults to <uvd_stem>_uvd next to input file)
+        #[arg(short, long)]
+        output: Option<PathBuf>,
+        /// Also write <stem>.uvd.json into the output directory
+        #[arg(long)]
+        json: bool,
+    },
+    /// Repack a directory of sprite PNGs into a single UVD group and output the updated .uvd and packed .png sheet
+    UvdRepack {
+        /// Directory containing sprite .png files (directory name matches group name when --group is omitted)
+        group_dir: PathBuf,
+        /// Source .uvd file to update
+        #[arg(long)]
+        uvd: PathBuf,
+        /// Optional explicit group name override (defaults to group_dir folder name)
+        #[arg(short, long)]
+        group: Option<String>,
+        /// Output .uvd path (defaults to updating --uvd in place)
+        #[arg(short, long)]
+        output: Option<PathBuf>,
+        /// Optional output path for the packed sprite-sheet PNG (defaults to <group_dir>.png)
+        #[arg(short, long)]
+        texture: Option<PathBuf>,
+        /// Inter-sprite padding in pixels (default: 4)
+        #[arg(long, default_value_t = DEFAULT_UVD_PADDING)]
+        padding: u32,
+        /// Maximum power-of-two atlas dimension (default: 4096)
+        #[arg(long, default_value_t = DEFAULT_UVD_MAX_SIZE)]
+        max_size: u32,
+    },
+}
+
+
+fn load_uvd_from_path(path: &Path) -> Result<(String, UvdFile)> {
+    let raw = fs::read(path).with_context(|| format!("Failed to read {}", path.display()))?;
+    let fname = path
+        .file_name()
+        .and_then(|s| s.to_str())
+        .unwrap_or("file.uvd")
+        .to_string();
+    let low = fname.to_ascii_lowercase();
+    if low.ends_with(".json") {
+        let txt = String::from_utf8(raw).context("Invalid UTF-8 in .uvd.json")?;
+        let uvd = UvdFile::from_json_str(&txt)?;
+        let stem = fname
+            .trim_end_matches(".json")
+            .trim_end_matches(".uvd")
+            .to_string();
+        return Ok((stem, uvd));
+    }
+    if raw.starts_with(b"DAT\0") || raw.starts_with(b"\0TAD") {
+        let dat = DatFile::from_bytes(&raw)?;
+        let entry = dat
+            .entries
+            .iter()
+            .find(|e| e.extension.eq_ignore_ascii_case("uvd") || e.name.to_ascii_lowercase().ends_with(".uvd"))
+            .ok_or_else(|| anyhow::anyhow!("No .uvd entry found inside {}", path.display()))?;
+        let stem = Path::new(&entry.name)
+            .file_stem()
+            .and_then(|s| s.to_str())
+            .unwrap_or("archive")
+            .to_string();
+        let uvd = UvdFile::from_bytes(&entry.data)?;
+        return Ok((stem, uvd));
+    }
+    let stem = path
+        .file_stem()
+        .and_then(|s| s.to_str())
+        .unwrap_or("file")
+        .to_string();
+    let uvd = UvdFile::from_bytes(&raw)?;
+    Ok((stem, uvd))
+}
+
+fn try_decode_sheet_from_wtb_by_id(wtb: &WtbFile, group_id: u32) -> Result<Option<image::RgbaImage>> {
+    for e in &wtb.entries {
+        if e.texture_id == Some(group_id) {
+            if !e.has_pixel_payload() {
+                anyhow::bail!(
+                    "texture payload missing for texture ID 0x{group_id:08X} (WTA header has no WTP/DTT pixel data)"
+                );
+            }
+            let img = decode_dds_to_rgba8(&e.data)?;
+            return Ok(Some(img));
+        }
+    }
+    Ok(None)
+}
+
+fn load_group_sheet_for_cli_extract(
+    uvd_path: &Path,
+    uvd_stem: &str,
+    group_name: &str,
+    group_id: u32,
+    explicit_textures: &[PathBuf],
+    single_group_mode: bool,
+) -> Result<image::RgbaImage> {
+    let mut candidate_paths: Vec<PathBuf> = explicit_textures.to_vec();
+    if candidate_paths.is_empty() {
+        if uvd_path.is_file() {
+            candidate_paths.push(uvd_path.to_path_buf());
+        }
+        if let Some(parent) = uvd_path.parent() {
+            for ext in ["wta", "wtb", "dat", "bntx", "png", "dds", "xt1", "gtx"] {
+                let p1 = parent.join(format!("{uvd_stem}.{ext}"));
+                if p1.exists() && !candidate_paths.contains(&p1) {
+                    candidate_paths.push(p1);
+                }
+                let p2 = parent.join(format!("{group_name}.{ext}"));
+                if p2.exists() && !candidate_paths.contains(&p2) {
+                    candidate_paths.push(p2);
+                }
+            }
+        }
+    }
+
+    for cand in &candidate_paths {
+        if cand.is_dir() {
+            for ext in ["png", "dds", "xt1", "gtx"] {
+                let by_name = cand.join(format!("{group_name}.{ext}"));
+                if by_name.is_file() {
+                    let raw = fs::read(&by_name)?;
+                    if ext == "png" {
+                        return Ok(image::load_from_memory(&raw)?.to_rgba8());
+                    }
+                    if !texture_blob_has_pixel_payload(&raw) {
+                        anyhow::bail!("texture payload missing in {}", by_name.display());
+                    }
+                    return Ok(decode_dds_to_rgba8(&raw)?);
+                }
+                let by_hex = cand.join(format!("0x{group_id:08X}.{ext}"));
+                if by_hex.is_file() {
+                    let raw = fs::read(&by_hex)?;
+                    if ext == "png" {
+                        return Ok(image::load_from_memory(&raw)?.to_rgba8());
+                    }
+                    if !texture_blob_has_pixel_payload(&raw) {
+                        anyhow::bail!("texture payload missing in {}", by_hex.display());
+                    }
+                    return Ok(decode_dds_to_rgba8(&raw)?);
+                }
+            }
+            continue;
+        }
+        if !cand.is_file() {
+            continue;
+        }
+        let ext = cand
+            .extension()
+            .and_then(|e| e.to_str())
+            .unwrap_or("")
+            .to_ascii_lowercase();
+        if ext == "uvd" || ext == "json" {
+            continue;
+        }
+        let raw = fs::read(cand)?;
+        if matches!(ext.as_str(), "png" | "jpg" | "jpeg" | "bmp" | "tga") {
+            let fstem = cand.file_stem().and_then(|s| s.to_str()).unwrap_or("");
+            if single_group_mode
+                || fstem.eq_ignore_ascii_case(group_name)
+                || fstem.eq_ignore_ascii_case(&format!("0x{group_id:08X}"))
+            {
+                return Ok(image::load_from_memory(&raw)?.to_rgba8());
+            }
+            continue;
+        }
+        if matches!(ext.as_str(), "dds" | "xt1" | "gtx") {
+            let fstem = cand.file_stem().and_then(|s| s.to_str()).unwrap_or("");
+            if single_group_mode
+                || fstem.eq_ignore_ascii_case(group_name)
+                || fstem.eq_ignore_ascii_case(&format!("0x{group_id:08X}"))
+            {
+                if !texture_blob_has_pixel_payload(&raw) {
+                    anyhow::bail!("texture payload missing in {}", cand.display());
+                }
+                return Ok(decode_dds_to_rgba8(&raw)?);
+            }
+            continue;
+        }
+        if ext == "wta" || ext == "wtb" || ext == "bntx" {
+            let wtp_opt = if ext == "wta" {
+                let wtp_p = cand.with_extension("wtp");
+                if wtp_p.is_file() {
+                    Some(fs::read(wtp_p)?)
+                } else {
+                    None
+                }
+            } else {
+                None
+            };
+            let wtb = WtbFile::from_bytes(&raw, wtp_opt.as_deref())?;
+            if let Some(img) = try_decode_sheet_from_wtb_by_id(&wtb, group_id)? {
+                return Ok(img);
+            }
+            continue;
+        }
+        if ext == "dat" || raw.starts_with(b"DAT\0") || raw.starts_with(b"\0TAD") {
+            let dat = DatFile::from_bytes(&raw)?;
+            let dtt_p = cand.with_extension("dtt");
+            let dtt_opt = if dtt_p.is_file() {
+                fs::read(&dtt_p).ok().and_then(|b| DatFile::from_bytes(&b).ok())
+            } else {
+                None
+            };
+            for e in &dat.entries {
+                if e.extension.eq_ignore_ascii_case("wta") || e.extension.eq_ignore_ascii_case("wtb") {
+                    let wta_stem = Path::new(&e.name)
+                        .file_stem()
+                        .and_then(|s| s.to_str())
+                        .unwrap_or("");
+                    let mut paired_wtp: Option<Vec<u8>> = None;
+                    for we in &dat.entries {
+                        if we.extension.eq_ignore_ascii_case("wtp") {
+                            let ws = Path::new(&we.name).file_stem().and_then(|s| s.to_str()).unwrap_or("");
+                            if ws.eq_ignore_ascii_case(wta_stem) {
+                                paired_wtp = Some(we.data.clone());
+                                break;
+                            }
+                        }
+                    }
+                    if paired_wtp.is_none() {
+                        if let Some(ref dtt) = dtt_opt {
+                            for we in &dtt.entries {
+                                if we.extension.eq_ignore_ascii_case("wtp") {
+                                    let ws = Path::new(&we.name).file_stem().and_then(|s| s.to_str()).unwrap_or("");
+                                    if ws.eq_ignore_ascii_case(wta_stem) || dtt.entries.len() == 1 {
+                                        paired_wtp = Some(we.data.clone());
+                                        break;
+                                    }
+                                }
+                            }
+                        }
+                    }
+                    let wtb = WtbFile::from_bytes(&e.data, paired_wtp.as_deref())?;
+                    if let Some(img) = try_decode_sheet_from_wtb_by_id(&wtb, group_id)? {
+                        return Ok(img);
+                    }
+                }
+            }
+        }
+    }
+
+    anyhow::bail!(
+        "texture payload missing: could not find texture with pixel data for group {} (0x{group_id:08X})",
+        group_name
+    )
 }
 
 fn load_bone_map_from_path_or_dat(path: &Path) -> Result<std::collections::BTreeMap<u16, u16>> {
@@ -375,6 +645,10 @@ fn resolve_multicall_args() -> Vec<std::ffi::OsString> {
         "wmb_convert_wiiu_pc" => Some(&["wmb-tool", "--swap-endian"]),
         "wmb_common_bones" => Some(&["wmb-common-bones"]),
         "wmb_get_bone_map" => Some(&["wmb-get-bone-map"]),
+        "uvd_info" => Some(&["uvd-info"]),
+        "uvd_list" => Some(&["uvd-list"]),
+        "uvd_extract" => Some(&["uvd-extract"]),
+        "uvd_repack" => Some(&["uvd-repack"]),
         _ => None,
     };
 
@@ -1221,6 +1495,196 @@ fn main() -> Result<()> {
             let out_path = output.unwrap_or_else(|| PathBuf::from(format!("pgtools-demo-{}.dat", game.to_ascii_lowercase())));
             fs::write(&out_path, dat_bytes)?;
             println!("Created demo model DAT at {}", out_path.display());
+        }
+        Commands::UvdInfo { file } => {
+            let (stem, uvd) = load_uvd_from_path(&file)?;
+            println!(
+                "UVD: {} ({:?} endian, {} groups, {} total items, {} bytes)",
+                stem,
+                uvd.endian,
+                uvd.groups.len(),
+                uvd.total_items(),
+                uvd.to_bytes().len()
+            );
+            for (gi, g) in uvd.groups.iter().enumerate() {
+                let (tw, th) = g.inferred_dimensions().unwrap_or((0, 0));
+                println!(
+                    "  Group[{gi:2}]: {:<28} id=0x{:08X} items={:<4} sheet={}x{}",
+                    g.name,
+                    g.id,
+                    g.items.len(),
+                    tw,
+                    th
+                );
+            }
+        }
+        Commands::UvdList { file, group } => {
+            let (_, uvd) = load_uvd_from_path(&file)?;
+            let target_indices: Vec<usize> = if let Some(ref sel) = group {
+                let idx = uvd
+                    .find_group_index(sel)
+                    .ok_or_else(|| anyhow::anyhow!("Group {} not found in {}", sel, file.display()))?;
+                vec![idx]
+            } else {
+                (0..uvd.groups.len()).collect()
+            };
+            for gi in target_indices {
+                let g = &uvd.groups[gi];
+                let (tw, th) = g.inferred_dimensions().unwrap_or((0, 0));
+                println!(
+                    "Group [{}] {} (id=0x{:08X}, items={}, sheet={}x{}):",
+                    gi,
+                    g.name,
+                    g.id,
+                    g.items.len(),
+                    tw,
+                    th
+                );
+                for (ii, it) in g.items.iter().enumerate() {
+                    println!(
+                        "  Item[{ii:3}]: {:<36} id=0x{:08X} group_id=0x{:08X} rect=({}, {}, {}, {}) inv=({:.9}, {:.9})",
+                        it.name,
+                        it.id,
+                        it.group_id,
+                        it.x,
+                        it.y,
+                        it.w,
+                        it.h,
+                        it.inv_w,
+                        it.inv_h
+                    );
+                }
+            }
+        }
+        Commands::UvdExtract {
+            file,
+            group,
+            texture,
+            output,
+            json,
+        } => {
+            let (stem, uvd) = load_uvd_from_path(&file)?;
+            let target_indices: Vec<usize> = if group.is_empty() {
+                (0..uvd.groups.len()).collect()
+            } else {
+                let mut indices = Vec::with_capacity(group.len());
+                for sel in &group {
+                    let idx = uvd
+                        .find_group_index(sel)
+                        .ok_or_else(|| anyhow::anyhow!("Group {} not found in {}", sel, file.display()))?;
+                    if !indices.contains(&idx) {
+                        indices.push(idx);
+                    }
+                }
+                indices
+            };
+
+            let out_dir = output.unwrap_or_else(|| {
+                file.parent()
+                    .unwrap_or(Path::new("."))
+                    .join(format!("{stem}_uvd"))
+            });
+            fs::create_dir_all(&out_dir)?;
+
+            let single_group_mode = target_indices.len() == 1;
+            let mut total_sprites = 0usize;
+            for &gi in &target_indices {
+                let g = &uvd.groups[gi];
+                let sheet = load_group_sheet_for_cli_extract(
+                    &file,
+                    &stem,
+                    &g.name,
+                    g.id,
+                    &texture,
+                    single_group_mode,
+                )?;
+                let (_, written) = extract_group_to_dir(g, &sheet, &out_dir)?;
+                total_sprites += written;
+            }
+
+            if json {
+                let json_path = out_dir.join(format!("{stem}.uvd.json"));
+                fs::write(&json_path, uvd.to_json_pretty()?)?;
+            }
+
+            println!(
+                "Extracted {} group(s) ({} sprites) to {}",
+                target_indices.len(),
+                total_sprites,
+                out_dir.display()
+            );
+        }
+        Commands::UvdRepack {
+            group_dir,
+            uvd,
+            group,
+            output,
+            texture,
+            padding,
+            max_size,
+        } => {
+            let (_, mut uvd_file) = load_uvd_from_path(&uvd)?;
+            let (group_idx, packed) = repack_uvd_group_from_dir(
+                &mut uvd_file,
+                &group_dir,
+                group.as_deref(),
+                padding,
+                max_size,
+            )?;
+
+            let out_uvd_path = output.unwrap_or_else(|| uvd.clone());
+            if let Some(p) = out_uvd_path.parent() {
+                if !p.as_os_str().is_empty() {
+                    fs::create_dir_all(p)?;
+                }
+            }
+
+            let out_low = out_uvd_path.to_string_lossy().to_ascii_lowercase();
+            if out_low.ends_with(".json") {
+                fs::write(&out_uvd_path, uvd_file.to_json_pretty()?)?;
+            } else if out_uvd_path == uvd
+                && out_low.ends_with(".dat")
+                && uvd.is_file()
+            {
+                let raw_dat = fs::read(&uvd)?;
+                let mut dat = DatFile::from_bytes(&raw_dat)?;
+                if let Some(entry) = dat
+                    .entries
+                    .iter_mut()
+                    .find(|e| e.extension.eq_ignore_ascii_case("uvd") || e.name.to_ascii_lowercase().ends_with(".uvd"))
+                {
+                    entry.data = uvd_file.to_bytes();
+                }
+                fs::write(&out_uvd_path, dat.to_bytes())?;
+            } else {
+                fs::write(&out_uvd_path, uvd_file.to_bytes())?;
+            }
+
+            let tex_out_path = texture.unwrap_or_else(|| {
+                let parent = group_dir.parent().unwrap_or(Path::new("."));
+                parent.join(format!("{}.png", packed.group.name))
+            });
+            if let Some(p) = tex_out_path.parent() {
+                if !p.as_os_str().is_empty() {
+                    fs::create_dir_all(p)?;
+                }
+            }
+            packed
+                .sheet
+                .save(&tex_out_path)
+                .with_context(|| format!("Failed to write packed PNG to {}", tex_out_path.display()))?;
+
+            println!(
+                "Repacked group {} (#{}, 0x{:08X}, {} sprites -> {}x{}) to {} and {}",
+                packed.group.name,
+                group_idx,
+                packed.group.id,
+                packed.group.items.len(),
+                packed.width,
+                packed.height,
+                out_uvd_path.display(),
+                tex_out_path.display()
+            );
         }
     }
 

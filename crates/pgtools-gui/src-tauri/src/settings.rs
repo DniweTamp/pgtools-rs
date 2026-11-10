@@ -40,6 +40,8 @@ pub struct StudioSettings {
     pub default_encode_quality: String,
     pub sync_xt1_flags_on_import: bool,
     pub asset_browser_zoom: u8,
+    pub uvd_padding: u32,
+    pub uvd_max_size: u32,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -56,6 +58,18 @@ pub(crate) fn sanitize_custom_dat_alignment(val: usize) -> usize {
         DEFAULT_CUSTOM_DAT_ALIGNMENT
     } else {
         val.min(MAX_CUSTOM_DAT_ALIGNMENT)
+    }
+}
+
+pub(crate) fn sanitize_uvd_padding(val: u32) -> u32 {
+    val.min(64)
+}
+
+pub(crate) fn sanitize_uvd_max_size(val: u32) -> u32 {
+    if val == 0 {
+        4096
+    } else {
+        val.clamp(64, 16384).next_power_of_two()
     }
 }
 
@@ -90,6 +104,8 @@ impl StudioSettings {
         self.oodle_configured = check_oodle_dll_configured(&self.oodle_dll_path);
         self.nvtt_configured = check_nvtt_dll_configured(&self.nvtt_dll_path);
         self.custom_dat_alignment = sanitize_custom_dat_alignment(self.custom_dat_alignment);
+        self.uvd_padding = sanitize_uvd_padding(self.uvd_padding);
+        self.uvd_max_size = sanitize_uvd_max_size(self.uvd_max_size);
     }
 }
 
@@ -125,6 +141,8 @@ impl Default for StudioSettings {
             default_encode_quality: "Normal".to_string(),
             sync_xt1_flags_on_import: true,
             asset_browser_zoom: 0,
+            uvd_padding: 4,
+            uvd_max_size: 4096,
         };
         s.refresh_dll_status();
         s

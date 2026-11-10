@@ -12,6 +12,7 @@ use pgtools_core::{
     mot::MotFile,
     pkz::{clamp_compression_level, OodleLibrary, PkzArchive},
     scr::ScrFile,
+    uvd::UvdFile,
     wmb::WmbFile,
     wmb3::Wmb3File,
     wtb::WtbFile,
@@ -665,6 +666,11 @@ pub fn run_file_context_operation(
                     let mut scr = ScrFile::from_bytes(&raw).map_err(|e| e.to_string())?;
                     scr.endian = scr.endian.swap();
                     scr.to_bytes()
+                }
+                "uvd" => {
+                    let mut uvd = UvdFile::from_bytes(&raw).map_err(|e| e.to_string())?;
+                    uvd.endian = uvd.endian.swap();
+                    uvd.to_bytes()
                 }
                 _ => return Err(format!("Endian swap not supported for .{ext}")),
             };

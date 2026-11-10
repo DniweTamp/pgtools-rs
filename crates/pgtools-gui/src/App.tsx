@@ -15,6 +15,7 @@ import {
   PkzCompressionModalState,
   PkzConflictModalState,
   PointerDragState,
+  SaveEncodeOptions,
   StudioSettings,
   TexModalState,
   TextureNodeView,
@@ -22,6 +23,7 @@ import {
   Wmb3Material,
   WmbSectionView,
 } from "./types";
+import { UvdActions, UvdSaveEncodeModal } from "./editors/UvdEditor";
 import {
   isVirtualSubNode,
   parseReorderableNode,
@@ -96,6 +98,8 @@ export default function App() {
     fileSortCol,
     fileSortAsc,
     assetBrowserZoom,
+    uvdPadding,
+    uvdMaxSize,
     setTheme,
     setLeftWidth,
     setRightWidth,
@@ -121,6 +125,8 @@ export default function App() {
     setFileSortCol,
     setFileSortAsc,
     setAssetBrowserZoom,
+    setUvdPadding,
+    setUvdMaxSize,
     buildStudioSettingsPayload,
     applyLoadedSettings,
     markLoaded,
@@ -139,6 +145,7 @@ export default function App() {
   const [datAlignSettingsOpen, setDatAlignSettingsOpen] = useState<boolean>(false);
   const [exportFolderModalOpen, setExportFolderModalOpen] = useState<boolean>(false);
   const [newBankModalOpen, setNewBankModalOpen] = useState<boolean>(false);
+  const [uvdSaveModalTarget, setUvdSaveModalTarget] = useState<string | null | undefined>(undefined);
   const [pkzCompModal, setPkzCompModal] = useState<PkzCompressionModalState | null>(null);
   const [pkzConflictModal, setPkzConflictModal] = useState<PkzConflictModalState | null>(null);
   const [oodleValidation, setOodleValidation] = useState<OodleValidationReport | null>(null);
@@ -186,11 +193,13 @@ export default function App() {
     outline,
     expandedNodes,
     selectedNodeId,
+    selectedNodeIds,
     assetSearch,
     outlineRef,
     setOutline,
     setExpandedNodes,
     setSelectedNodeId,
+    setSelectedNodeIds,
     setAssetSearch,
     confirmDiscardIfDirty,
     expandForOpen,
@@ -551,6 +560,8 @@ export default function App() {
     wmbSkeletonOverlay,
     wmbGridVisible,
     assetBrowserZoom,
+    uvdPadding,
+    uvdMaxSize,
   ]);
 
   const shortcutHandlersRef = useRef<{
@@ -779,9 +790,19 @@ export default function App() {
               toIdx = Math.max(0, toIdx - 1);
             }
             if (fromIdx !== toIdx) {
-              runContainerMutation(pointerDrag.sourceId, "reorder_entry", "", {
-                to_index: toIdx,
-              });
+              if (pointerDrag.sourceId.includes("/uvditem:") || pointerDrag.sourceId.startsWith("uvditem:")) {
+                void runUvdMutation(pointerDrag.sourceId, "reorder_items", {
+                  to_index: toIdx,
+                });
+              } else if (pointerDrag.sourceId.includes("/uvdgrp:") || pointerDrag.sourceId.startsWith("uvdgrp:")) {
+                void runUvdMutation(pointerDrag.sourceId, "reorder_groups", {
+                  to_index: toIdx,
+                });
+              } else {
+                void runContainerMutation(pointerDrag.sourceId, "reorder_entry", "", {
+                  to_index: toIdx,
+                });
+              }
             }
           }
         } else if (pointerDrag.kind === "bxm" && bxmTreeDraft) {
@@ -920,6 +941,7 @@ export default function App() {
       layer = 0;
     }
     setSelectedNodeId(nodeId);
+    setSelectedNodeIds((prev) => (prev.includes(nodeId) && prev.length > 1 ? prev : [nodeId]));
     try {
       const res = await invoke<NodeInspectPayload>("inspect_asset_node", {
         nodeId,
@@ -981,7 +1003,7 @@ export default function App() {
         "wtb", "wta", "wtp", "dds", "gtx", "xt1", "bntx",
         "wmb", "mdb", "bxm", "xml", "gad", "clp", "clh", "clw",
         "mot", "exp", "est", "cos", "att", "obi", "msq", "col",
-        "fls", "fla", "cta", "lit", "csv",
+        "fls", "fla", "cta", "lit", "csv", "uvd",
       ],
     });
     if (picked) {
@@ -1071,21 +1093,40 @@ export default function App() {
     );
   }
 
-  async function handleMenuSave() {
-    setActiveTopMenu(null);
+  async function executeDocumentSave(
+    outputPath: string | null,
+    encodeOptions: SaveEncodeOptions | null = null
+  ) {
     if (!outline) return;
     try {
-      setBusyLabel(`Saving ${outline.file_name}...`);
-      const updated = await invoke<DocumentOutline>("save_document", { outputPath: null });
+      const targetLabel = outputPath
+        ? outputPath.split(/[\\/]/).pop() || outputPath
+        : outline.file_name;
+      setBusyLabel(`Saving ${targetLabel}...`);
+      const updated = await invoke<DocumentOutline>("save_document", {
+        outputPath,
+        encodeOptions,
+      });
       setOutline(updated);
+      setWmbDocGeneration((g) => g + 1);
       await selectAndInspectNode(selectedNodeId);
-      setStatusLeft(`Saved ${updated.file_name}`);
+      setStatusLeft(outputPath ? `Saved to ${outputPath}` : `Saved ${updated.file_name}`);
       loadDirectory(currentDirRef.current);
     } catch (err) {
       setStatusLeft(`Save error: ${String(err)}`);
     } finally {
       setBusyLabel(null);
     }
+  }
+
+  async function handleMenuSave() {
+    setActiveTopMenu(null);
+    if (!outline) return;
+    if (outline.pending_uvd_encodes && outline.pending_uvd_encodes.length > 0) {
+      setUvdSaveModalTarget(null);
+      return;
+    }
+    await executeDocumentSave(null, null);
   }
 
   async function handleMenuSaveAs() {
@@ -1096,18 +1137,11 @@ export default function App() {
       defaultName: outline.file_name.split(" + ")[0],
     });
     if (!dest) return;
-    try {
-      setBusyLabel(`Saving to ${dest.split(/[\\/]/).pop() || dest}...`);
-      const updated = await invoke<DocumentOutline>("save_document", { outputPath: dest });
-      setOutline(updated);
-      await selectAndInspectNode(selectedNodeId);
-      setStatusLeft(`Saved to ${dest}`);
-      loadDirectory(currentDirRef.current);
-    } catch (err) {
-      setStatusLeft(`Save As error: ${String(err)}`);
-    } finally {
-      setBusyLabel(null);
+    if (outline.pending_uvd_encodes && outline.pending_uvd_encodes.length > 0) {
+      setUvdSaveModalTarget(dest);
+      return;
     }
+    await executeDocumentSave(dest, null);
   }
 
   async function handleUndo() {
@@ -1165,7 +1199,19 @@ export default function App() {
     },
     renameSelected: () => {
       const leafSeg = selectedNodeId.split("/").pop() || "";
-      if (selectedNodeId.includes("pkzfolder:")) {
+      if (leafSeg.startsWith("uvditem:")) {
+        const curName =
+          nodePayload?.uvd?.item?.name ||
+          nodePayload?.texture?.embedded_name ||
+          "sprite";
+        void promptRenameUvdSprite(selectedNodeId, curName);
+      } else if (leafSeg.startsWith("uvdgrp:")) {
+        const curName =
+          nodePayload?.uvd?.group?.name ||
+          nodePayload?.texture?.embedded_name ||
+          "group";
+        void promptRenameUvdGroup(selectedNodeId, curName);
+      } else if (selectedNodeId.includes("pkzfolder:")) {
         const folderPrefix = selectedNodeId.split("pkzfolder:").pop() || "";
         const nextPrefix = window.prompt("Rename PKZ folder:", folderPrefix);
         if (nextPrefix !== null && nextPrefix.trim() !== folderPrefix) {
@@ -1185,7 +1231,36 @@ export default function App() {
     },
     deleteSelected: () => {
       const leafSeg = selectedNodeId.split("/").pop() || "";
-      if (nodePayload?.format === "PKZ" && pkzSelectedIndices.length > 0) {
+      const multiIds =
+        selectedNodeIds.length > 1 && selectedNodeIds.includes(selectedNodeId)
+          ? selectedNodeIds
+          : [selectedNodeId];
+      if (leafSeg.startsWith("uvditem:")) {
+        const pairs: [number, number][] = multiIds
+          .map((id) => {
+            const m = id.match(/uvdgrp:(\d+)\/uvditem:(\d+)$/);
+            return m ? ([parseInt(m[1], 10), parseInt(m[2], 10)] as [number, number]) : null;
+          })
+          .filter((x): x is [number, number] => x !== null);
+        if (pairs.length > 0 && window.confirm(`Delete ${pairs.length} sprite(s) and repack affected group(s)?`)) {
+          void runUvdMutation(selectedNodeId, "delete_items", { items: pairs });
+        }
+      } else if (leafSeg.startsWith("uvdgrp:")) {
+        const gIndices = multiIds
+          .map((id) => {
+            const m = id.match(/uvdgrp:(\d+)$/);
+            return m ? parseInt(m[1], 10) : -1;
+          })
+          .filter((n) => n >= 0);
+        if (
+          gIndices.length > 0 &&
+          window.confirm(
+            `Delete ${gIndices.length} UVD group(s)?\n\nWTA texture slots will not be deleted or reordered.`
+          )
+        ) {
+          void runUvdMutation(selectedNodeId, "delete_groups", { group_indices: gIndices });
+        }
+      } else if (nodePayload?.format === "PKZ" && pkzSelectedIndices.length > 0) {
         const baseContainerId = nodePayload.node_id.includes("/pkzfolder:")
           ? nodePayload.node_id.split("/pkzfolder:")[0]
           : nodePayload.node_id.startsWith("pkzfolder:")
@@ -1601,6 +1676,347 @@ export default function App() {
     }
   }
 
+  function collectSiblingAssetNodeIds(tree: AssetTreeNode[], targetId: string): string[] {
+    const parentPrefix = targetId.includes("/") ? targetId.slice(0, targetId.lastIndexOf("/")) : "";
+    const walk = (nodes: AssetTreeNode[]): string[] | null => {
+      for (const n of nodes) {
+        if (n.id === targetId) {
+          return nodes.map((s) => s.id);
+        }
+        if (n.children && n.children.length > 0) {
+          const found = walk(n.children);
+          if (found) return found;
+        }
+      }
+      return null;
+    };
+    const siblings = walk(tree);
+    if (!siblings) return [targetId];
+    return siblings.filter((id) => {
+      const p = id.includes("/") ? id.slice(0, id.lastIndexOf("/")) : "";
+      return p === parentPrefix;
+    });
+  }
+
+  function handleSelectAssetNode(nodeId: string, e?: React.MouseEvent) {
+    if (e && (e.ctrlKey || e.metaKey)) {
+      setSelectedNodeIds((prev) => {
+        if (prev.includes(nodeId)) {
+          const filtered = prev.filter((id) => id !== nodeId);
+          return filtered.length > 0 ? filtered : [nodeId];
+        }
+        return [...prev, nodeId];
+      });
+      setSelectedNodeId(nodeId);
+      void selectAndInspectNode(nodeId);
+      return;
+    }
+    if (e && e.shiftKey && outline) {
+      const siblings = collectSiblingAssetNodeIds(outline.tree, nodeId);
+      const aIdx = siblings.indexOf(selectedNodeId);
+      const bIdx = siblings.indexOf(nodeId);
+      if (aIdx !== -1 && bIdx !== -1) {
+        const start = Math.min(aIdx, bIdx);
+        const end = Math.max(aIdx, bIdx);
+        const range = siblings.slice(start, end + 1);
+        setSelectedNodeIds(range);
+        setSelectedNodeId(nodeId);
+        void selectAndInspectNode(nodeId);
+        return;
+      }
+    }
+    setSelectedNodeIds([nodeId]);
+    void selectAndInspectNode(nodeId);
+  }
+
+  async function runUvdMutation(nodeId: string, action: string, payload: any = {}) {
+    setContextMenu(null);
+    try {
+      setBusyLabel(`Updating UVD (${action})...`);
+      const updated = await invoke<DocumentOutline>("mutate_uvd_node", {
+        nodeId,
+        action,
+        payload,
+      });
+      setOutline(updated);
+      setWmbDocGeneration((g) => g + 1);
+      let nextInspectId = nodeId;
+      if (action === "delete_groups" || action === "delete_items") {
+        nextInspectId = nodeId.includes("/")
+          ? nodeId.slice(0, nodeId.lastIndexOf("/"))
+          : "root";
+        setSelectedNodeIds([nextInspectId]);
+      } else if (action === "reorder_groups") {
+        const m = nodeId.match(/^(.*?)uvdgrp:(\d+)$/);
+        if (m) {
+          const curIdx = parseInt(m[2], 10);
+          const nextIdx =
+            typeof payload?.to_index === "number"
+              ? payload.to_index
+              : payload?.direction === "up"
+              ? Math.max(0, curIdx - 1)
+              : payload?.direction === "down"
+              ? curIdx + 1
+              : curIdx;
+          nextInspectId = `${m[1]}uvdgrp:${nextIdx}`;
+          setSelectedNodeIds([nextInspectId]);
+        }
+      } else if (action === "reorder_items") {
+        const m = nodeId.match(/^(.*?)uvditem:(\d+)$/);
+        if (m) {
+          const curIdx = parseInt(m[2], 10);
+          const nextIdx =
+            typeof payload?.to_index === "number"
+              ? payload.to_index
+              : payload?.direction === "up"
+              ? Math.max(0, curIdx - 1)
+              : payload?.direction === "down"
+              ? curIdx + 1
+              : curIdx;
+          nextInspectId = `${m[1]}uvditem:${nextIdx}`;
+          setSelectedNodeIds([nextInspectId]);
+        }
+      }
+      await selectAndInspectNode(nextInspectId);
+      setStatusLeft(updated.undo_label ?? `Completed UVD ${action}`);
+    } catch (err) {
+      const msg = String(err);
+      if (
+        (action === "add_group" || action === "add_item") &&
+        msg.includes("CRC32 collision") &&
+        !payload?.auto_suffix
+      ) {
+        const useSuffix = window.confirm(
+          `${msg}\n\nClick OK to automatically append a numeric suffix (_1, _2, ...) for a unique CRC32 ID, or Cancel to abort.`
+        );
+        if (useSuffix) {
+          await runUvdMutation(nodeId, action, { ...payload, auto_suffix: true });
+          return;
+        }
+      }
+      setStatusLeft(`UVD error: ${msg}`);
+    } finally {
+      setBusyLabel(null);
+    }
+  }
+
+  async function handleUvdExtract(nodeIds: string[], writeJson: boolean) {
+    setContextMenu(null);
+    if (nodeIds.length === 0) return;
+    try {
+      const firstId = nodeIds[0];
+      const isSingleItem =
+        nodeIds.length === 1 &&
+        (firstId.includes("/uvditem:") || firstId.startsWith("uvditem:")) &&
+        !writeJson;
+      if (isSingleItem) {
+        const defName = `${
+          nodePayload?.uvd?.item?.name ||
+          activeTexture?.embedded_name ||
+          "sprite"
+        }.png`;
+        const destFile = await invoke<string | null>("save_file_dialog", {
+          title: "Extract Single UVD Sprite (.PNG)",
+          defaultName: defName,
+        });
+        if (!destFile) return;
+        setBusyLabel("Extracting sprite PNG...");
+        const msg = await invoke<string>("extract_uvd_action", {
+          nodeIds,
+          destPath: destFile,
+          writeJson: false,
+        });
+        setStatusLeft(msg);
+        loadDirectory(currentDirRef.current);
+      } else {
+        const folder = await invoke<string | null>("pick_folder_dialog", {
+          title: writeJson
+            ? "Select Output Folder for UVD Group Subfolders + .uvd.json"
+            : "Select Output Folder for UVD Group Subfolders",
+        });
+        if (!folder) return;
+        setBusyLabel("Extracting UVD sprites...");
+        const msg = await invoke<string>("extract_uvd_action", {
+          nodeIds,
+          destPath: folder,
+          writeJson,
+        });
+        setStatusLeft(msg);
+        loadDirectory(currentDirRef.current);
+      }
+    } catch (err) {
+      const errMsg = String(err);
+      setStatusLeft(`UVD extract error: ${errMsg}`);
+      window.alert(errMsg);
+    } finally {
+      setBusyLabel(null);
+    }
+  }
+
+  function resolveUvdNodeName(targetId: string, fallback: string): string {
+    const tree = outlineRef.current?.tree;
+    if (tree) {
+      const walk = (nodes: AssetTreeNode[]): AssetTreeNode | null => {
+        for (const n of nodes) {
+          if (n.id === targetId) return n;
+          if (n.children && n.children.length > 0) {
+            const found = walk(n.children);
+            if (found) return found;
+          }
+        }
+        return null;
+      };
+      const found = walk(tree);
+      if (found && found.label) {
+        const idx = found.label.lastIndexOf(" (");
+        return idx > 0 ? found.label.slice(0, idx) : found.label;
+      }
+    }
+    return fallback;
+  }
+
+  async function promptAddUvdGroup(uvdNodeId: string) {
+    setContextMenu(null);
+    const rawName = window.prompt(
+      "Enter new UVD Group name (max 31 ASCII characters):",
+      "new_group"
+    );
+    if (!rawName || !rawName.trim()) return;
+    const trimmed = rawName.trim();
+    if (trimmed.length > 31) {
+      const msg = `Group name '${trimmed}' is ${trimmed.length} bytes; maximum allowed is 31 characters.`;
+      setStatusLeft(msg);
+      window.alert(msg);
+      return;
+    }
+    const paths = await invoke<string[]>("pick_multiple_files_dialog", {
+      title: `Select Initial Sprite PNG(s) for Group '${trimmed}' (or Cancel for empty 256×256 sheet)`,
+      extensions: ["png", "tga", "bmp", "jpg", "jpeg"],
+    });
+    await runUvdMutation(uvdNodeId, "add_group", {
+      name: trimmed,
+      paths: paths ?? [],
+    });
+  }
+
+  async function promptAddUvdSprite(groupNodeId: string, groupIndex?: number) {
+    setContextMenu(null);
+    const rawName = window.prompt(
+      "Enter new Sprite Item name (max 63 ASCII characters):",
+      "new_sprite_00"
+    );
+    if (!rawName || !rawName.trim()) return;
+    const trimmed = rawName.trim();
+    if (trimmed.length > 63) {
+      const msg = `Item name '${trimmed}' is ${trimmed.length} bytes; maximum allowed is 63 characters.`;
+      setStatusLeft(msg);
+      window.alert(msg);
+      return;
+    }
+    const path = await invoke<string | null>("pick_file_dialog", {
+      title: `Select Sprite Image (.PNG) for '${trimmed}'`,
+      extensions: ["png", "tga", "bmp", "jpg", "jpeg"],
+    });
+    if (!path) return;
+    await runUvdMutation(groupNodeId, "add_item", {
+      group_index: groupIndex,
+      name: trimmed,
+      path,
+    });
+  }
+
+  async function promptReplaceUvdSprite(
+    itemNodeId: string,
+    groupIndex?: number,
+    itemIndex?: number
+  ) {
+    setContextMenu(null);
+    const path = await invoke<string | null>("pick_file_dialog", {
+      title: "Select Replacement Sprite Image (.PNG)",
+      extensions: ["png", "tga", "bmp", "jpg", "jpeg"],
+    });
+    if (!path) return;
+    await runUvdMutation(itemNodeId, "replace_item", {
+      group_index: groupIndex,
+      item_index: itemIndex,
+      path,
+    });
+  }
+
+  async function promptRenameUvdGroup(
+    groupNodeId: string,
+    currentName: string,
+    groupIndex?: number
+  ) {
+    setContextMenu(null);
+    const rawName = window.prompt(
+      "Rename UVD Group (max 31 ASCII characters):\n\nWarning: Renaming recomputes the Group ID (crc32 & 0x7FFFFFFF). Any .uid file referencing the old Group ID may break.",
+      currentName
+    );
+    if (!rawName || !rawName.trim() || rawName.trim() === currentName) return;
+    const trimmed = rawName.trim();
+    if (trimmed.length > 31) {
+      const msg = `Group name '${trimmed}' is ${trimmed.length} bytes; maximum allowed is 31 characters.`;
+      setStatusLeft(msg);
+      window.alert(msg);
+      return;
+    }
+    const ok = window.confirm(
+      `Rename group '${currentName}' to '${trimmed}'?\n\nNote: The Group ID will be recomputed from the new name, and any .uid layout referencing the old ID may break.`
+    );
+    if (!ok) return;
+    await runUvdMutation(groupNodeId, "rename_group", {
+      group_index: groupIndex,
+      new_name: trimmed,
+    });
+  }
+
+  async function promptRenameUvdSprite(
+    itemNodeId: string,
+    currentName: string,
+    groupIndex?: number,
+    itemIndex?: number
+  ) {
+    setContextMenu(null);
+    const rawName = window.prompt(
+      "Rename UVD Sprite Item (max 63 ASCII characters):\n\nWarning: Renaming recomputes the Item ID (CRC32). Any .uid file referencing the old Item ID may break.",
+      currentName
+    );
+    if (!rawName || !rawName.trim() || rawName.trim() === currentName) return;
+    const trimmed = rawName.trim();
+    if (trimmed.length > 63) {
+      const msg = `Item name '${trimmed}' is ${trimmed.length} bytes; maximum allowed is 63 characters.`;
+      setStatusLeft(msg);
+      window.alert(msg);
+      return;
+    }
+    const ok = window.confirm(
+      `Rename sprite '${currentName}' to '${trimmed}'?\n\nNote: The Item ID (CRC32) will be recomputed from the new name, and any .uid layout referencing the old ID may break.`
+    );
+    if (!ok) return;
+    await runUvdMutation(itemNodeId, "rename_item", {
+      group_index: groupIndex,
+      item_index: itemIndex,
+      new_name: trimmed,
+    });
+  }
+
+  const uvdActions: UvdActions = {
+    runUvdMutation,
+    handleUvdExtract,
+    promptAddUvdGroup,
+    promptAddUvdSprite,
+    promptReplaceUvdSprite,
+    promptRenameUvdGroup,
+    promptRenameUvdSprite,
+    selectAndInspectNode: (nid: string) => selectAndInspectNode(nid),
+    resolveNodeName: resolveUvdNodeName,
+    uvdPadding,
+    setUvdPadding,
+    uvdMaxSize,
+    setUvdMaxSize,
+  };
+
   const activeTexture: TextureNodeView | null =
     nodePayload?.view_type === "TEXTURE" ? (nodePayload.texture ?? null) : null;
   const activeWmb: WmbSectionView | null =
@@ -1608,6 +2024,8 @@ export default function App() {
 
   const { buildAssetNodeContextMenu, buildFileBrowserContextMenu } = createMenuBuilders(
     {
+      selectedNodeIds,
+      uvdActions,
       activeTexture,
       activeWmb,
       wmbMatDraft,
@@ -2030,7 +2448,7 @@ export default function App() {
       </header>
       <div className="studio-toolbar">
         <div className="toolbar-group">
-          {activeTexture && (
+          {activeTexture && activeTexture.uvd_mode !== "item" && (
             <>
               <span className="toolbar-label">Mip</span>
               <select
@@ -2158,6 +2576,7 @@ export default function App() {
             outline={outline}
             expandedNodes={expandedNodes}
             selectedNodeId={selectedNodeId}
+            selectedNodeIds={selectedNodeIds}
             assetSearch={assetSearch}
             pointerDrag={pointerDrag}
             assetRatio={assetRatio}
@@ -2170,7 +2589,7 @@ export default function App() {
             }
             onExpandAll={handleExpandAll}
             onCollapseAll={handleCollapseAll}
-            onSelectNode={(nodeId) => void selectAndInspectNode(nodeId)}
+            onSelectNode={(nodeId, e) => handleSelectAssetNode(nodeId, e)}
             onContextMenu={(e, nodeId, kind) => {
               setHoverSubmenuIdx(null);
               const items = buildAssetNodeContextMenu(nodeId, kind);
@@ -2341,6 +2760,7 @@ export default function App() {
             setHoverSubmenuIdx,
             setStatusLeft,
             switchBxmViewMode,
+            uvdActions,
           }}
           materialClipboard={materialClipboard}
           setMaterialClipboard={setMaterialClipboard}
@@ -2432,6 +2852,20 @@ export default function App() {
           </div>
         </div>
       )}
+
+      {uvdSaveModalTarget !== undefined &&
+        outline?.pending_uvd_encodes &&
+        outline.pending_uvd_encodes.length > 0 && (
+          <UvdSaveEncodeModal
+            pendingSheets={outline.pending_uvd_encodes}
+            onCancel={() => setUvdSaveModalTarget(undefined)}
+            onConfirm={async (opts) => {
+              const target = uvdSaveModalTarget;
+              setUvdSaveModalTarget(undefined);
+              await executeDocumentSave(target, opts);
+            }}
+          />
+        )}
 
       {texModalState && (
         <TextureImportModal

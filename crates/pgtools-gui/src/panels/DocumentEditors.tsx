@@ -14,6 +14,11 @@ import {
   TextureCenterView,
   TextureInspectorView,
 } from "../editors/TextureEditor";
+import {
+  UvdActions,
+  UvdCenterView,
+  UvdInspectorSection,
+} from "../editors/UvdEditor";
 import { ClothInspectorView, StructCenterView } from "../editors/StructEditors";
 import {
   WmbInspectorView,
@@ -105,6 +110,7 @@ export interface DocumentActions {
   setHoverSubmenuIdx: React.Dispatch<React.SetStateAction<number | null>>;
   setStatusLeft: (msg: string) => void;
   switchBxmViewMode: (m: "tree" | "table" | "xml") => void;
+  uvdActions: UvdActions;
 }
 
 export interface DocumentEditorsProps {
@@ -122,7 +128,6 @@ export interface DocumentEditorsProps {
 
 /**
  * Center viewport + right inspector, switched by the active node payload.
- * Props are grouped so App does not pass dozens of individual fields.
  */
 export function DocumentEditors({
   selection,
@@ -228,16 +233,23 @@ export function DocumentEditors({
                   onClick={() => setCenterTab("primary")}
                 >
                   <IconImage size={12} />
-                  <span>2D</span>
+                  <span>{activeTexture.uvd_mode === "item" ? "Sprite Crop" : "2D"}</span>
                 </button>
-                <button
-                  className={`underline-tab ${centerTab === "secondary" ? "active" : ""}`}
-                  onClick={() => setCenterTab("secondary")}
-                >
-                  <IconCube size={12} />
-                  <span>Cube-3D</span>
-                </button>
+                {activeTexture.uvd_mode !== "item" && (
+                  <button
+                    className={`underline-tab ${centerTab === "secondary" ? "active" : ""}`}
+                    onClick={() => setCenterTab("secondary")}
+                  >
+                    <IconCube size={12} />
+                    <span>Cube-3D</span>
+                  </button>
+                )}
               </>
+            ) : nodePayload?.view_type === "UVD" ? (
+              <button className="underline-tab active" onClick={() => setCenterTab("primary")}>
+                <IconImage size={12} />
+                <span>UVD Atlas Groups</span>
+              </button>
             ) : nodePayload?.view_type === "BXM" ? (
               <>
                 <button
@@ -285,7 +297,7 @@ export function DocumentEditors({
           {activeTexture ? (
             <TextureCenterView
               activeTexture={activeTexture}
-              centerTab={centerTab}
+              centerTab={activeTexture.uvd_mode === "item" ? "primary" : centerTab}
               mipIndex={mipIndex}
               layerIndex={layerIndex}
               opaquePreview={opaquePreview}
@@ -313,6 +325,12 @@ export function DocumentEditors({
               setContextMenu={actions.setContextMenu}
               setHoverSubmenuIdx={actions.setHoverSubmenuIdx}
               onStatus={actions.setStatusLeft}
+            />
+          ) : nodePayload?.view_type === "UVD" && nodePayload.uvd ? (
+            <UvdCenterView
+              uvd={nodePayload.uvd}
+              specLine={nodePayload.spec_line}
+              uvdActions={actions.uvdActions}
             />
           ) : activeWmb && centerTab === "primary" ? (
             <div
@@ -473,7 +491,27 @@ export function DocumentEditors({
             runTextureMutation={actions.runTextureMutation}
             promptAndRunTextureImport={actions.promptAndRunTextureImport}
             handleTextureExport={actions.handleTextureExport}
+            uvdContext={nodePayload?.uvd ?? null}
+            uvdActions={actions.uvdActions}
           />
+        ) : nodePayload?.view_type === "UVD" && nodePayload.uvd ? (
+          <div>
+            <div className="inspector-header">
+              <div className="inspector-icon-box">
+                <IconImage size={20} />
+              </div>
+              <div>
+                <div className="inspector-title">{nodePayload.title}</div>
+                <div className="inspector-subtitle">{nodePayload.spec_line}</div>
+              </div>
+            </div>
+            <UvdInspectorSection
+              uvd={nodePayload.uvd}
+              openCards={openCards}
+              toggleCard={toggleCard}
+              uvdActions={actions.uvdActions}
+            />
+          </div>
         ) : activeWmb ? (
           <WmbInspectorView
             activeWmb={activeWmb}

@@ -1,5 +1,5 @@
 use crate::session::{
-    lock_session, record_mutation, AppState, DocSnapshot, StudioSession,
+    lock_session, record_mutation, AppState, DocSnapshot, PendingUvdSheetInfo, StudioSession,
 };
 use pgtools_core::{
     bxm::BxmFile,
@@ -11,6 +11,7 @@ use pgtools_core::{
         OodleLibrary, PkzArchive,
     },
     scr::ScrFile,
+    uvd::UvdFile,
     wmb::WmbFile,
     wmb3::Wmb3File,
     wtb::WtbFile,
@@ -50,6 +51,8 @@ pub struct DocumentOutline {
     pub undo_label: Option<String>,
     pub redo_label: Option<String>,
     pub tree: Vec<AssetTreeNode>,
+    #[serde(default)]
+    pub pending_uvd_encodes: Vec<PendingUvdSheetInfo>,
 }
 
 pub fn is_supported_extension(ext: &str) -> bool {
@@ -90,6 +93,7 @@ pub fn is_supported_extension(ext: &str) -> bool {
             | "cta"
             | "lit"
             | "csv"
+            | "uvd"
     )
 }
 
@@ -252,6 +256,7 @@ pub(crate) fn detect_file_format_tag(name: &str, bytes: &[u8]) -> &'static str {
         "fla" | "cta" => "XAD",
         "lit" => "LIT",
         "csv" => "CSV",
+        "uvd" => "UVD",
         _ => "BIN",
     }
 }
@@ -413,7 +418,7 @@ pub(crate) fn build_nodes_for_blob_with_baseline(
                         // Only decompress nested containers that expand into sub-trees in the Asset Browser
                         let expands_in_tree = matches!(
                             ext.as_str(),
-                            "dat" | "dtt" | "evn" | "pkz" | "eff" | "idd" | "scr" | "wtb" | "wta" | "wtp" | "wmb" | "bntx"
+                            "dat" | "dtt" | "evn" | "pkz" | "eff" | "idd" | "scr" | "wtb" | "wta" | "wtp" | "wmb" | "bntx" | "uvd"
                         );
                         if expands_in_tree {
                             if let Ok(u) = pkz.extract_entry_with_lib(bytes, idx, oodle_lib.as_ref()) {
@@ -831,6 +836,47 @@ pub(crate) fn build_nodes_for_blob_with_baseline(
                     });
                 }
             }
+            "UVD" => {
+                if let Ok(uvd) = UvdFile::from_bytes(bytes) {
+                    for (g_idx, grp) in uvd.groups.iter().enumerate() {
+                        let gid = if id_prefix.is_empty() {
+                            format!("uvdgrp:{g_idx}")
+                        } else {
+                            format!("{id_prefix}/uvdgrp:{g_idx}")
+                        };
+                        let item_children: Vec<AssetTreeNode> = grp
+                            .items
+                            .iter()
+                            .enumerate()
+                            .map(|(i_idx, it)| AssetTreeNode {
+                                id: format!("{gid}/uvditem:{i_idx}"),
+                                label: format!(
+                                    "{} ({}×{})",
+                                    it.name,
+                                    it.w.round() as u32,
+                                    it.h.round() as u32
+                                ),
+                                kind: "UVD_ITEM".into(),
+                                format_badge: format!("0x{:08X}", it.id),
+                                size: 96,
+                                modified: false,
+                                compression: None,
+                                children: Vec::new(),
+                            })
+                            .collect();
+                        children.push(AssetTreeNode {
+                            id: gid,
+                            label: format!("{} ({})", grp.name, grp.items.len()),
+                            kind: "UVD_GROUP".into(),
+                            format_badge: format!("0x{:08X}", grp.id),
+                            size: 36 + grp.items.len() * 96,
+                            modified: false,
+                            compression: None,
+                            children: item_children,
+                        });
+                    }
+                }
+            }
             _ => {}
         }
     }
@@ -1171,12 +1217,25 @@ pub(crate) fn write_back_subblob_with_align(
                             &mut parsed_dat,
                             wtp_bytes,
                         ) {
-                            dtt_modified = update_matching_wtp_in_dat(
+                            if update_matching_wtp_in_dat(
                                 &entry_name,
                                 wta_ord,
                                 &mut parsed_dtt,
                                 wtp_bytes,
-                            );
+                            ) {
+                                dtt_modified = true;
+                            } else if !wtp_bytes.is_empty() {
+                                let wta_stem = Path::new(&entry_name)
+                                    .file_stem()
+                                    .and_then(|s| s.to_str())
+                                    .unwrap_or("textures");
+                                if parsed_dtt
+                                    .push(format!("{wta_stem}.wtp"), wtp_bytes.clone())
+                                    .is_ok()
+                                {
+                                    dtt_modified = true;
+                                }
+                            }
                         }
                     }
                 }
@@ -1252,6 +1311,7 @@ pub(crate) fn write_back_subblob_with_align(
         if rest.is_empty() {
             if let Some(wtp_bytes) = new_wtp {
                 if !update_matching_wtp_in_dat(&entry_name, wta_ord, &mut dat, &wtp_bytes) {
+                    let mut handled_in_dtt = false;
                     if let DocSnapshot::PairedDatDtt { dtt, .. } = snap {
                         if let Ok(mut parsed_dtt) = DatFile::from_bytes(dtt) {
                             if update_matching_wtp_in_dat(
@@ -1261,8 +1321,30 @@ pub(crate) fn write_back_subblob_with_align(
                                 &wtp_bytes,
                             ) {
                                 updated_dtt_bytes = Some(Arc::new(parsed_dtt.to_bytes_with_alignment(dat_align)));
+                                handled_in_dtt = true;
+                            } else if !wtp_bytes.is_empty() {
+                                let wta_stem = Path::new(&entry_name)
+                                    .file_stem()
+                                    .and_then(|s| s.to_str())
+                                    .unwrap_or("textures");
+                                if parsed_dtt
+                                    .push(format!("{wta_stem}.wtp"), wtp_bytes.clone())
+                                    .is_ok()
+                                {
+                                    updated_dtt_bytes = Some(Arc::new(parsed_dtt.to_bytes_with_alignment(dat_align)));
+                                    handled_in_dtt = true;
+                                }
                             }
                         }
+                    }
+                    if !handled_in_dtt && !wtp_bytes.is_empty() {
+                        let wta_stem = Path::new(&entry_name)
+                            .file_stem()
+                            .and_then(|s| s.to_str())
+                            .unwrap_or("textures");
+                        let wtp_name = format!("{wta_stem}.wtp");
+                        dat.push(wtp_name.clone(), wtp_bytes)
+                            .map_err(|e| format!("Failed to add {wtp_name} to DAT: {e}"))?;
                     }
                 }
             }
@@ -1485,6 +1567,7 @@ pub(crate) fn build_outline_from_session(sess: &StudioSession) -> Result<Documen
             undo_label: sess.undo_stack.last().map(|u| u.description.clone()),
             redo_label: sess.redo_stack.last().map(|u| u.description.clone()),
             tree: vec![dat_node, dtt_node],
+            pending_uvd_encodes: sess.pending_uvd_sheets.values().cloned().collect(),
         });
     }
 
@@ -1543,6 +1626,7 @@ pub(crate) fn build_outline_from_session(sess: &StudioSession) -> Result<Documen
         }
         "EFF" => format!("EffectContainer · {} dirs", root_node.children.len()),
         "WMB" | "WMB3" => format!("{root_format} · {} sections", root_node.children.len()),
+        "UVD" => format!("UvdAtlas · {} groups", root_node.children.len()),
         _ => format!("{root_format} · {} B", main_bytes.len()),
     };
 
@@ -1562,6 +1646,7 @@ pub(crate) fn build_outline_from_session(sess: &StudioSession) -> Result<Documen
         undo_label: sess.undo_stack.last().map(|u| u.description.clone()),
         redo_label: sess.redo_stack.last().map(|u| u.description.clone()),
         tree: vec![root_node],
+        pending_uvd_encodes: sess.pending_uvd_sheets.values().cloned().collect(),
     })
 }
 

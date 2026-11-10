@@ -6,6 +6,7 @@ mod fs_ops;
 mod session;
 mod settings;
 mod texture_cmd;
+mod uvd_cmd;
 mod vfs;
 mod wmb_scene;
 #[cfg(test)]
@@ -134,6 +135,8 @@ fn main() {
             texture_cmd::scan_batch_replace_folder,
             texture_cmd::run_batch_recompress_action,
             texture_cmd::run_folder_texture_export,
+            uvd_cmd::mutate_uvd_node,
+            uvd_cmd::extract_uvd_action,
             wmb_scene::convert_material_action,
             wmb_scene::mutate_wmb_node,
             formats_cmd::mutate_bxm_node,

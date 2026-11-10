@@ -4,9 +4,10 @@
 
 use crate::io::{align, checked_count, BinReader, BinWriter, Endian};
 use crate::texture_conv::{
-    convert_gtx_to_dds, inspect_texture_blob, parse_bntx_textures, TextureDimension,
-    TextureMetadata,
+    convert_gtx_to_dds, inspect_texture_blob, parse_bntx_textures,
+    texture_blob_has_pixel_payload_at, TextureDimension, TextureMetadata,
 };
+use crate::uvd::compute_uvd_group_id;
 
 /// Bayonetta 3 / Astral Chain (`SwitchXt1`) `table2` (`flags`) bitmasks when read as a little-endian `u32`
 /// (`[b0, b1, b2, b3]` on disk -> `u32::from_le_bytes([b0, b1, b2, b3])`).
@@ -95,9 +96,18 @@ pub struct WtbTextureEntry {
     pub content_hash: String,
     #[serde(skip)]
     pub data: Vec<u8>,
+    #[serde(default)]
+    pub original_offset: Option<u32>,
+    #[serde(default)]
+    pub original_size: Option<u32>,
 }
 
 impl WtbTextureEntry {
+    #[inline]
+    pub fn has_pixel_payload(&self) -> bool {
+        texture_blob_has_pixel_payload_at(&self.data, Some(self.index))
+    }
+
     /// Synchronize `table2` (`flags`) sRGB (`0x0400_0000`) and cubemap (`0x8000_0000`) bits
     /// from `self.metadata` ONLY when `game_profile == WtbGameProfile::SwitchXt1`.
     /// Never modifies non-SwitchXt1 banks, and never enables the unknown `AF_L8` (`0x0800_0000`) bit by default.
@@ -136,6 +146,10 @@ pub struct WtbFile {
     pub unknown: u32,
     pub entries: Vec<WtbTextureEntry>,
     pub texture_infos: Vec<u32>,
+    /// Original per-texture mip offsets (big-endian GX2 WTA only), used to preserve the mip
+    /// table when a header-only bank is re-serialized without rebuilding its WTP payload.
+    #[serde(default)]
+    pub original_mip_offsets: Vec<u32>,
 }
 
 impl WtbFile {
@@ -151,6 +165,7 @@ impl WtbFile {
             unknown: 1,
             entries: Vec::new(),
             texture_infos: Vec::new(),
+            original_mip_offsets: Vec::new(),
         }
     }
 
@@ -172,6 +187,7 @@ impl WtbFile {
             unknown,
             entries: Vec::new(),
             texture_infos: Vec::new(),
+            original_mip_offsets: Vec::new(),
         }
     }
 
@@ -181,7 +197,7 @@ impl WtbFile {
         let parsed = parse_bntx_textures(bntx_bytes)?;
         let mut entries = Vec::with_capacity(parsed.len());
         for (i, tex) in parsed.into_iter().enumerate() {
-            let tid = crc32fast::hash(tex.name.trim().to_ascii_lowercase().as_bytes()) & 0x7FFF_FFFF;
+            let tid = compute_uvd_group_id(&tex.name);
             let dimension = if tex.surface_dim == 3 || tex.array_length == 6 {
                 TextureDimension::TexCube
             } else if tex.depth > 1 || tex.array_length > 1 {
@@ -216,6 +232,8 @@ impl WtbFile {
                 content_hash,
                 // Store the parent BNTX bytes; sub-texture decoding uses index `i` when needed.
                 data: bntx_bytes.to_vec(),
+                original_offset: None,
+                original_size: None,
             });
         }
         Ok(Self {
@@ -225,6 +243,7 @@ impl WtbFile {
             unknown: 1,
             entries,
             texture_infos: Vec::new(),
+            original_mip_offsets: Vec::new(),
         })
     }
 
@@ -339,7 +358,10 @@ impl WtbFile {
             )?;
         }
 
-        let mipmap_offsets: Vec<usize> = if wtp.is_some() && endian.is_big() {
+        let mipmap_offsets: Vec<usize> = if endian.is_big()
+            && (wtp.is_some() || offset_texture_infos != 0)
+            && wtb_or_wta.len() >= 0x24
+        {
             let off_mip = r.read_u32()? as usize;
             if off_mip != 0 {
                 checked_count(
@@ -402,13 +424,26 @@ impl WtbFile {
             }
         }
 
+        let is_header_only_wta = wtp.is_none()
+            && num_tex > 0
+            && (texture_offsets[0] < 0x20
+                || texture_offsets
+                    .iter()
+                    .zip(texture_sizes.iter())
+                    .any(|(&off, &sz)| sz > 0 && off.saturating_add(sz) > wtb_or_wta.len()));
+        let effective_wtp: Option<&[u8]> = if is_header_only_wta {
+            Some(&[])
+        } else {
+            wtp
+        };
+
         let mut texture_infos = Vec::new();
         let mut entries = Vec::with_capacity(num_tex);
 
         for i in 0..num_tex {
             let off = texture_offsets[i];
             let sz = texture_sizes[i];
-            let blob = match (wtp, default_ext, endian) {
+            let blob = match (effective_wtp, default_ext, endian) {
                 (None, ".xt1", _) => {
                     let hdr = r.slice_at(offset_texture_infos + i * 0x38, 0x38)?;
                     let body = if off + sz <= wtb_or_wta.len() {
@@ -489,10 +524,12 @@ impl WtbFile {
                 metadata,
                 content_hash,
                 data: blob,
+                original_offset: Some(off as u32),
+                original_size: Some(sz as u32),
             });
         }
 
-        if wtp.is_some() && !endian.is_big() && default_ext != ".xt1" && offset_texture_infos != 0 {
+        if effective_wtp.is_some() && !endian.is_big() && default_ext != ".xt1" && offset_texture_infos != 0 {
             if offset_texture_infos + 20 * num_tex <= wtb_or_wta.len() {
                 r.seek(offset_texture_infos)?;
                 for _ in 0..(5 * num_tex) {
@@ -516,11 +553,15 @@ impl WtbFile {
 
         Ok(Self {
             endian,
-            is_split_wta_wtp: wtp.is_some(),
+            is_split_wta_wtp: effective_wtp.is_some(),
             game_profile,
             unknown,
             entries,
             texture_infos,
+            original_mip_offsets: mipmap_offsets
+                .iter()
+                .map(|&v| v.min(u32::MAX as usize) as u32)
+                .collect(),
         })
     }
 
@@ -576,6 +617,8 @@ impl WtbFile {
             metadata,
             content_hash,
             data,
+            original_offset: None,
+            original_size: None,
         };
         if self.game_profile == WtbGameProfile::SwitchXt1 {
             entry.sync_xt1_flags_from_metadata(self.game_profile);
@@ -743,12 +786,21 @@ impl WtbFile {
                 }
             }
 
+            let any_wtp_payload = self.entries.iter().any(|e| e.has_pixel_payload());
             let mut offset_wtp = 0usize;
             let mut texture_offsets = Vec::with_capacity(num_tex);
             let mut mipmap_offsets = vec![0u32; num_tex];
             let mut texture_sizes = Vec::with_capacity(num_tex);
 
-            if is_gx2_wta {
+            if !any_wtp_payload {
+                for (i, e) in self.entries.iter().enumerate() {
+                    texture_offsets.push(e.original_offset.unwrap_or(0));
+                    texture_sizes.push(e.original_size.unwrap_or(0));
+                    if is_gx2_wta {
+                        mipmap_offsets[i] = self.original_mip_offsets.get(i).copied().unwrap_or(0);
+                    }
+                }
+            } else if is_gx2_wta {
                 for (i, (_gx2, base_data, mip_data)) in gx2_parts.iter().enumerate() {
                     let al = 0x2000usize;
                     let base_off = align(offset_wtp, al);
@@ -860,8 +912,12 @@ impl WtbFile {
                     }
                 }
             }
-            w_wtp.seek(offset_wtp);
-            (w_wta.into_inner(), Some(w_wtp.into_inner()))
+            if !any_wtp_payload {
+                (w_wta.into_inner(), None)
+            } else {
+                w_wtp.seek(offset_wtp);
+                (w_wta.into_inner(), Some(w_wtp.into_inner()))
+            }
         }
     }
 

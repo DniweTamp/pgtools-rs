@@ -7,7 +7,9 @@ import {
   MenuItemSpec,
   TexModalState,
   TextureNodeView,
+  UvdContextView,
 } from "../types";
+import { UvdActions, UvdInspectorSection } from "./UvdEditor";
 import {
   IconCheck,
   IconChevronDown,
@@ -510,7 +512,13 @@ export const TextureCenterView: React.FC<TextureCenterViewProps> = ({
               e.preventDefault();
               e.stopPropagation();
               setHoverSubmenuIdx(null);
-              const baseItems = buildAssetNodeContextMenu(activeTexture.node_id, "TEXTURE");
+              const menuKind =
+                activeTexture.uvd_mode === "item"
+                  ? "UVD_ITEM"
+                  : activeTexture.uvd_mode === "group"
+                  ? "UVD_GROUP"
+                  : "TEXTURE";
+              const baseItems = buildAssetNodeContextMenu(activeTexture.node_id, menuKind);
               setContextMenu({
                 x: Math.min(e.clientX, window.innerWidth - 260),
                 y: Math.min(e.clientY, window.innerHeight - 320),
@@ -665,6 +673,8 @@ export interface TextureInspectorViewProps {
     scope: "single" | "bank" | "container",
     format: "png" | "dds" | "raw"
   ) => Promise<void>;
+  uvdContext?: UvdContextView | null;
+  uvdActions?: UvdActions;
 }
 
 export const TextureInspectorView: React.FC<TextureInspectorViewProps> = ({
@@ -690,9 +700,12 @@ export const TextureInspectorView: React.FC<TextureInspectorViewProps> = ({
   runTextureMutation,
   promptAndRunTextureImport,
   handleTextureExport,
+  uvdContext,
+  uvdActions,
 }) => {
   const hashDisabled =
     activeTexture.has_confirmed_xt1_flags && !activeTexture.has_crc32_flag;
+  const isUvdItem = activeTexture.uvd_mode === "item";
 
   return (
     <div>
@@ -713,6 +726,17 @@ export const TextureInspectorView: React.FC<TextureInspectorViewProps> = ({
         <span>{activeTexture.validation_msg}</span>
       </div>
 
+      {uvdContext && uvdActions && (
+        <UvdInspectorSection
+          uvd={uvdContext}
+          openCards={openCards}
+          toggleCard={toggleCard}
+          uvdActions={uvdActions}
+        />
+      )}
+
+      {!isUvdItem && (
+        <>
       {/* Card 1: # Hash & Built-in BNTX Name */}
       <div className="inspector-card">
         <button className="card-header-toggle" onClick={() => toggleCard("hash")}>
@@ -1080,6 +1104,8 @@ export const TextureInspectorView: React.FC<TextureInspectorViewProps> = ({
           </div>
         )}
       </div>
+        </>
+      )}
     </div>
   );
 };

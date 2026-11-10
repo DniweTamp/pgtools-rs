@@ -10,8 +10,11 @@ import {
 } from "../types";
 import { isVirtualSubNode } from "../utils/format";
 import { convertMaterialBetweenGames } from "../wmb-studio/contract";
+import { UvdActions } from "../editors/UvdEditor";
 
 export interface AssetMenuDeps {
+  selectedNodeIds?: string[];
+  uvdActions?: UvdActions;
   activeTexture?: TextureNodeView | null;
   activeWmb: WmbSectionView | null;
   wmbMatDraft: DecodedWmbMaterial | null;
@@ -61,6 +64,8 @@ export interface FileMenuDeps {
 
 export function createMenuBuilders(assetDeps: AssetMenuDeps, fileDeps: FileMenuDeps) {
   const {
+    selectedNodeIds,
+    uvdActions,
     activeTexture,
     activeWmb,
     wmbMatDraft,
@@ -667,6 +672,222 @@ export function createMenuBuilders(assetDeps: AssetMenuDeps, fileDeps: FileMenuD
       return items;
     }
 
+    // 3B. UVD / UVD_GROUP / UVD_ITEM Context Menus
+    if ((kind === "UVD" || kind === "UVD_GROUP" || kind === "UVD_ITEM") && uvdActions) {
+      const multiIds =
+        selectedNodeIds && selectedNodeIds.length > 1 && selectedNodeIds.includes(nodeId)
+          ? selectedNodeIds
+          : [nodeId];
+
+      if (kind === "UVD") {
+        return [
+          {
+            label: "Extract All Groups (PNG Subfolders)...",
+            action: () => {
+              setContextMenu(null);
+              void uvdActions.handleUvdExtract([nodeId], false);
+            },
+          },
+          {
+            label: "Extract All Groups + .uvd.json...",
+            action: () => {
+              setContextMenu(null);
+              void uvdActions.handleUvdExtract([nodeId], true);
+            },
+          },
+          { separator: true },
+          {
+            label: "Add New Group...",
+            action: () => {
+              setContextMenu(null);
+              void uvdActions.promptAddUvdGroup(nodeId);
+            },
+          },
+          {
+            label: "Swap Endianness (Little ↔ Big)",
+            action: () => {
+              setContextMenu(null);
+              void uvdActions.runUvdMutation(nodeId, "swap_endian");
+            },
+          },
+          ...(leafEntryMgmtItems.length > 0 ? [{ separator: true }, ...leafEntryMgmtItems] : []),
+          { separator: true },
+          {
+            label: "Expand All",
+            action: () => {
+              setContextMenu(null);
+              onExpandAll();
+            },
+          },
+          {
+            label: "Collapse All",
+            action: () => {
+              setContextMenu(null);
+              onCollapseAll();
+            },
+          },
+        ];
+      }
+
+      if (kind === "UVD_GROUP") {
+        const groupIndices = multiIds
+          .map((id) => {
+            const m = id.match(/uvdgrp:(\d+)$/);
+            return m ? parseInt(m[1], 10) : -1;
+          })
+          .filter((n) => n >= 0);
+        const countLabel = groupIndices.length > 1 ? `${groupIndices.length} Selected Groups` : "Group";
+
+        return [
+          {
+            label: `Extract ${countLabel} (PNG Subfolder)...`,
+            action: () => {
+              setContextMenu(null);
+              void uvdActions.handleUvdExtract(multiIds, false);
+            },
+          },
+          {
+            label: `Extract ${countLabel} + .uvd.json...`,
+            action: () => {
+              setContextMenu(null);
+              void uvdActions.handleUvdExtract(multiIds, true);
+            },
+          },
+          { separator: true },
+          {
+            label: "Add Sprite to Group...",
+            disabled: groupIndices.length > 1,
+            action: () => {
+              setContextMenu(null);
+              void uvdActions.promptAddUvdSprite(nodeId, groupIndices[0]);
+            },
+          },
+          {
+            label: "Repack Group (Apply Padding)",
+            disabled: groupIndices.length > 1,
+            action: () => {
+              setContextMenu(null);
+              void uvdActions.runUvdMutation(nodeId, "repack_group", {
+                group_index: groupIndices[0],
+              });
+            },
+          },
+          { separator: true },
+          {
+            label: "Rename Group...",
+            shortcut: "F2",
+            disabled: groupIndices.length > 1,
+            action: () => {
+              setContextMenu(null);
+              const fallback = activeTexture?.embedded_name || `group_${groupIndices[0] ?? 0}`;
+              const curName = uvdActions.resolveNodeName
+                ? uvdActions.resolveNodeName(nodeId, fallback)
+                : fallback;
+              void uvdActions.promptRenameUvdGroup(nodeId, curName, groupIndices[0]);
+            },
+          },
+          {
+            label: `Move ${countLabel} Up`,
+            action: () => {
+              setContextMenu(null);
+              void uvdActions.runUvdMutation(nodeId, "reorder_groups", {
+                group_indices: groupIndices,
+                direction: "up",
+              });
+            },
+          },
+          {
+            label: `Move ${countLabel} Down`,
+            action: () => {
+              setContextMenu(null);
+              void uvdActions.runUvdMutation(nodeId, "reorder_groups", {
+                group_indices: groupIndices,
+                direction: "down",
+              });
+            },
+          },
+          { separator: true },
+          {
+            label: `Delete ${countLabel}`,
+            shortcut: "Del",
+            action: () => {
+              setContextMenu(null);
+              const ok = window.confirm(
+                `Delete ${groupIndices.length} UVD group(s)?\n\nWTA texture slots will not be deleted or reordered.`
+              );
+              if (ok) {
+                void uvdActions.runUvdMutation(nodeId, "delete_groups", {
+                  group_indices: groupIndices,
+                });
+              }
+            },
+          },
+        ];
+      }
+
+      if (kind === "UVD_ITEM") {
+        const parsedPairs: [number, number][] = multiIds
+          .map((id) => {
+            const m = id.match(/uvdgrp:(\d+)\/uvditem:(\d+)$/);
+            return m ? ([parseInt(m[1], 10), parseInt(m[2], 10)] as [number, number]) : null;
+          })
+          .filter((x): x is [number, number] => x !== null);
+        const firstPair = parsedPairs[0] ?? [0, 0];
+        const countLabel = parsedPairs.length > 1 ? `${parsedPairs.length} Selected Sprites` : "Sprite";
+
+        return [
+          {
+            label:
+              parsedPairs.length > 1
+                ? `Extract ${countLabel} to Folder...`
+                : "Extract Single Sprite (.PNG)...",
+            action: () => {
+              setContextMenu(null);
+              void uvdActions.handleUvdExtract(multiIds, false);
+            },
+          },
+          {
+            label: "Replace Sprite (Single PNG)...",
+            disabled: parsedPairs.length > 1,
+            action: () => {
+              setContextMenu(null);
+              void uvdActions.promptReplaceUvdSprite(nodeId, firstPair[0], firstPair[1]);
+            },
+          },
+          { separator: true },
+          {
+            label: "Rename Sprite...",
+            shortcut: "F2",
+            disabled: parsedPairs.length > 1,
+            action: () => {
+              setContextMenu(null);
+              const fallback = activeTexture?.embedded_name || `sprite_${firstPair[1]}`;
+              const curName = uvdActions.resolveNodeName
+                ? uvdActions.resolveNodeName(nodeId, fallback)
+                : fallback;
+              void uvdActions.promptRenameUvdSprite(nodeId, curName, firstPair[0], firstPair[1]);
+            },
+          },
+          { separator: true },
+          {
+            label: `Delete ${countLabel}`,
+            shortcut: "Del",
+            action: () => {
+              setContextMenu(null);
+              const ok = window.confirm(
+                `Delete ${parsedPairs.length} sprite(s) and repack affected group(s)?`
+              );
+              if (ok) {
+                void uvdActions.runUvdMutation(nodeId, "delete_items", {
+                  items: parsedPairs,
+                });
+              }
+            },
+          },
+        ];
+      }
+    }
+
     // 4. Texture / WTB / BNTX / DDS / GTX / XT1
     if (
       kind === "TEXTURE" ||
@@ -1086,7 +1307,7 @@ export function createMenuBuilders(assetDeps: AssetMenuDeps, fileDeps: FileMenuD
           action: () => runCliOp("bxm_encode_xml"),
         });
       }
-      if (["clp", "clh", "clw", "mot", "exp"].includes(ext)) {
+      if (["clp", "clh", "clw", "mot", "exp", "uvd"].includes(ext)) {
         items.push({
           label: `Swap .${ext.toUpperCase()} Endianness (Wii U ↔ PC)`,
           action: () => runCliOp("swap_endian_file"),

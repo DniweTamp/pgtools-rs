@@ -4756,3 +4756,50 @@ pub fn recompress_astc_texture_blob_to_bc(
 
     Ok(None)
 }
+
+/// Returns `true` if `blob` contains actual pixel payload data beyond its container header
+/// (as opposed to a header-only `.wta` entry whose `.wtp` / `.dtt` payload is missing).
+///
+/// For multi-texture `BNTX` blobs this returns `true` when *any* sub-texture has payload;
+/// use [`texture_blob_has_pixel_payload_at`] to check a specific sub-texture.
+pub fn texture_blob_has_pixel_payload(blob: &[u8]) -> bool {
+    texture_blob_has_pixel_payload_at(blob, None)
+}
+
+/// Like [`texture_blob_has_pixel_payload`], but for `BNTX` blobs `index` selects a specific
+/// sub-texture record instead of checking all of them. `index` is ignored for other formats.
+pub fn texture_blob_has_pixel_payload_at(blob: &[u8], index: Option<usize>) -> bool {
+    if blob.len() < 16 {
+        return false;
+    }
+    match &blob[0..4] {
+        b"XT1\0" => blob.len() > 0x38,
+        b"Gfx2" => blob.len() > 0x40 + 0x9C + 0x20 + 0x20,
+        b"DDS " => {
+            let hdr_len = if blob.len() >= 148 && &blob[84..88] == b"DX10" {
+                148
+            } else {
+                128
+            };
+            blob.len() > hdr_len
+        }
+        _ if (blob.len() >= 4 && &blob[0..4] == b"BNTX")
+            || (blob.len() >= 84 && &blob[80..84] == b"BNTX") =>
+        {
+            let Ok(recs) = parse_bntx_textures(blob) else {
+                return false;
+            };
+            let record_has_payload = |r: &BntxTextureRecord| {
+                r.mip_offsets
+                    .first()
+                    .map(|&off| off > 0 && off < blob.len())
+                    .unwrap_or(false)
+            };
+            match index {
+                Some(i) => recs.get(i).map(record_has_payload).unwrap_or(false),
+                None => recs.iter().any(record_has_payload),
+            }
+        }
+        _ => false,
+    }
+}

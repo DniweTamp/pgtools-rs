@@ -46,12 +46,18 @@ export function formatHexU8(val: number): string {
 }
 
 export function parseReorderableNode(nodeId: string): [string, number] | null {
-  const m = nodeId.match(/^(.*?(?:dat|pkz|efffile)):(\d+)$/);
+  const m = nodeId.match(/^(.*?(?:dat|pkz|efffile|uvdgrp|uvditem)):(\d+)$/);
   if (!m) return null;
   return [m[1], parseInt(m[2], 10)];
 }
 
 export function isVirtualSubNode(nodeId: string): boolean {
   const leaf = nodeId.split("/").pop() || "";
-  return leaf.startsWith("wmb:") || leaf.startsWith("wmb3:") || leaf.startsWith("tex:");
+  return (
+    leaf.startsWith("wmb:") ||
+    leaf.startsWith("wmb3:") ||
+    leaf.startsWith("tex:") ||
+    leaf.startsWith("uvdgrp:") ||
+    leaf.startsWith("uvditem:")
+  );
 }

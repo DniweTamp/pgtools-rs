@@ -6,6 +6,7 @@ use pgtools_core::{
     scene_ops::WmbClipboardData,
     wtb::WtbFile,
 };
+use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, HashMap, VecDeque};
 use std::fs;
 use std::panic::{catch_unwind, AssertUnwindSafe};
@@ -13,6 +14,32 @@ use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex, MutexGuard};
 use std::time::{SystemTime, UNIX_EPOCH};
 use tauri::State;
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PendingUvdSheetInfo {
+    pub wta_container_id: String,
+    pub wta_name: String,
+    pub texture_id: u32,
+    pub texture_id_hex: String,
+    pub group_name: String,
+    pub width: u32,
+    pub height: u32,
+    pub original_format: String,
+    pub game_profile: String,
+    pub has_confirmed_xt1_flags: bool,
+    #[serde(skip)]
+    pub lossless_sheet: Option<Arc<image::RgbaImage>>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SaveEncodeOptions {
+    pub encode_format: String,
+    pub quality: String,
+    pub generate_mips: bool,
+    pub solidify: bool,
+    pub make_opaque: bool,
+    pub sync_flags: bool,
+}
 
 #[derive(Debug, Clone)]
 pub(crate) enum DocSnapshot {
@@ -108,6 +135,8 @@ pub(crate) struct UndoEntry {
     after_uid_maps: BTreeMap<String, UidMap>,
     before_structure_version: u64,
     after_structure_version: u64,
+    before_pending_uvd_sheets: BTreeMap<(String, u32), PendingUvdSheetInfo>,
+    after_pending_uvd_sheets: BTreeMap<(String, u32), PendingUvdSheetInfo>,
 }
 
 const MAX_WTX1_CACHE_BYTES: usize = 128 * 1024 * 1024;
@@ -131,6 +160,8 @@ pub(crate) struct StudioSession {
     pub(crate) committed_structure_version: u64,
     pub(crate) uid_maps: BTreeMap<String, UidMap>,
     pub(crate) committed_uid_maps: BTreeMap<String, UidMap>,
+    pub(crate) pending_uvd_sheets: BTreeMap<(String, u32), PendingUvdSheetInfo>,
+    pub(crate) committed_pending_uvd_sheets: BTreeMap<(String, u32), PendingUvdSheetInfo>,
     pub(crate) tex_thumb_cache: HashMap<String, (String, Option<String>)>,
     pub(crate) tex_thumb_order: VecDeque<String>,
     pub(crate) wtx1_cache: HashMap<(String, u32, u32), Vec<u8>>,
@@ -204,6 +235,8 @@ impl Default for StudioSession {
             committed_structure_version: 1,
             uid_maps: BTreeMap::new(),
             committed_uid_maps: BTreeMap::new(),
+            pending_uvd_sheets: BTreeMap::new(),
+            committed_pending_uvd_sheets: BTreeMap::new(),
             tex_thumb_cache: HashMap::new(),
             tex_thumb_order: VecDeque::new(),
             wtx1_cache: HashMap::new(),
@@ -367,6 +400,7 @@ pub(crate) fn record_mutation_with_key(
                 last.timestamp_ms = now_ms;
                 last.after_uid_maps = sess.uid_maps.clone();
                 last.after_structure_version = sess.structure_version;
+                last.after_pending_uvd_sheets = sess.pending_uvd_sheets.clone();
             }
         } else {
             if sess.undo_stack.len() >= MAX_UNDO_ENTRIES {
@@ -384,6 +418,8 @@ pub(crate) fn record_mutation_with_key(
                 after_uid_maps: sess.uid_maps.clone(),
                 before_structure_version: sess.committed_structure_version,
                 after_structure_version: sess.structure_version,
+                before_pending_uvd_sheets: sess.committed_pending_uvd_sheets.clone(),
+                after_pending_uvd_sheets: sess.pending_uvd_sheets.clone(),
             });
             while sess.undo_stack.len() > 1 {
                 let total_bytes: usize = sess
@@ -402,6 +438,7 @@ pub(crate) fn record_mutation_with_key(
     }
     sess.committed_uid_maps = sess.uid_maps.clone();
     sess.committed_structure_version = sess.structure_version;
+    sess.committed_pending_uvd_sheets = sess.pending_uvd_sheets.clone();
     sess.current_revision = next_rev;
     sess.current = Some(next);
     sess.dirty = sess.current_revision != sess.saved_revision;
@@ -475,6 +512,8 @@ pub fn open_document(path: String, state: State<'_, AppState>) -> Result<Documen
     sess.committed_structure_version = 1;
     sess.uid_maps.clear();
     sess.committed_uid_maps.clear();
+    sess.pending_uvd_sheets.clear();
+    sess.committed_pending_uvd_sheets.clear();
     sess.invalidate_texture_caches();
 
     sess.settings.recent_files.retain(|r| r != &path);
@@ -491,11 +530,12 @@ pub fn open_document(path: String, state: State<'_, AppState>) -> Result<Documen
 #[tauri::command]
 pub fn save_document(
     output_path: Option<String>,
+    encode_options: Option<SaveEncodeOptions>,
     state: State<'_, AppState>,
 ) -> Result<DocumentOutline, String> {
-    // Snapshot under the lock, then drop it for the duration of disk I/O so other
+    // Snapshot under the lock, then drop it for the duration of recompression + disk I/O so other
     // commands (preview, list, undo) are not blocked on large document saves.
-    let (dest, raw_snap, expected_revision, dat_align) = {
+    let (dest, mut raw_snap, expected_revision, dat_align, pending_list, oodle_path, nvtt_path) = {
         let sess = lock_session(&state);
         let dest = output_path
             .map(PathBuf::from)
@@ -506,13 +546,41 @@ pub fn save_document(
             .as_ref()
             .ok_or("No active document loaded")?
             .clone();
+        let pending: Vec<PendingUvdSheetInfo> =
+            sess.pending_uvd_sheets.values().cloned().collect();
         (
             dest,
             snap,
             sess.current_revision,
             sess.settings.effective_dat_alignment(),
+            pending,
+            sess.settings.oodle_dll_path.clone(),
+            sess.settings.nvtt_dll_path.clone(),
         )
     };
+
+    if !pending_list.is_empty() {
+        if let Some(ref opts) = encode_options {
+            let oodle_opt = if oodle_path.is_empty() {
+                None
+            } else {
+                Some(Path::new(oodle_path.as_str()))
+            };
+            let nvtt_opt = if nvtt_path.is_empty() {
+                None
+            } else {
+                Some(Path::new(nvtt_path.as_str()))
+            };
+            raw_snap = crate::uvd_cmd::reencode_pending_uvd_sheets_for_save(
+                &raw_snap,
+                &pending_list,
+                opts,
+                oodle_opt,
+                nvtt_opt,
+                dat_align,
+            )?;
+        }
+    }
 
     let snap = raw_snap.apply_dat_save_alignment(dat_align);
 
@@ -547,6 +615,9 @@ pub fn save_document(
         sess.current = Some(snap.clone());
         sess.saved_snapshot = Some(snap);
         sess.saved_revision = expected_revision;
+        sess.pending_uvd_sheets.clear();
+        sess.committed_pending_uvd_sheets.clear();
+        sess.invalidate_texture_caches();
         sess.dirty = false;
     } else {
         // Concurrent mutation while we wrote — leave dirty; paths still updated to dest.
@@ -573,6 +644,8 @@ pub fn undo_document(state: State<'_, AppState>) -> Result<DocumentOutline, Stri
     sess.committed_uid_maps = entry.before_uid_maps.clone();
     sess.structure_version = entry.before_structure_version;
     sess.committed_structure_version = entry.before_structure_version;
+    sess.pending_uvd_sheets = entry.before_pending_uvd_sheets.clone();
+    sess.committed_pending_uvd_sheets = entry.before_pending_uvd_sheets.clone();
     sess.invalidate_texture_caches();
     sess.redo_stack.push(entry);
     sess.dirty = sess.current_revision != sess.saved_revision;
@@ -589,6 +662,8 @@ pub fn redo_document(state: State<'_, AppState>) -> Result<DocumentOutline, Stri
     sess.committed_uid_maps = entry.after_uid_maps.clone();
     sess.structure_version = entry.after_structure_version;
     sess.committed_structure_version = entry.after_structure_version;
+    sess.pending_uvd_sheets = entry.after_pending_uvd_sheets.clone();
+    sess.committed_pending_uvd_sheets = entry.after_pending_uvd_sheets.clone();
     sess.invalidate_texture_caches();
     sess.undo_stack.push(entry);
     sess.dirty = sess.current_revision != sess.saved_revision;

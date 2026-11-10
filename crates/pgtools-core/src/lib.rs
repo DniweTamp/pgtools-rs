@@ -3,6 +3,7 @@
 //! Supports archive extraction/repacking (`DAT`/`DTT`/`EVN`, `PKZ`, `EFF`/`IDD`, `SCR`),
 //! 3D model manipulation and cross-platform conversion (`WMB`, `WMB2`, `WMB3`, `MDB`),
 //! texture extraction, swizzling, and format conversion (`WTB`, `WTA`/`WTP`, `DDS`, `GTX`, `BNTX`, `XT1`),
+//! UV atlas / per-group sprite-sheet definitions (`UVD`),
 //! skeletal animations and expression constraints (`MOT`, `MOT2`/`B3MOT`, `EXP`, `EXP2`),
 //! binary XML (`BXM`, `GAD`, `GAArea`), cloth physics (`CLP`, `CLH`, `CLW`), stage lighting
 //! (`FLS`, `FLA`, `CTA`, `LIT`), and bonus 010 Editor formats (`EST`, `COL`, `MSQ`, `COS`, `OBI`, `ATT`).
@@ -27,6 +28,7 @@ pub mod scene_ops;
 pub mod scr;
 pub mod shader_db;
 pub mod texture_conv;
+pub mod uvd;
 pub mod wmb;
 pub mod wmb3;
 pub mod wtb;
@@ -34,6 +36,12 @@ pub mod wtb;
 pub use dat::{
     collect_dat_targets, dat_alignment_for_ext, parse_dat_alignment, validate_custom_dat_alignment,
     DatEntry, DatFile, DatHashMap, DEFAULT_CUSTOM_DAT_ALIGNMENT, MAX_CUSTOM_DAT_ALIGNMENT,
+};
+pub use uvd::{
+    compute_uvd_group_id, compute_uvd_item_id, crop_sprite_from_sheet, extract_group_sprites,
+    extract_group_to_dir, pack_group_sprites, repack_uvd_group_from_dir, validate_uvd_group_name,
+    validate_uvd_item_name, PackedGroupResult, UvdFile, UvdGroup, UvdItem, DEFAULT_UVD_MAX_SIZE,
+    DEFAULT_UVD_PADDING, MAX_UVD_GROUP_NAME_LEN, MAX_UVD_ITEM_NAME_LEN,
 };
 
 use serde::{Deserialize, Serialize};

@@ -13,8 +13,9 @@ use pgtools_core::{
         encode_rgba_to_dds_with_quality, encode_rgba_to_xt1_with_options,
         export_texture_to_dds_lossless, get_nvtt_status_description, inspect_texture_blob,
         parse_bntx_textures, recompress_astc_texture_blob_to_bc,
-        replace_bntx_subtexture_with_options, swizzle_dds_to_xt1, AstcRecompressConfig,
-        EncodeQuality, TextureDimension, TextureFormat, ASTC_FOOTPRINTS,
+        replace_bntx_subtexture_with_options, swizzle_dds_to_xt1,
+        texture_blob_has_pixel_payload_at, AstcRecompressConfig, EncodeQuality, TextureDimension,
+        TextureFormat, ASTC_FOOTPRINTS,
     },
     wtb::{
         WtbFile, WtbGameProfile, XT1_FLAG_BASE, XT1_FLAG_CUBEMAP, XT1_FLAG_HAS_CRC32,
@@ -111,6 +112,8 @@ pub struct TextureNodeView {
     pub nvtt_status: String,
     pub preview_data_url: Option<String>,
     pub raw_header_hex: String,
+    #[serde(default)]
+    pub uvd_mode: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -237,10 +240,18 @@ pub(crate) fn build_texture_node_view(
         mh = (mh / 2).max(1);
     }
 
-    let decode_res =
-        decode_texture_layer_filtered(blob, index, mip_index, layer_index, channel, opaque);
-
-    let (preview_data_url, layer_count, validation_ok, validation_msg) = match decode_res {
+    let has_payload = texture_blob_has_pixel_payload_at(blob, Some(index));
+    let (preview_data_url, layer_count, validation_ok, validation_msg) = if !has_payload {
+        (
+            None,
+            base_layers,
+            false,
+            "Texture payload missing (header-only WTA entry without WTP/DTT pixel data).".to_string(),
+        )
+    } else {
+        let decode_res =
+            decode_texture_layer_filtered(blob, index, mip_index, layer_index, channel, opaque);
+        match decode_res {
         Ok((img, _, _, layers_at_mip)) => {
             let mut png_buf = Cursor::new(Vec::new());
             let url = if img.write_to(&mut png_buf, image::ImageFormat::Png).is_ok() {
@@ -264,6 +275,7 @@ pub(crate) fn build_texture_node_view(
             false,
             format!("Preview decode warning: {e}"),
         ),
+        }
     };
 
     let fb_le = flags.to_le_bytes();
@@ -334,10 +346,11 @@ pub(crate) fn build_texture_node_view(
         nvtt_status,
         preview_data_url,
         raw_header_hex,
+        uvd_mode: None,
     }
 }
 
-fn parse_requested_texture_format(fmt_str: &str, fallback: TextureFormat) -> TextureFormat {
+pub(crate) fn parse_requested_texture_format(fmt_str: &str, fallback: TextureFormat) -> TextureFormat {
     let up = fmt_str.trim().to_ascii_uppercase();
     if up.is_empty() || up == "AUTO" || up.starts_with("AUTO ") {
         return fallback;
@@ -376,7 +389,7 @@ fn parse_requested_texture_format(fmt_str: &str, fallback: TextureFormat) -> Tex
 }
 
 #[allow(clippy::too_many_arguments)]
-fn encode_image_for_bank_entry(
+pub(crate) fn encode_image_for_bank_entry(
     base_img: &image::RgbaImage,
     target_ext: &str,
     target_format: TextureFormat,
@@ -433,7 +446,9 @@ pub fn get_cubemap_faces_preview(
     let sess = lock_session(&state);
     let snap = sess.current.as_ref().ok_or("No active document loaded")?;
     let oodle_opt = sess.settings.oodle_path();
-    let (container_parts, leaf) = split_container_and_leaf(&node_id);
+    let effective_node_id = crate::uvd_cmd::resolve_uvd_group_to_wta_tex_node(snap, &node_id, oodle_opt)
+        .unwrap_or_else(|| node_id.clone());
+    let (container_parts, leaf) = split_container_and_leaf(&effective_node_id);
     let container_id = container_parts.join("/");
     let (_, sub_bytes, sub_wtp, _) = resolve_subblob(snap, &container_id, oodle_opt)?;
 
@@ -869,7 +884,9 @@ pub fn mutate_texture_node(
         Some(Path::new(nvtt_path.as_str()))
     };
 
-    let (container_parts, leaf) = split_container_and_leaf(&node_id);
+    let effective_node_id = crate::uvd_cmd::resolve_uvd_group_to_wta_tex_node(&snap, &node_id, oodle_opt)
+        .unwrap_or_else(|| node_id.clone());
+    let (container_parts, leaf) = split_container_and_leaf(&effective_node_id);
     let container_id = container_parts.join("/");
     let (_, sub_bytes, sub_wtp, _) = resolve_subblob(&snap, &container_id, oodle_opt)?;
 
@@ -1673,7 +1690,9 @@ pub fn export_texture_action(
         ));
     }
 
-    let (container_parts, leaf) = split_container_and_leaf(&node_id);
+    let effective_node_id = crate::uvd_cmd::resolve_uvd_group_to_wta_tex_node(snap, &node_id, oodle_opt)
+        .unwrap_or_else(|| node_id.clone());
+    let (container_parts, leaf) = split_container_and_leaf(&effective_node_id);
     let container_id = container_parts.join("/");
     let (_, sub_bytes, sub_wtp, _) = resolve_subblob(snap, &container_id, oodle_opt)?;
 

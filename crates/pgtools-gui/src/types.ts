@@ -28,6 +28,78 @@ export interface StudioSettings {
   default_encode_quality?: string;
   sync_xt1_flags_on_import?: boolean;
   asset_browser_zoom?: number;
+  uvd_padding?: number;
+  uvd_max_size?: number;
+}
+
+export interface PendingUvdSheetInfo {
+  wta_container_id: string;
+  wta_name: string;
+  texture_id: number;
+  texture_id_hex: string;
+  group_name: string;
+  width: number;
+  height: number;
+  original_format: string;
+  game_profile: string;
+  has_confirmed_xt1_flags: boolean;
+}
+
+export interface SaveEncodeOptions {
+  encode_format: string;
+  quality: string;
+  generate_mips: boolean;
+  solidify: boolean;
+  make_opaque: boolean;
+  sync_flags: boolean;
+}
+
+export interface UvdGroupSummaryView {
+  index: number;
+  node_id: string;
+  name: string;
+  id: number;
+  id_hex: string;
+  item_count: number;
+  width: number;
+  height: number;
+  matched_wta_name: string | null;
+  matched_wta_node_id: string | null;
+  matched_tex_index: number | null;
+  has_pixel_payload: boolean;
+}
+
+export interface UvdItemSummaryView {
+  index: number;
+  node_id: string;
+  name: string;
+  id: number;
+  id_hex: string;
+  group_id: number;
+  group_id_hex: string;
+  group_name: string;
+  x: number;
+  y: number;
+  w: number;
+  h: number;
+  inv_w: number;
+  inv_h: number;
+  tex_width: number;
+  tex_height: number;
+}
+
+export interface UvdContextView {
+  mode: "uvd" | "group" | "item";
+  uvd_node_id: string;
+  uvd_name: string;
+  endian: string;
+  uvd_padding: number;
+  uvd_max_size: number;
+  group: UvdGroupSummaryView | null;
+  item: UvdItemSummaryView | null;
+  items: UvdItemSummaryView[];
+  groups: UvdGroupSummaryView[];
+  warning_banner: string | null;
 }
 
 export interface OodleValidationReport {
@@ -96,6 +168,7 @@ export interface DocumentOutline {
   undo_label: string | null;
   redo_label: string | null;
   tree: AssetTreeNode[];
+  pending_uvd_encodes?: PendingUvdSheetInfo[];
 }
 
 export interface MipLevelDesc {
@@ -136,6 +209,7 @@ export interface TextureNodeView {
   nvtt_status: string;
   preview_data_url: string | null;
   raw_header_hex: string;
+  uvd_mode?: "group" | "item" | null;
 }
 
 export interface CubemapPreviewPayload {
@@ -342,6 +416,7 @@ export interface MaterialClipboardState {
 /** Result of inspect_asset_node — discriminated by view_type. */
 export type NodeViewType =
   | "TEXTURE"
+  | "UVD"
   | "WMB"
   | "BXM"
   | "EST"
@@ -357,6 +432,7 @@ export interface NodeInspectPayload {
   title?: string;
   tag?: string;
   texture?: TextureNodeView;
+  uvd?: UvdContextView;
   wmb?: WmbSectionView;
   /** BXM-specific tree payload when view_type === "BXM" */
   bxm?: BxmXmlNode;

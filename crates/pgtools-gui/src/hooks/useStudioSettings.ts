@@ -60,7 +60,8 @@ export interface StudioSettingsState {
   fileSortCol: FileSortCol;
   fileSortAsc: boolean;
   assetBrowserZoom: number;
-  // last_dir is owned by file browser; passed in for persistence
+  uvdPadding: number;
+  uvdMaxSize: number;
 }
 
 export interface StudioSettingsApi extends StudioSettingsState {
@@ -91,6 +92,8 @@ export interface StudioSettingsApi extends StudioSettingsState {
   setFileSortCol: React.Dispatch<React.SetStateAction<FileSortCol>>;
   setFileSortAsc: React.Dispatch<React.SetStateAction<boolean>>;
   setAssetBrowserZoom: React.Dispatch<React.SetStateAction<number>>;
+  setUvdPadding: React.Dispatch<React.SetStateAction<number>>;
+  setUvdMaxSize: React.Dispatch<React.SetStateAction<number>>;
   buildStudioSettingsPayload: (
     currentDir: string,
     overrides?: Partial<StudioSettings>
@@ -99,12 +102,6 @@ export interface StudioSettingsApi extends StudioSettingsState {
   markLoaded: () => void;
 }
 
-/**
- * Groups all persisted studio preferences that previously lived as
- * dozens of independent useState calls in App. Changes to any of these
- * should usually be persisted together; callers supply currentDir when
- * building the save payload.
- */
 export function normalizePkzCodec(
   raw?: string | null
 ): "None" | "ZStandard" | "OodleKraken" {
@@ -154,9 +151,9 @@ export function useStudioSettings(): StudioSettingsApi {
   const [fileSortCol, setFileSortCol] = useState<FileSortCol>("name");
   const [fileSortAsc, setFileSortAsc] = useState(true);
   const [assetBrowserZoom, setAssetBrowserZoom] = useState<number>(0);
+  const [uvdPadding, setUvdPadding] = useState<number>(4);
+  const [uvdMaxSize, setUvdMaxSize] = useState<number>(4096);
 
-  // Keep a ref to the latest values for the debounced save so we do not
-  // re-subscribe the effect on every keystroke of a path field.
   const stateRef = useRef({
     theme,
     recentFiles,
@@ -181,6 +178,8 @@ export function useStudioSettings(): StudioSettingsApi {
     wmbSkeletonOverlay,
     wmbGridVisible,
     assetBrowserZoom,
+    uvdPadding,
+    uvdMaxSize,
   });
   stateRef.current = {
     theme,
@@ -206,6 +205,8 @@ export function useStudioSettings(): StudioSettingsApi {
     wmbSkeletonOverlay,
     wmbGridVisible,
     assetBrowserZoom,
+    uvdPadding,
+    uvdMaxSize,
   };
 
   const applyLoadedSettings = useCallback((s: StudioSettings) => {
@@ -245,6 +246,12 @@ export function useStudioSettings(): StudioSettingsApi {
     if (typeof s.wmb_skeleton_overlay === "boolean") setWmbSkeletonOverlay(s.wmb_skeleton_overlay);
     if (typeof s.wmb_grid_visible === "boolean") setWmbGridVisible(s.wmb_grid_visible);
     if (typeof s.asset_browser_zoom === "number" && s.asset_browser_zoom >= 0 && s.asset_browser_zoom <= 4) setAssetBrowserZoom(s.asset_browser_zoom);
+    if (typeof s.uvd_padding === "number" && s.uvd_padding >= 0 && s.uvd_padding <= 64) {
+      setUvdPadding(Math.round(s.uvd_padding));
+    }
+    if (typeof s.uvd_max_size === "number" && s.uvd_max_size >= 64 && s.uvd_max_size <= 16384) {
+      setUvdMaxSize(Math.round(s.uvd_max_size));
+    }
   }, []);
 
   const markLoaded = useCallback(() => setSettingsLoaded(true), []);
@@ -281,6 +288,8 @@ export function useStudioSettings(): StudioSettingsApi {
         wmb_skeleton_overlay: s.wmbSkeletonOverlay,
         wmb_grid_visible: s.wmbGridVisible,
         asset_browser_zoom: s.assetBrowserZoom,
+        uvd_padding: s.uvdPadding,
+        uvd_max_size: s.uvdMaxSize,
         ...overrides,
       };
     },
@@ -314,6 +323,8 @@ export function useStudioSettings(): StudioSettingsApi {
     fileSortCol,
     fileSortAsc,
     assetBrowserZoom,
+    uvdPadding,
+    uvdMaxSize,
     setTheme,
     setLeftWidth,
     setRightWidth,
@@ -339,6 +350,8 @@ export function useStudioSettings(): StudioSettingsApi {
     setFileSortCol,
     setFileSortAsc,
     setAssetBrowserZoom,
+    setUvdPadding,
+    setUvdMaxSize,
     buildStudioSettingsPayload,
     applyLoadedSettings,
     markLoaded,

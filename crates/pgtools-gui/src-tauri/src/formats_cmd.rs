@@ -211,6 +211,24 @@ pub fn inspect_asset_node(
     };
 
     let tag = detect_file_format_tag(&display_name, &sub_bytes);
+    if tag == "UVD" || leaf.starts_with("uvdgrp:") {
+        return crate::uvd_cmd::build_uvd_inspect_payload(
+            snap,
+            &node_id,
+            doc_name,
+            &display_name,
+            &sub_bytes,
+            &leaf,
+            mip_index.unwrap_or(0),
+            req_layer,
+            channel.as_deref().unwrap_or("RGBA"),
+            opaque.unwrap_or(false),
+            sess.settings.uvd_padding,
+            sess.settings.uvd_max_size,
+            oodle_path_opt,
+            nvtt_path_opt,
+        );
+    }
     if let Some(tex_idx_str) = leaf.strip_prefix("tex:") {
         let tex_idx: usize = tex_idx_str.parse().map_err(|_| "Invalid texture index")?;
         let wtb = WtbFile::from_bytes(&sub_bytes, sub_wtp.as_deref()).map_err(|e| e.to_string())?;

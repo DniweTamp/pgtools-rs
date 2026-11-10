@@ -420,3 +420,51 @@ fn dat_custom_alignment_settings_and_snapshot_override() {
         assert_eq!(offs[1] % DEFAULT_CUSTOM_DAT_ALIGNMENT, 0);
     }
 }
+
+
+#[test]
+fn uvd_tree_expansion_and_leaf_splitting() {
+    use crate::uvd_cmd::parse_uvd_leaf;
+    use crate::vfs::build_nodes_for_blob;
+    use pgtools_core::io::Endian;
+    use pgtools_core::uvd::{compute_uvd_group_id, compute_uvd_item_id, UvdFile, UvdGroup, UvdItem};
+
+    let (parts, leaf) = split_container_and_leaf("dat:1/uvdgrp:2/uvditem:5");
+    assert_eq!(parts, vec!["dat:1"]);
+    assert_eq!(leaf, "uvdgrp:2/uvditem:5");
+    assert_eq!(parse_uvd_leaf(leaf), (Some(2), Some(5)));
+
+    let (parts2, leaf2) = split_container_and_leaf("dat:1/uvdgrp:0");
+    assert_eq!(parts2, vec!["dat:1"]);
+    assert_eq!(leaf2, "uvdgrp:0");
+    assert_eq!(parse_uvd_leaf(leaf2), (Some(0), None));
+
+    let gid = compute_uvd_group_id("core_a");
+    let uvd = UvdFile {
+        endian: Endian::Little,
+        groups: vec![UvdGroup {
+            name: "core_a".to_string(),
+            id: gid,
+            items: vec![UvdItem {
+                name: "hud_icon_00".to_string(),
+                id: compute_uvd_item_id("hud_icon_00"),
+                group_id: gid,
+                x: 4.0,
+                y: 4.0,
+                w: 32.0,
+                h: 16.0,
+                inv_w: 1.0 / 128.0,
+                inv_h: 1.0 / 64.0,
+            }],
+        }],
+    };
+    let uvd_bytes = uvd.to_bytes();
+    let node = build_nodes_for_blob("dat:0", "ui_core.uvd", &uvd_bytes, None, None, None, 1);
+    assert_eq!(node.kind, "UVD");
+    assert_eq!(node.children.len(), 1);
+    assert_eq!(node.children[0].kind, "UVD_GROUP");
+    assert_eq!(node.children[0].id, "dat:0/uvdgrp:0");
+    assert_eq!(node.children[0].children.len(), 1);
+    assert_eq!(node.children[0].children[0].kind, "UVD_ITEM");
+    assert_eq!(node.children[0].children[0].id, "dat:0/uvdgrp:0/uvditem:0");
+}
