@@ -761,6 +761,7 @@ uniform float g_WrapDiffuseStrength;
 uniform vec2 g_AmbientOcclusionMinMax;
 uniform vec2 g_SpecularMaskMinMax;
 uniform float g_NormalIntensity;
+uniform float g_BinormalIntensity; // Hair20: ~1.0 on most materials (0.5-3.0); scales the pink strand map
 uniform float g_IridescenceStrength;
 uniform float g_IridescenceCoefficient;
 uniform vec3 g_IridescenceColor;
@@ -771,6 +772,106 @@ uniform vec2 g_TilingMap2UV;
 uniform vec3 g_IridescenceStr;     // x = Diff, y = PriSpec, z = SecSpec
 uniform vec3 g_IridescenceFresnel; // x = Pow, y = Min, z = Max
 uniform vec4 g_IridescenceCoord;   // x = ViewRate, y = MapVRate, z = VTile, w = VOffset
+
+// ============================================================================
+// Hair20 strand model, ported from the game's PS_FP_Hair20 (Maxwell -> GLSL transpile).
+//   pink g_NormalMap2: R,G = strand TANGENT in tangent space (x*BinormalIntensity, y ~ -1, z = 1-|xy|), B = spec mask, A = coverage
+//   sampled twice (2nd = parallax-shifted), blended by smoothstep(g_HairMin, g_HairMax, N.V)
+//   normal map is applied in the (T, W) frame (its Y axis follows the strand), lobes are Marschner-style Gaussians
+//   in sin(theta_r) + sin(theta_i - shift), g_HairOffset is the cuticle tilt (secondary shift = 4 * g_HairOffset)
+// Values that live in the game's cb1/cb9 and can't be recovered from the dump are the B3H_* constants below.
+// ============================================================================
+uniform vec2  g_HairMinMax;               // (g_HairMin, g_HairMax): view-angle blend range
+uniform float g_ParallaxIntensity;        // 0 on 40/104 materials, up to 0.2
+uniform float g_BumpHeight;               // 0 or -0.03
+uniform float g_ShadowSpecularIntensity;  // 0.5 on 103/104 materials; 0 if not uploaded (= plain N.L like before)
+
+// Layer "B" set (game: lerp(A, B, g_NormalMap.a) when g_UseLayerColorB is on) and the other params decoded from the game shader.
+// Anything not uploaded reads as 0 and falls back to the previous behaviour.
+uniform float g_UseLayerColorB;           // 1 on 3/104 materials (inferred to be the game's "C" variant)
+uniform vec3  g_LayerColorB1;
+uniform vec3  g_LayerColorB2;
+uniform float g_DiffuseIntensityB;
+uniform float g_WrapDiffuseStrengthB;
+uniform vec2  g_OcclusionMaskMinMax;      // (g_OcclusionMaskMin, g_OcclusionMaskMax), blended with the pink map's B
+uniform float g_FresnelExp;               // transmission curve: smoothstep(remap(lerp(Fraction, 1, (1-N.V)^Exp), Min, Max))
+uniform float g_FresnelFraction;
+uniform float g_FresnelMin;
+uniform float g_FresnelMax;
+
+const float B3H_AO_ON_DIRECT      = 0.0;  // game applies baked AO only to the ambient/IBL term. 1 = also darken direct light + spec (v4 behaviour).
+const float B3H_AO_FORCE_VISIBLE  = 0.0;  // 1 = old hack: when AmbientOcclusionMin >= Max, still show the baked AO.
+
+const float B3H_LIGHT_RADIANCE   = 50.0;  // overall spec scale vs. the game's light units. Tune to taste.
+const float B3H_ROUGH_PULL       = 0.0;  // c9[46]: pulls roughness toward 0.01 (x0.4). Unknown, 0 = off.
+const float B3H_TAN_CLAMP        = 1.0;  // c1[11]: max angle in the tan() intensity shaping. Unknown, keep < 1.55.
+const float B3H_LIGHT_TO_NORMAL  = 0.0;  // c9[59]: lerp light dir toward the shading normal. Unknown, 0 = pure light dir.
+const float B3H_LIGHT_WRAP       = 1.0;  // c5[79]: N.L wrap on the spec visibility. 1 = plain N.L.
+const float B3H_BUMP_SCALE       = 1.0;  // c1[8]: multiplies g_BumpHeight in the parallax denominator.
+const float B3H_AZIMUTH          = 1.0;  // 1 = literal azimuth width term from the game, 0 = off.
+const float B3H_BETA_MIN         = 0.01; // floor on the primary lobe width (the azimuth term can drive it to 0).
+const float B3H_BITANGENT_SIGN   = 1.0;  // flip if streaks / normal-map Y look mirrored.
+const float B3H_FILL_WEIGHT      = 0.5;  // fill light weight (same 0.5 as the old evaluator).
+
+vec3 B3HairPinkVec(vec4 s, float k) {
+  vec2 xy = s.rg * 2.0 - 1.0;
+  float len = sqrt(saturate(dot(xy, xy)));
+  return normalize(vec3(xy.x * k, xy.y, (1.0 - len) * k));
+}
+
+vec3 B3HairStrandDir(vec3 pv, vec3 N, vec3 T) {
+  vec3 B = cross(N, T) * B3H_BITANGENT_SIGN;
+  return normalize(pv.z * N + pv.x * T - pv.y * B);
+}
+
+vec3 B3HairShadingNormal(vec2 nxy, float intensity, vec3 N, vec3 T, vec3 W) {
+  float nl = min(length(nxy), 1.0);
+  return normalize((1.0 - nl) * N + intensity * (nxy.x * T - nxy.y * W));
+}
+
+float B3HairGauss(float x, float beta) {
+  float b = max(beta, B3H_BETA_MIN);
+  return 0.398942 / b * exp(-0.5 * x * x / (b * b));
+}
+
+// lerp(1, tan(clamp(1.5 * cos^2(angle))), s): the game's intensity shaping on each lobe
+float B3HairShape(float cosAngle, float s) {
+  float a = clamp(1.5 * cosAngle * cosAngle, 0.0, min(B3H_TAN_CLAMP, 1.55));
+  return mix(1.0, tan(a), s);
+}
+
+vec3 EvaluateB3HairStrandLobes(
+  vec3 W, vec3 Ns, vec3 NgW, vec3 V, vec3 L,
+  vec3 priF0, float priEff, float priAlpha,
+  vec3 secF0, float secEff, float secAlpha,
+  float hairOffset, float shapeMix, float shadowSpecInt
+) {
+  vec3 Lb = normalize(mix(L, Ns, B3H_LIGHT_TO_NORMAL));
+  float sR = dot(V, W);
+  float sI = dot(Lb, W);
+  float cI = sqrt(max(1.0 - sI * sI, 0.0));
+
+  float az = 1.0;
+  if (B3H_AZIMUTH > 0.5) {
+    vec3 A  = V  - sR * Ns;
+    vec3 Bq = Lb - sI * Ns;
+    float d = dot(A, Bq) * inversesqrt(max(dot(A, A) * dot(Bq, Bq), 1e-8));
+    az = sqrt(saturate(0.5 * d + 0.5));
+  }
+
+  // primary: unshifted, width = az * PriRough * SecRough * 0.95
+  float gP = B3HairGauss(sR + sI, az * priEff * secEff * 0.95) * B3HairShape(cI, shapeMix);
+
+  // secondary: incident angle shifted by 4 * g_HairOffset, width = SecRough^2
+  float a4 = 4.0 * hairOffset;
+  float sinI4 = sI * cos(a4) - cI * sin(a4);
+  float cosI4 = cI * cos(a4) + sI * sin(a4);
+  float gS = B3HairGauss(sR + sinI4, secEff * secEff) * B3HairShape(cosI4, shapeMix);
+
+  float wrapNL = saturate(1.0 + B3H_LIGHT_WRAP * (dot(NgW, L) - 1.0));
+  float vis = mix(wrapNL, 1.0, saturate(shadowSpecInt));
+  return (priF0 * priAlpha * gP + secF0 * secAlpha * gS) * vis;
+}
 
 void main() {
   vec2 uv0 = vUv.xy;
@@ -862,7 +963,8 @@ void main() {
           vec3 n2 = DecodeB3NormalTS(sNorm2);
           n1 = normalize(mix(n1, n2, clamp(sNorm2.a, 0.25, 0.85)));
         }
-      } else {
+      } else if (sNorm2.g > 0.2) {
+        // real two-channel normal in slot 2 (the pink strand map has G ~ 0 and is handled as a shift below)
         vec3 n2 = DecodeB3NormalTS(sNorm2);
         n1 = normalize(mix(n1, n2, clamp(g_NormalIntensity, 0.0, 1.0)));
       }
@@ -874,8 +976,59 @@ void main() {
   // Rotate strand tangent frame by g_HairOffset (§2.4 lines 2794-2795)
   vec3 Tstrand = RotateStrandTangentB3(Nw, vTanW, g_HairOffset);
 
+  // ---- Hair20 strand model: strand direction from the pink map, normal map in the (T, W) frame ----
+  bool useStrandModel = (uB3HairVariant < 30 && uHasTexNormal2 == 1 && sNorm2.g < 0.2);
+  vec3 hairW = Tstrand;
+  float pinkB = sNorm2.b;
+  // smoothstep(g_HairMin, g_HairMax, N.V): blends LayerColor1 -> LayerColor2 on dual-layer materials and the two pink-map samples
+  float hairBlend = 0.0;
+  {
+    vec2 hmx = (g_HairMinMax.y > g_HairMinMax.x + 1e-4) ? g_HairMinMax : vec2(0.2, 1.0);
+    float hbx = saturate((saturate(dot(normalize(vNrmW), normalize(-vEyeW))) - hmx.x) / (hmx.y - hmx.x));
+    hairBlend = hbx * hbx * (3.0 - 2.0 * hbx);
+  }
+  if (useStrandModel) {
+    float binI = (g_BinormalIntensity > 0.0) ? g_BinormalIntensity : 1.0;  // never 0 in the dumps: 0 = not uploaded
+    vec3 N0w = normalize(vNrmW);
+    vec3 N0v = normalize(vNrmV);
+    vec3 T0w = SafeOrthoTangentB3(N0w, vTanW);
+    vec3 T0v = SafeOrthoTangentB3(N0v, vTanV);
+    vec3 Vw = normalize(-vEyeW);
+
+    // second strand-map sample, parallax-shifted (offset is ~PI^2 as decoded, so it is tiny on real materials)
+    vec4 sNorm2B = sNorm2;
+    if (g_ParallaxIntensity > 0.0) {
+      float den = g_BumpHeight * B3H_BUMP_SCALE + dot(Vw, N0w);
+      den = (abs(den) < 1e-3) ? 1e-3 : den;
+      float pk = -g_ParallaxIntensity / den;
+      vec3 B0w = cross(N0w, T0w) * B3H_BITANGENT_SIGN;
+      vec2 poff = vec2(dot(Vw, T0w), -dot(Vw, B0w)) * pk * g_ParallaxIntensity;
+      sNorm2B = texture2D(uTexNormal2, uv2 + poff);
+    }
+    vec3 pv = normalize(mix(B3HairPinkVec(sNorm2, binI), B3HairPinkVec(sNorm2B, binI), hairBlend));
+    pinkB = mix(sNorm2.b, sNorm2B.b, hairBlend);
+
+    vec2 nxy = (uHasTexNormal == 1) ? (sNorm1.rg * 2.0 - 1.0) : vec2(0.0);
+    hairW = B3HairStrandDir(pv, N0w, T0w);
+    Nw = B3HairShadingNormal(nxy, g_NormalIntensity, N0w, T0w, hairW);
+    Nv = B3HairShadingNormal(nxy, g_NormalIntensity, N0v, T0v, B3HairStrandDir(pv, N0v, T0v));
+  }
+
   // Layer colour (§2.4 lines 2797-2799: layer = albedo.rgb * mat.g_LayerColor1; FBR00 Layer 2 blend)
   vec3 layerCol = DecodeB3Albedo(g_LayerColor1);
+  // Game (Hair20/21/22): D variant (g_OnlyLayer1 == 0) blends LayerColor1 -> LayerColor2 by smoothstep(N.V);
+  // C variant (g_UseLayerColorB) first lerps each layer A -> B by g_NormalMap.a (the same alpha also lerps DiffuseIntensity / WrapDiffuseStrength).
+  bool useLayerB = (uB3HairVariant < 30) && (g_UseLayerColorB > 0.5) && (uHasTexNormal == 1);
+  float layerBWeight = useLayerB ? sNorm1Lm.a : 0.0;
+  if (uB3HairVariant < 30) {
+    vec3 lc1 = DecodeB3Albedo(g_LayerColor1);
+    vec3 lc2 = DecodeB3Albedo(g_LayerColor2);
+    if (useLayerB) {
+      lc1 = mix(lc1, DecodeB3Albedo(g_LayerColorB1), layerBWeight);
+      lc2 = mix(lc2, DecodeB3Albedo(g_LayerColorB2), layerBWeight);
+    }
+    layerCol = (g_OnlyLayer1 < 0.5) ? mix(lc1, lc2, hairBlend) : lc1;
+  }
   vec3 base = (uB3HairVariant == 21 || uB3HairVariant == 22 || uHasTexAlbedo == 0)
     ? layerCol
     : DecodeB3Albedo(sAlbedo.rgb) * layerCol;
@@ -920,26 +1073,49 @@ void main() {
   float ao = 1.0;
   if (uHasTexNormal == 1) {
     float rawAo = sNorm1Lm.b;
-    if (g_AmbientOcclusionMinMax.y > g_AmbientOcclusionMinMax.x + 1e-3) {
-      ao = clamp(mix(g_AmbientOcclusionMinMax.x, g_AmbientOcclusionMinMax.y, rawAo), 0.02, 1.0);
-    } else {
-      ao = clamp(rawAo * max(g_AmbientOcclusionMinMax.y, 0.5), 0.02, 1.0);
+    bool aoFlat = !(g_AmbientOcclusionMinMax.y > g_AmbientOcclusionMinMax.x + 1e-3);
+    if (!aoFlat || uB3HairVariant >= 30 || B3H_AO_FORCE_VISIBLE > 0.5) {
+      if (!aoFlat) {
+        ao = clamp(mix(g_AmbientOcclusionMinMax.x, g_AmbientOcclusionMinMax.y, rawAo), 0.02, 1.0);
+      } else {
+        ao = clamp(rawAo * max(g_AmbientOcclusionMinMax.y, 0.5), 0.02, 1.0);
+      }
     }
+  }
+  // game: baked AO (g_NormalMap.b remapped by g_AmbientOcclusionMin/Max) * lerp(g_OcclusionMaskMin, g_OcclusionMaskMax, pink.b)
+  if (uB3HairVariant < 30 && uHasTexNormal2 == 1 && g_OcclusionMaskMinMax.y > g_OcclusionMaskMinMax.x + 1e-4) {
+    ao *= mix(g_OcclusionMaskMinMax.x, g_OcclusionMaskMinMax.y, pinkB);
   }
   float specMask = 1.0;
   if (uB3HairVariant == 40) {
     specMask = (uHasTexNormal2 == 1 && g_Layer1_UseSpecularMask > 0.5) ? clamp(sNorm2.a, 0.1, 1.0) : 1.0;
   } else if (uHasTexNormal2 == 1) {
-    specMask = clamp(mix(g_SpecularMaskMinMax.x, g_SpecularMaskMinMax.y, sNorm2.b), 0.1, 1.0);
+    specMask = clamp(mix(g_SpecularMaskMinMax.x, g_SpecularMaskMinMax.y, pinkB), 0.1, 1.0);
   } else if (uHasTexNormal == 1) {
     specMask = clamp(mix(g_SpecularMaskMinMax.x, g_SpecularMaskMinMax.y, sNorm1.b), 0.1, 1.0);
   }
 
-  // Wrapped strand diffuse + transmission
-  float wrap = clamp(g_WrapDiffuseStrength, 0.0, 1.0);
-  float keyWrap = saturate((dot(Nw, STUDIO_KEY_TO_LIGHT) + wrap) / (1.0 + wrap));
-  float fillWrap = saturate((dot(Nw, STUDIO_FILL_TO_LIGHT) + wrap) / (1.0 + wrap));
-  vec3 diff = base * max(g_DiffuseIntensity, 0.35) * (keyWrap * STUDIO_KEY_INTENSITY + fillWrap * STUDIO_FILL_INTENSITY);
+  // Strand diffuse. Game (Hair20/21/22): layer * DiffuseIntensity * lerp(1, sat(N.L), WrapDiffuseStrength), both lerped A -> B by normal alpha on C variants.
+  float diffI = g_DiffuseIntensity;
+  float wrapAmt = g_WrapDiffuseStrength;
+  if (useLayerB) {
+    diffI = mix(diffI, g_DiffuseIntensityB, layerBWeight);
+    wrapAmt = mix(wrapAmt, g_WrapDiffuseStrengthB, layerBWeight);
+  }
+  float wrap = clamp(wrapAmt, 0.0, 1.0);
+  float keyWrap;
+  float fillWrap;
+  float diffGain;
+  if (uB3HairVariant < 30) {
+    keyWrap = mix(1.0, saturate(dot(Nw, STUDIO_KEY_TO_LIGHT)), wrap);
+    fillWrap = mix(1.0, saturate(dot(Nw, STUDIO_FILL_TO_LIGHT)), wrap);
+    diffGain = diffI;
+  } else {
+    keyWrap = saturate((dot(Nw, STUDIO_KEY_TO_LIGHT) + wrap) / (1.0 + wrap));
+    fillWrap = saturate((dot(Nw, STUDIO_FILL_TO_LIGHT) + wrap) / (1.0 + wrap));
+    diffGain = max(g_DiffuseIntensity, 0.35);
+  }
+  vec3 diff = base * diffGain * (keyWrap * STUDIO_KEY_INTENSITY + fillWrap * STUDIO_FILL_INTENSITY);
 
   // Dual specular lobes (§2.3 lines 2775-2777)
   vec3 priF0 = layerCol * priSpecTint;
@@ -947,42 +1123,52 @@ void main() {
   float rPri = clamp(g_PriRoughness, 0.05, 1.0);
   float rSec = clamp(g_SecRoughness, 0.05, 1.0);
 
-  vec3 dualSpec =
-    EvaluateB3HairDualLobes(
-      Nw,
-      Tstrand,
-      V,
-      STUDIO_KEY_TO_LIGHT,
-      priF0,
-      rPri,
-      g_PriAlpha,
-      secF0,
-      rSec,
-      g_SecAlpha,
-      g_SpecularPower
-    ) +
-    EvaluateB3HairDualLobes(
-      Nw,
-      Tstrand,
-      V,
-      STUDIO_FILL_TO_LIGHT,
-      priF0,
-      rPri,
-      g_PriAlpha * 0.5,
-      secF0,
-      rSec,
-      g_SecAlpha * 0.5,
-      g_SpecularPower
-    );
+  vec3 dualSpec;
+  if (useStrandModel) {
+    float rawMask = mix(g_SpecularMaskMinMax.x, g_SpecularMaskMinMax.y, pinkB);
+    float shapeMix = clamp(rawMask * g_SpecularPower, 0.0, 3.0);
+    float pull = B3H_ROUGH_PULL * 0.4;
+    float priEff = max(mix(g_PriRoughness, 0.01, pull), 0.01);
+    float secEff = max(mix(g_SecRoughness, 0.01, pull), 0.01);
+    vec3 NgW = normalize(vNrmW);
+
+    // spec colour: the same layer colour as the diffuse, F0 = mix(0.03, layer * spec, metallic)
+    vec3 layerTint = (uB3HairVariant == 21 || uB3HairVariant == 22 || uHasTexAlbedo == 0)
+      ? vec3(1.0) : DecodeB3Albedo(sAlbedo.rgb);
+    vec3 layerBlend = layerTint * layerCol;
+    float met = clamp(g_Metallic, 0.0, 1.0);
+    vec3 priF0s = mix(vec3(0.03), layerBlend * priSpecTint, met);
+    vec3 secF0s = mix(vec3(0.03), layerBlend * secSpecTint, met);
+
+    float specGain = g_SpecularPower * 0.0795775 * B3H_LIGHT_RADIANCE;
+    dualSpec = specGain * (
+      EvaluateB3HairStrandLobes(hairW, Nw, NgW, V, STUDIO_KEY_TO_LIGHT,
+        priF0s, priEff, g_PriAlpha, secF0s, secEff, g_SecAlpha, g_HairOffset, shapeMix, g_ShadowSpecularIntensity) +
+      B3H_FILL_WEIGHT * EvaluateB3HairStrandLobes(hairW, Nw, NgW, V, STUDIO_FILL_TO_LIGHT,
+        priF0s, priEff, g_PriAlpha, secF0s, secEff, g_SecAlpha, g_HairOffset, shapeMix, g_ShadowSpecularIntensity));
+  } else {
+    dualSpec =
+      EvaluateB3HairDualLobes(Nw, Tstrand, V, STUDIO_KEY_TO_LIGHT, priF0, rPri, g_PriAlpha, secF0, rSec, g_SecAlpha, g_SpecularPower) +
+      EvaluateB3HairDualLobes(Nw, Tstrand, V, STUDIO_FILL_TO_LIGHT, priF0, rPri, g_PriAlpha * 0.5, secF0, rSec, g_SecAlpha * 0.5, g_SpecularPower);
+  }
 
   vec3 F0 = mix(vec3(0.03), base, clamp(g_Metallic, 0.0, 1.0));
   vec3 ibl = EvaluateB3Ibl(Nw, V, base * (1.0 - g_Metallic * 0.5), rPri * rSec, F0, 1.0, specMask, uTexEnv, uTexIrradiance);
 
   // Back-lit strand transmission rim
   float backLit = pow(saturate(1.0 - saturate(dot(Nw, V))), 3.0) * clamp(g_TransStrength, 0.0, 2.0);
+  if (uB3HairVariant < 30 && g_FresnelMax > g_FresnelMin + 1e-4) {
+    // game: smoothstep(sat((lerp(Fraction, 1, (1 - N.V)^Exp) - Min) / (Max - Min))) * g_TransStrength
+    float fr = pow(max(1.0 - saturate(dot(Nw, V)), 1e-4), g_FresnelExp);
+    fr = mix(g_FresnelFraction, 1.0, fr);
+    float tr = saturate((fr - g_FresnelMin) / (g_FresnelMax - g_FresnelMin));
+    backLit = tr * tr * (3.0 - 2.0 * tr) * clamp(g_TransStrength, 0.0, 2.0);
+  }
   vec3 transTerm = base * backLit * 0.35;
 
-  vec3 colour = (diff + dualSpec * specMask + ibl + transTerm) * ao;
+  // baked AO darkens the ambient/IBL term (the game doesn't apply it to direct light); B3H_AO_ON_DIRECT blends it back in
+  float aoDirect = (uB3HairVariant < 30) ? mix(1.0, ao, B3H_AO_ON_DIRECT) : ao;
+  vec3 colour = (diff + dualSpec * specMask + transTerm) * aoDirect + ibl * ao;
   gl_FragColor = FinishB3Fragment(colour, hairAlpha, Nw, Nv, vPosV);
 }
 `;
