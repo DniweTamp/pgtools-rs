@@ -1071,7 +1071,7 @@ void main() {
   // Many Hair20 materials store g_AmbientOcclusionMin == g_AmbientOcclusionMax == 1.0 (or 0.5) while still baking head/scalp AO in g_NormalMap.b;
   // when min >= max, apply sNorm1Lm.b directly so the lightmap AO is always visible.
   float ao = 1.0;
-  if (uHasTexNormal == 1) {
+  if (uHasTexNormal == 1 && uB3HairVariant != 40) {
     float rawAo = sNorm1Lm.b;
     bool aoFlat = !(g_AmbientOcclusionMinMax.y > g_AmbientOcclusionMinMax.x + 1e-3);
     if (!aoFlat || uB3HairVariant >= 30 || B3H_AO_FORCE_VISIBLE > 0.5) {
@@ -1174,6 +1174,247 @@ void main() {
 `;
 
 // ============================================================================
+// 3b. FBR00 — Two-layer Fabric (`PS_FP_Fbr00_*`), ported from the game's transpiled pixel shaders.
+//   samplers (tN = material slot N): t0 g_AlbedoMap1 (uTexAlbedo), t1 g_NormalMap1 (uTexNormal2, layer-1 tiled normal, .a spec mask),
+//   t2 g_AlbedoMap2 (uTexMask, layer-2 colour, never tiled), t3 g_NormalMap2 (uTexNormal3, layer-2 normal, .a spec mask),
+//   t6 g_NormalMap3 (uTexNormal, base normal, .a = layer mask). No baked AO is read by the game.
+//   UV sets: UV0 = vUv.xy, UV1 = lightmap/second UV. g_Layer1_TilingMode (2 or 3 on every real material):
+//     normal1: mode 0 -> UV0, modes 1-3 -> UV1 * Layer1_Tiling;  albedo1: UV1 * Layer1_Tiling only in mode 1, else UV0;
+//     normal2: UV1 * Layer1_Tiling only in mode 3, else UV0;  albedo2 / base normal: UV0.   Layer2_Tiling* are never read.
+//   layer mask w = sat((baseNormal.a - g_Layer1_THold) / g_THoldRange); roughness/metallic/diffuse/sheen/spec mask/normal all lerp layer1 -> layer2 by w.
+//   normals: base normal (xy * lerp(DefaultNormalRate)) first, then lerp(n1, n2, w) applied in a frame built around the base-perturbed normal.
+//   lighting: GGX (alpha = r^2) * Schlick * Smith-joint, Frostbite-style roughness diffuse, per light sat(diffuse + 0.5 * spec * mask).
+// Anything the host doesn't feed reads as 0 and falls back to sensible defaults (see `fed` below).
+// ============================================================================
+const B3_FABRIC_FRAGMENT_SHADER = /* glsl */ `
+${B3_PBR_COMMON_GLSL}
+
+uniform sampler2D uTexAlbedo;
+uniform sampler2D uTexMask;
+uniform sampler2D uTexNormal;
+uniform sampler2D uTexNormal2;
+uniform sampler2D uTexNormal3;
+uniform samplerCube uTexEnv;
+uniform samplerCube uTexIrradiance;
+
+uniform int uHasTexAlbedo;
+uniform int uHasTexMask;
+uniform int uHasTexNormal;
+uniform int uHasTexNormal2;
+uniform int uHasTexNormal3;
+
+uniform float g_1BitMask;                 // selects the cutout variant: alpha comes from g_NormalMap3.a
+uniform float g_Layer2_Use;               // selects the dual-layer variant
+uniform float g_Layer1_TilingMode;
+uniform vec2  g_Layer1_Tiling;
+uniform vec2  g_DetailNormalTile;         // fallback alias for g_Layer1_Tiling
+uniform vec3  g_Layer1_BaseColor;
+uniform vec3  g_LayerColor1;              // fallback alias for g_Layer1_BaseColor
+uniform float g_Layer1_UseAlbedo;
+uniform float g_Layer1_UseNormalMap;
+uniform float g_Layer1_UseSpecularMask;
+uniform float g_Layer2_UseNormalMap;
+uniform float g_Layer2_UseSpecularMask;
+uniform float g_Layer1_THold;
+uniform float g_THoldRange;
+uniform float g_Layer1_Roughness;
+uniform float g_Layer2_Roughness;
+uniform float g_Layer1_Metallic;
+uniform float g_Layer2_Metallic;
+uniform float g_Layer1_DiffuseWeight;
+uniform float g_Layer2_DiffuseWeight;
+uniform float g_Layer1_DefaultNormalRate;
+uniform float g_Layer2_DefaultNormalRate;
+uniform vec3  g_Layer1_SheenColorMul;
+uniform vec3  g_Layer2_SheenColorMul;
+uniform vec3  g_Layer1_SheenColorAdd;
+uniform vec3  g_Layer2_SheenColorAdd;
+uniform float g_Layer1_SheenIntencity;    // (sic)
+uniform float g_Layer2_SheenIntencity;
+uniform float g_Layer1_SheenOpacity;
+uniform float g_Layer2_SheenOpacity;
+uniform float g_FresneRate;               // (sic)
+uniform float g_FresnelIntensity;
+uniform float g_FresnelExp;
+uniform float g_FresnelFraction;
+uniform float g_FresnelMin;
+uniform float g_FresnelMax;
+
+const float B3F_MIN_ALPHA      = 0.002; // c1[6] in the game, unknown; floor on alpha = r^2 (real roughness is 0.55-1.0 so it never matters)
+const float B3F_SPEC_GAIN      = 1.0;   // overall multiplier on the direct spec
+const float B3F_IBL_SPEC_GAIN  = 0.85;  // overall multiplier on the IBL spec
+const float B3F_ENV_BLUR       = 1.0;   // weight scale for blurring the env cube toward the irradiance cube by roughness
+const float B3F_SHEEN_STRENGTH = 1.0;   // scales the sheen tint (the exact in-game blend is only approximated)
+const float B3F_FORCE_DUAL     = 0.0;   // 1 = always dual-layer when AlbedoMap2 / NormalMap3 exist, ignoring g_Layer2_Use
+
+// base normal first (xy scaled by DefaultNormalRate), then the tiled layer normal in a frame built around it
+vec3 B3FabricNormal(vec3 N0, vec3 T0, vec3 nBaseTS, float rate, vec3 nLayerTS) {
+  vec3 nb = normalize(vec3(nBaseTS.xy * rate, nBaseTS.z));
+  vec3 B0 = normalize(cross(N0, T0));
+  vec3 Nb = normalize(nb.x * T0 + nb.y * B0 + nb.z * N0);
+  vec3 Bb = normalize(cross(Nb, T0));
+  vec3 Tb = normalize(cross(Bb, Nb));
+  return normalize(nLayerTS.x * Tb + nLayerTS.y * Bb + nLayerTS.z * Nb);
+}
+
+vec3 B3FabricEnvBrdf(vec3 F0, float a, float NV) {
+  vec4 r = a * vec4(-1.0, -0.0275, -0.572, 0.022) + vec4(1.0, 0.0425, 1.04, -0.04);
+  float a004 = min(r.x * r.x, exp2(-9.28 * NV)) * r.x + r.y;
+  vec2 ab = vec2(-1.04, 1.04) * a004 + r.zw;
+  return F0 * ab.x + ab.y;
+}
+
+// one light in the rig's units: gain * min(diffuse / PI + 0.5 * spec * mask, 1), as the game saturates per light
+vec3 B3FabricLight(vec3 N, vec3 V, vec3 L, vec3 diffColour, vec3 F0, float r, float specMask, float gain) {
+  float NL = saturate(dot(N, L));
+  if (NL <= 0.0) return vec3(0.0);
+  float NV = max(saturate(dot(N, V)), 1e-3);
+  float NLm = max(NL, 1e-3);
+  vec3 H = normalize(L + V);
+  float NH = saturate(dot(N, H));
+  float VH = saturate(dot(V, H));
+
+  float al = max(r * r, B3F_MIN_ALPHA);
+  float al2 = al * al;
+  float dd = NH * NH * (al2 - 1.0) + 1.0;
+  float D = al2 / (dd * dd);
+  float vis = 1.0 / (NLm * (al + NV * (1.0 - al)) + NV * (al + NLm * (1.0 - al)));
+  float fc = 1.0 - VH;
+  float fc2 = fc * fc;
+  vec3 F = F0 + (vec3(1.0) - F0) * (fc2 * fc2 * fc);
+  vec3 spec = F * (D * vis * 0.5 * NL) * specMask * B3F_SPEC_GAIN;
+
+  // Frostbite-style roughness diffuse: fd90 = 0.5 r + 2 r (L.H)^2
+  float fd90 = 0.5 * r + 2.0 * r * VH * VH;
+  float cl = 1.0 - NL;
+  float cv = 1.0 - NV;
+  float fdL = 1.0 + (fd90 - 1.0) * (cl * cl * cl * cl * cl);
+  float fdV = 1.0 + (fd90 - 1.0) * (cv * cv * cv * cv * cv);
+  vec3 diffuse = diffColour * (fdL * fdV * NL);
+
+  return gain * min(diffuse / B3_PI + spec, vec3(1.0));
+}
+
+void main() {
+  vec2 uv0 = vUv.xy;
+  vec2 uv1 = ResolveLightMapUv(vUv, vUv2);
+  vec3 V = normalize(-vEyeW);
+  vec3 N0w = normalize(vNrmW);
+  vec3 N0v = normalize(vNrmV);
+  vec3 T0w = SafeOrthoTangentB3(N0w, vTanW);
+  vec3 T0v = SafeOrthoTangentB3(N0v, vTanV);
+
+  // ---- parameters, with defaults when the host doesn't feed them ----
+  bool fed = (g_Layer1_Roughness + g_Layer2_Roughness) > 0.001;
+  float r1 = fed ? g_Layer1_Roughness : 0.8;
+  float r2 = fed ? g_Layer2_Roughness : 0.9;
+  float m1 = fed ? g_Layer1_Metallic : 0.0;
+  float m2 = fed ? g_Layer2_Metallic : 0.0;
+  float dw1 = fed ? g_Layer1_DiffuseWeight : 1.0;
+  float dw2 = fed ? g_Layer2_DiffuseWeight : 0.8;
+  float nr1 = fed ? g_Layer1_DefaultNormalRate : 1.0;
+  float nr2 = fed ? g_Layer2_DefaultNormalRate : 1.0;
+  float tHold = fed ? g_Layer1_THold : 0.5;
+  float tRange = fed ? max(g_THoldRange, 1e-3) : 0.05;
+  int tilingMode = fed ? int(floor(g_Layer1_TilingMode + 0.5)) : 2;
+  bool useAlbedo1 = fed ? (g_Layer1_UseAlbedo > 0.5) : true;
+  bool useNormal1 = fed ? (g_Layer1_UseNormalMap > 0.5) : true;
+  bool useNormal2 = fed ? (g_Layer2_UseNormalMap > 0.5) : false;
+  bool useMask1 = fed ? (g_Layer1_UseSpecularMask > 0.5) : true;
+  bool useMask2 = fed ? (g_Layer2_UseSpecularMask > 0.5) : false;
+  bool cutout = g_1BitMask > 0.5;
+  bool dual = !cutout && (g_Layer2_Use > 0.5 || B3F_FORCE_DUAL > 0.5 || !fed) && uHasTexMask == 1 && uHasTexNormal == 1;
+
+  vec2 tile = (g_Layer1_Tiling.x > 0.0 && g_Layer1_Tiling.y > 0.0) ? g_Layer1_Tiling
+            : ((g_DetailNormalTile.x > 0.0 && g_DetailNormalTile.y > 0.0) ? g_DetailNormalTile : vec2(1.0));
+  vec2 uvTiled = uv1 * tile;
+  vec2 uvNormal1 = (tilingMode >= 1) ? uvTiled : uv0;
+  vec2 uvAlbedo1 = (tilingMode == 1) ? uvTiled : uv0;
+  vec2 uvNormal2 = (tilingMode == 3) ? uvTiled : uv0;
+
+  // ---- base normal (+ layer mask in .a) ----
+  vec4 sBase = (uHasTexNormal == 1) ? texture2D(uTexNormal, uv0) : vec4(0.5, 0.5, 1.0, 0.0);
+  float w = dual ? saturate((sBase.a - tHold) / tRange) : 0.0;
+  float alpha = 1.0;
+  if (cutout) {
+    alpha = (uHasTexNormal == 1) ? sBase.a : 1.0;
+    if (uDebugMode == 0 && alpha <= 0.3333) { discard; }
+  }
+
+  // ---- layer normals + spec masks ----
+  vec4 sN1 = (uHasTexNormal2 == 1) ? texture2D(uTexNormal2, uvNormal1) : vec4(0.5, 0.5, 1.0, 1.0);
+  vec4 sN2 = (dual && uHasTexNormal3 == 1) ? texture2D(uTexNormal3, uvNormal2) : vec4(0.5, 0.5, 1.0, 1.0);
+  vec3 n1 = (useNormal1 && uHasTexNormal2 == 1) ? DecodeB3NormalTS(sN1) : vec3(0.0, 0.0, 1.0);
+  vec3 n2 = (useNormal2 && dual && uHasTexNormal3 == 1) ? DecodeB3NormalTS(sN2) : vec3(0.0, 0.0, 1.0);
+  vec3 nLayer = normalize(mix(n1, n2, w));
+  float mask1 = (useMask1 && uHasTexNormal2 == 1) ? sN1.a : 1.0;
+  float mask2 = (useMask2 && dual && uHasTexNormal3 == 1) ? sN2.a : 1.0;
+  float specMask = mix(mask1, mask2, w);
+
+  // z is reconstructed from xy (not read from the blue channel); the base normal's blue is NOT used as AO
+  vec3 nBase = (uHasTexNormal == 1) ? DecodeB3NormalTS(sBase) : vec3(0.0, 0.0, 1.0);
+  float normalRate = mix(nr1, nr2, w);
+  vec3 Nw = B3FabricNormal(N0w, T0w, nBase, normalRate, nLayer);
+  vec3 Nv = B3FabricNormal(N0v, T0v, nBase, normalRate, nLayer);
+
+  // ---- layer colours ----
+  vec3 baseColor1 = (dot(g_Layer1_BaseColor, g_Layer1_BaseColor) > 1e-6) ? g_Layer1_BaseColor : g_LayerColor1;
+  if (dot(baseColor1, baseColor1) < 1e-6) { baseColor1 = vec3(1.0); }
+  vec3 colour1 = DecodeB3Albedo(baseColor1);
+  if (useAlbedo1 && uHasTexAlbedo == 1) {
+    colour1 *= DecodeB3Albedo(texture2D(uTexAlbedo, uvAlbedo1).rgb);
+  }
+  vec3 colour2 = colour1;
+  if (dual) {
+    colour2 = DecodeB3Albedo(texture2D(uTexMask, uv0).rgb);   // raw AlbedoMap2: no layer-2 base colour, never tiled
+  }
+  vec3 colour = mix(colour1, colour2, w);
+
+  float rough = clamp(mix(r1, r2, w), 0.0, 1.0);
+  float metal = clamp(mix(m1, m2, w), 0.0, 1.0);
+  float diffW = mix(dw1, dw2, w);
+  float NV = saturate(dot(Nw, V));
+
+  // ---- Fresnel-weighted sheen (structure decoded from the game; the final blend is approximated) ----
+  float tF = 1.0 - NV;
+  float fresA = tF * tF * (3.0 - 2.0 * tF);
+  float fresMask = fresA;
+  if (g_FresnelMax > g_FresnelMin + 1e-4) {
+    float fr = pow(max(tF, 1e-4), g_FresnelExp);
+    fr = mix(g_FresnelFraction, 1.0, fr);
+    float tr = saturate((fr - g_FresnelMin) / (g_FresnelMax - g_FresnelMin));
+    float fresB = tr * tr * (3.0 - 2.0 * tr);
+    fresMask = clamp(mix(fresA, fresB * g_FresnelIntensity, g_FresneRate), 0.0, 1.0);
+  }
+  vec3 sheenMul = fed ? mix(g_Layer1_SheenColorMul, g_Layer2_SheenColorMul, w) : vec3(1.0);
+  vec3 sheenAdd = fed ? mix(g_Layer1_SheenColorAdd, g_Layer2_SheenColorAdd, w) : vec3(0.0);
+  float sheenInt = fed ? mix(g_Layer1_SheenIntencity, g_Layer2_SheenIntencity, w) : 1.0;
+  float sheenOp = fed ? mix(g_Layer1_SheenOpacity, g_Layer2_SheenOpacity, w) : 0.5;
+  vec3 sheenCol = clamp(specMask * (sheenMul * colour + sheenAdd) * sheenInt, 0.0, 1.0);
+  float sheenAmt = clamp(fresMask * sheenOp * B3F_SHEEN_STRENGTH, 0.0, 1.0);
+  vec3 colourDiff = mix(colour, colour * sheenCol, sheenAmt) * ((1.0 - metal) * diffW);
+
+  // ---- lights ----
+  vec3 F0 = mix(vec3(0.03), colour, metal);
+  float gKey = B3_PI * STUDIO_KEY_INTENSITY * 1.45;
+  float gFill = B3_PI * STUDIO_FILL_INTENSITY * 0.95;
+  vec3 direct = B3FabricLight(Nw, V, STUDIO_KEY_TO_LIGHT, colourDiff, F0, rough, specMask, gKey)
+              + B3FabricLight(Nw, V, STUDIO_FILL_TO_LIGHT, colourDiff, F0, rough, specMask, gFill);
+
+  // ---- IBL: diffuse as before (specScale 0), spec = env * BRDF-LUT fit * spec mask ----
+  vec3 iblDiffuse = EvaluateB3Ibl(Nw, V, colourDiff, rough, F0, 1.0, 0.0, uTexEnv, uTexIrradiance);
+  vec3 R = reflect(-V, Nw);
+  vec3 envSharp = texCUBE_game(uTexEnv, R).rgb;
+  vec3 envSoft = texCUBE_game(uTexIrradiance, R).rgb;
+  vec3 envSpec = mix(envSharp, envSoft, saturate(rough * B3F_ENV_BLUR));
+  vec3 iblSpec = envSpec * B3FabricEnvBrdf(F0, rough, NV) * specMask * B3F_IBL_SPEC_GAIN;
+
+  vec3 colourOut = direct + iblDiffuse + iblSpec;
+  gl_FragColor = FinishB3Fragment(colourOut, alpha, Nw, Nv, vPosV);
+}
+`;
+
+// ============================================================================
 // 4. SKN20 / SKN21 / SKN25 / SKN30 / SKN31 / HMSKN* — Character Skin with SSS LUT
 // (`SHADER_ALGORITHMS_DEEP.md` §06b lines 8107-8704)
 //   uB3SkinVariant:
@@ -1223,6 +1464,59 @@ uniform vec2 g_ParallaxUVIntensity;
 uniform vec3 g_AlbedoFresnelParams; // x = Intensity, y = Exp, z = BaseFrac
 uniform vec2 g_OuterFresnelMinMax;
 
+// ============================================================================
+// Skin specular, ported from the game's PS_FP_Skin20 / Skin21 / Skin25 (Maxwell -> GLSL transpile).
+//   roughness a = g_NormalMap.a (Skin20/25) or g_AlbedoMap2.g (Skin21); GGX alpha = a^2 (NOT a^4)
+//   direct: F_Schlick(F0 = 0.03) * D_GGX(alpha) * Vis_SmithJointApprox(alpha) * N.L * 0.5, times the albedo alpha (specular mask)
+//   per light the game saturates diffuse + spec before the light colour, so highlights can't blow out
+//   IBL: env cube at a mip chosen by a, times the BRDF LUT (F0 * A + B), times the same albedo-alpha mask
+// ============================================================================
+const float B3S_GAME_NORMAL_DECODE = 1.0;  // 1 = game's z = 1 - |xy| (then normalise), 0 = sqrt(1 - |xy|^2)
+const float B3S_MIN_ALPHA          = 0.002; // c1[5] in the game, unknown; floor on alpha = a^2
+const float B3S_SPEC_GAIN          = 1.0;   // overall multiplier on the direct spec
+const float B3S_IBL_SPEC_GAIN      = 0.85;  // overall multiplier on the IBL spec (was specScale 0.85)
+const float B3S_ENV_BLUR           = 1.0;   // weight scale for blurring the env cube toward the irradiance cube by roughness
+
+vec3 B3SkinDecodeNormal(vec4 s) {
+  vec2 xy = s.rg * 2.0 - 1.0;
+  float len = sqrt(saturate(dot(xy, xy)));
+  return normalize(vec3(xy, 1.0 - len));
+}
+
+// F * D * Vis * N.L * 0.5, all in the game's units (no 1/PI on D, no 0.5 on Vis, the 0.5 is applied here)
+vec3 B3SkinSpecLobe(vec3 N, vec3 V, vec3 L, float a, vec3 F0) {
+  float NL = saturate(dot(N, L));
+  if (NL <= 0.0) return vec3(0.0);
+  float NV = max(saturate(dot(N, V)), 1e-3);
+  float NLm = max(NL, 1e-3);
+  vec3 H = normalize(L + V);
+  float NH = saturate(dot(N, H));
+  float VH = saturate(dot(V, H));
+  float al = max(a * a, B3S_MIN_ALPHA);
+  float al2 = al * al;
+  float dd = NH * NH * (al2 - 1.0) + 1.0;
+  float D = al2 / (dd * dd);
+  float vis = 1.0 / (NLm * (al + NV * (1.0 - al)) + NV * (al + NLm * (1.0 - al)));
+  float fc = 1.0 - VH;
+  float fc2 = fc * fc;
+  vec3 F = F0 + (vec3(1.0) - F0) * (fc2 * fc2 * fc);
+  return F * (D * vis * 0.5 * NL);
+}
+
+// Karis' mobile analytic fit of the split-sum BRDF LUT (the game samples a 2D LUT at (N.V, 1 - a))
+vec3 B3SkinEnvBrdf(vec3 F0, float a, float NV) {
+  vec4 r = a * vec4(-1.0, -0.0275, -0.572, 0.022) + vec4(1.0, 0.0425, 1.04, -0.04);
+  float a004 = min(r.x * r.x, exp2(-9.28 * NV)) * r.x + r.y;
+  vec2 ab = vec2(-1.04, 1.04) * a004 + r.zw;
+  return F0 * ab.x + ab.y;
+}
+
+// the game saturates (diffuse + spec) per light before multiplying the light colour; gain converts to this rig's units
+vec3 B3SkinLightOut(vec3 diffuseU, vec3 specGame, float gain) {
+  float g = max(gain, 1e-3);
+  return g * min(diffuseU / g + specGame, vec3(1.0));
+}
+
 void main() {
   vec2 uv = vUv.xy;
   vec3 V = normalize(-vEyeW);
@@ -1249,7 +1543,7 @@ void main() {
   vec3 Nw = NwGeo;
   vec3 Nv = NvGeo;
   if (uHasTexNormal == 1) {
-    vec3 nTS = DecodeB3NormalTS(sNorm);
+    vec3 nTS = (B3S_GAME_NORMAL_DECODE > 0.5 && uB3SkinVariant != 30) ? B3SkinDecodeNormal(sNorm) : DecodeB3NormalTS(sNorm);
     if (uUseSecondaryNormals == 1 && uHasTexNormal2 == 1) {
       if (uB3SkinVariant == 30) {
         vec4 sNormIn = texture2D(uTexNormal2, uvParallax);
@@ -1304,6 +1598,18 @@ void main() {
   vec3 F0 = mix(vec3(0.03), base, metal);
   vec3 diffK = base * (1.0 - metal);
 
+  // Game: the skin spec uses a = g_NormalMap.a (Skin20/25) or g_AlbedoMap2.g (Skin21) as perceptual roughness, and albedo alpha as the spec mask.
+  // (Passing a^2 into EvaluateB3DirectPbr / EvaluateB3Ibl squared it twice, which is what made everything glossy.)
+  bool gameSpec = (uB3SkinVariant != 30);
+  float aRough = 0.5;
+  if (uB3SkinVariant == 21) {
+    aRough = (uHasTexMask == 1) ? sLayer2.g : 0.5;
+  } else if (uHasTexNormal == 1) {
+    aRough = sNorm.a;
+  }
+  aRough = clamp(aRough, 0.0, 1.0);
+  float specMaskA = (uB3SkinVariant == 30 || uHasTexAlbedo == 0) ? 1.0 : sAlbedo.a;
+
   // Wrapped subsurface diffuse + SSS terminator bleed (§1.3 lines 8183-8195 & §2.2 g_SSSColor)
   float sssBias = clamp(g_SSSBias, 0.05, 0.85);
   float ndotlKey = dot(Nw, STUDIO_KEY_TO_LIGHT);
@@ -1314,19 +1620,28 @@ void main() {
   vec3 sssTint = (uB3SkinVariant == 21)
     ? DecodeB3Albedo(g_SSSColor)
     : vec3(1.0, 0.34, 0.24) * clamp(max(g_CurvatureScale, 0.35), 0.15, 1.2);
-  vec3 sssDiffuse = diffK * (directLam + terminator * sssTint * sssBias * 1.35) * STUDIO_KEY_INTENSITY * 1.45;
+  vec3 sssKey = diffK * (directLam + terminator * sssTint * sssBias * 1.35) * STUDIO_KEY_INTENSITY * 1.45;
 
   float fillLam = saturate(dot(Nb, STUDIO_FILL_TO_LIGHT) * 0.7 + 0.3);
-  sssDiffuse += diffK * fillLam * STUDIO_FILL_INTENSITY * 0.95;
+  vec3 sssFill = diffK * fillLam * STUDIO_FILL_INTENSITY * 0.95;
+  vec3 sssDiffuse = sssKey + sssFill;
 
-  vec3 specOnly = EvaluateB3DirectPbr(Nw, V, vec3(0.0), rough, F0);
-  if (uB3SkinVariant != 21 && uB3SkinVariant != 30) {
-    // Specular-shadow toon clamp (§1.4 lines 8206-8210: specular = lerp(specular, 1.0, mask))
-    float denom = max(g_SpecularShadowClampMinMax.y - g_SpecularShadowClampMinMax.x, 1e-4);
-    float tSS = saturate((sAlbedo.a - g_SpecularShadowClampMinMax.x) / denom);
-    float ss = tSS * tSS * (3.0 - 2.0 * tSS);
-    vec3 specShadowMask = clamp(ss * sLayer2.rgb * clamp(g_SpecularShadowRate, 0.0, 1.0), vec3(0.0), vec3(1.0));
-    specOnly = mix(specOnly, vec3(1.0), specShadowMask * 0.35);
+  vec3 specOnly = vec3(0.0);
+  vec3 specKeyG = vec3(0.0);
+  vec3 specFillG = vec3(0.0);
+  vec3 iblSpecG = vec3(0.0);
+  if (gameSpec) {
+    // F0 on the direct path is lerped twice by metallic in the game (0.03 + (albedo - 0.03) * M^2); the IBL path lerps once
+    vec3 F0d = mix(vec3(0.03), base, metal * metal);
+    specKeyG  = B3SkinSpecLobe(Nw, V, STUDIO_KEY_TO_LIGHT,  aRough, F0d) * specMaskA * B3S_SPEC_GAIN;
+    specFillG = B3SkinSpecLobe(Nw, V, STUDIO_FILL_TO_LIGHT, aRough, F0d) * specMaskA * B3S_SPEC_GAIN;
+
+    vec3 envSharp = texCUBE_game(uTexEnv, reflect(-V, Nw)).rgb;
+    vec3 envSoft  = texCUBE_game(uTexIrradiance, reflect(-V, Nw)).rgb;
+    vec3 envSpec  = mix(envSharp, envSoft, saturate(aRough * B3S_ENV_BLUR));
+    iblSpecG = envSpec * B3SkinEnvBrdf(F0, aRough, saturate(dot(Nw, V))) * specMaskA * mix(0.35, 1.0, ao) * B3S_IBL_SPEC_GAIN;
+  } else {
+    specOnly = EvaluateB3DirectPbr(Nw, V, vec3(0.0), rough, F0);
   }
 
   // Optional T-permutation ramé micro-sheen (§6 line 8646)
@@ -1338,8 +1653,18 @@ void main() {
     rameTerm = vec3(1.0, 0.94, 0.90) * rameRim * rameScale * 0.25;
   }
 
-  vec3 ibl = EvaluateB3Ibl(Nw, V, diffK, rough, F0, ao, 0.85, uTexEnv, uTexIrradiance);
-  vec3 colour = sssDiffuse * ao + specOnly + ibl + rameTerm;
+  vec3 colour;
+  if (gameSpec) {
+    // diffuse IBL exactly as before (specScale 0 returns only the diffuse part); spec is the game-style term above
+    vec3 iblDiffuse = EvaluateB3Ibl(Nw, V, diffK, rough, F0, ao, 0.0, uTexEnv, uTexIrradiance);
+    float gKey  = B3_PI * STUDIO_KEY_INTENSITY * 1.45;
+    float gFill = B3_PI * STUDIO_FILL_INTENSITY * 0.95;
+    colour = B3SkinLightOut(sssKey * ao, specKeyG, gKey) + B3SkinLightOut(sssFill * ao, specFillG, gFill)
+           + iblDiffuse + iblSpecG + rameTerm;
+  } else {
+    vec3 ibl = EvaluateB3Ibl(Nw, V, diffK, rough, F0, ao, 0.85, uTexEnv, uTexIrradiance);
+    colour = sssDiffuse * ao + specOnly + ibl + rameTerm;
+  }
   float outAlpha = (uB3SkinVariant == 30) ? sAlbedo.a : 1.0;
 
   gl_FragColor = FinishB3Fragment(colour, outAlpha, Nw, Nv, vPosV);
@@ -1850,7 +2175,7 @@ export function resolveB3ShaderFamily(
     const queue: RenderQueueBucket = isFbr || isFur01 ? "opaque" : "alphatest";
     return {
       id: isFbr ? `b3:FBR00 (${raw})` : isFur01 ? `b3:FUR01 (${raw})` : `b3:Hair${hv} (${raw})`,
-      fragmentShader: B3_HAIR_FRAGMENT_SHADER,
+      fragmentShader: isFbr ? B3_FABRIC_FRAGMENT_SHADER : B3_HAIR_FRAGMENT_SHADER,
       queue,
       transparent: false,
       depthWrite: true,
