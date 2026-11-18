@@ -1456,6 +1456,7 @@ export default function App() {
   async function runWmbMutation(nodeId: string, operation: string, payload: any = {}) {
     setContextMenu(null);
     try {
+      const prevUndoLabel = outline?.undo_label ?? null;
       const updated = await invoke<DocumentOutline>("mutate_wmb_node", {
         nodeId,
         operation,
@@ -1464,7 +1465,14 @@ export default function App() {
       setOutline(updated);
       setWmbDocGeneration((g) => g + 1);
       await selectAndInspectNode(nodeId);
-      setStatusLeft(updated.undo_label ?? `Completed WMB ${operation}`);
+      if (
+        operation === "remap_texture_hashes" &&
+        updated.undo_label === prevUndoLabel
+      ) {
+        setStatusLeft("All texture hashes are valid crc32 & 7f");
+      } else {
+        setStatusLeft(updated.undo_label ?? `Completed WMB ${operation}`);
+      }
     } catch (err) {
       setStatusLeft(`WMB error: ${String(err)}`);
     }

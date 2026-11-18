@@ -20,6 +20,7 @@ use pgtools_core::{
     scene::{build_wmb3_scene, build_wmb_scene, fnv1a_64_hex, TextureRefDesc, UidMap},
     scr::ScrFile,
     texture_conv::{decode_dds_to_rgba8, texture_blob_has_pixel_payload},
+    texture_hash::{remap_wmb3_texture_hashes, remap_wmb_texture_hashes, TextureHashReport},
     uvd::{
         extract_group_to_dir, repack_uvd_group_from_dir, UvdFile, DEFAULT_UVD_MAX_SIZE,
         DEFAULT_UVD_PADDING,
@@ -284,6 +285,12 @@ enum Commands {
         dump_bones: bool,
         #[arg(long)]
         dump_materials: bool,
+        /// Check that all texture hashes in a B2 WMB or B3/NieR WMB3 are valid crc32 & 7f (dry run)
+        #[arg(long)]
+        check_texture_hashes: bool,
+        /// Remap invalid texture hashes (bit 31 set) to valid crc32 & 7f across WMB and auto-detected .wta/.wtb
+        #[arg(long)]
+        remap_texture_hashes: bool,
         #[arg(long)]
         overwrite: bool,
     },
@@ -1299,6 +1306,8 @@ fn main() -> Result<()> {
             export_obj,
             dump_bones,
             dump_materials,
+            check_texture_hashes,
+            remap_texture_hashes,
             overwrite,
         } => {
             let raw = fs::read(&input)?;
@@ -1316,6 +1325,27 @@ fn main() -> Result<()> {
                     fs::write(&obj_path, wmb3.export_obj())?;
                     println!("Exported Wavefront OBJ to {}", obj_path.display());
                     return Ok(());
+                }
+                let mut modified_banks: Vec<(PathBuf, WtbFile)> = Vec::new();
+                if check_texture_hashes || remap_texture_hashes {
+                    let dry_run = !remap_texture_hashes;
+                    let mut banks = load_paired_wtb_banks_for_cli(&input);
+                    let mut bank_refs: Vec<&mut WtbFile> =
+                        banks.iter_mut().map(|(_, b)| b).collect();
+                    let report = remap_wmb3_texture_hashes(&mut wmb3, &mut bank_refs, dry_run);
+                    print_texture_hash_report(&report, dry_run);
+                    if dry_run {
+                        if !report.remaps.is_empty() {
+                            anyhow::bail!(
+                                "Found {} invalid texture hash(es) (bit 31 set)",
+                                report.remaps.len()
+                            );
+                        }
+                        return Ok(());
+                    }
+                    for idx in report.wtb_modified_indices {
+                        modified_banks.push((banks[idx].0.clone(), banks[idx].1.clone()));
+                    }
                 }
                 if let Some(s) = scale {
                     for vg in &mut wmb3.vertex_groups {
@@ -1352,6 +1382,7 @@ fn main() -> Result<()> {
                 };
                 fs::write(&out_path, wmb3.to_bytes()?)?;
                 println!("Wrote WMB3 to {}", out_path.display());
+                write_modified_cli_banks(&modified_banks, &out_path, overwrite)?;
                 return Ok(());
             }
 
@@ -1396,6 +1427,27 @@ fn main() -> Result<()> {
             if cleanup_vertexes {
                 wmb.cleanup_vertexes();
             }
+            let mut modified_banks: Vec<(PathBuf, WtbFile)> = Vec::new();
+            if check_texture_hashes || remap_texture_hashes {
+                let dry_run = !remap_texture_hashes;
+                let mut banks = load_paired_wtb_banks_for_cli(&input);
+                let mut bank_refs: Vec<&mut WtbFile> =
+                    banks.iter_mut().map(|(_, b)| b).collect();
+                let report = remap_wmb_texture_hashes(&mut wmb, &mut bank_refs, dry_run);
+                print_texture_hash_report(&report, dry_run);
+                if dry_run {
+                    if !report.remaps.is_empty() {
+                        anyhow::bail!(
+                            "Found {} invalid texture hash(es) (bit 31 set)",
+                            report.remaps.len()
+                        );
+                    }
+                    return Ok(());
+                }
+                for idx in report.wtb_modified_indices {
+                    modified_banks.push((banks[idx].0.clone(), banks[idx].1.clone()));
+                }
+            }
             if let Some(s) = scale {
                 wmb.scale(s);
             }
@@ -1414,6 +1466,7 @@ fn main() -> Result<()> {
             };
             fs::write(&out_path, wmb.to_bytes(target_endian)?)?;
             println!("Wrote WMB to {}", out_path.display());
+            write_modified_cli_banks(&modified_banks, &out_path, overwrite)?;
         }
         Commands::WmbCommonBones { files } => {
             let mut common: Option<BTreeSet<u16>> = None;
@@ -1689,4 +1742,128 @@ fn main() -> Result<()> {
     }
 
     Ok(())
+}
+
+fn load_paired_wtb_banks_for_cli(wmb_path: &Path) -> Vec<(PathBuf, WtbFile)> {
+    let dir = wmb_path
+        .parent()
+        .filter(|p| !p.as_os_str().is_empty())
+        .unwrap_or_else(|| Path::new("."));
+    let stem = wmb_path
+        .file_stem()
+        .and_then(|s| s.to_str())
+        .unwrap_or("")
+        .to_ascii_lowercase();
+
+    let mut stem_matches: Vec<PathBuf> = Vec::new();
+    let mut all_banks: Vec<PathBuf> = Vec::new();
+    if let Ok(entries) = fs::read_dir(dir) {
+        for entry in entries.flatten() {
+            let p = entry.path();
+            if !p.is_file() {
+                continue;
+            }
+            let ext = p
+                .extension()
+                .and_then(|e| e.to_str())
+                .unwrap_or("")
+                .to_ascii_lowercase();
+            if ext == "wta" || ext == "wtb" {
+                let p_stem = p
+                    .file_stem()
+                    .and_then(|s| s.to_str())
+                    .unwrap_or("")
+                    .to_ascii_lowercase();
+                if p_stem == stem {
+                    stem_matches.push(p.clone());
+                }
+                all_banks.push(p);
+            }
+        }
+    }
+    stem_matches.sort();
+    all_banks.sort();
+
+    let candidates = if !stem_matches.is_empty() {
+        stem_matches
+    } else if all_banks.len() == 1 {
+        all_banks
+    } else {
+        Vec::new()
+    };
+
+    let mut result = Vec::new();
+    for bank_path in candidates {
+        let Ok(bytes) = fs::read(&bank_path) else {
+            continue;
+        };
+        let is_wta = bank_path
+            .extension()
+            .and_then(|e| e.to_str())
+            .map(|e| e.eq_ignore_ascii_case("wta"))
+            .unwrap_or(false);
+        let wtp_bytes = if is_wta {
+            let wtp_path = bank_path.with_extension("wtp");
+            fs::read(&wtp_path).ok()
+        } else {
+            None
+        };
+        if let Ok(wtb) = WtbFile::from_bytes(&bytes, wtp_bytes.as_deref()) {
+            result.push((bank_path, wtb));
+        }
+    }
+    result
+}
+
+fn write_modified_cli_banks(
+    modified_banks: &[(PathBuf, WtbFile)],
+    wmb_out_path: &Path,
+    overwrite: bool,
+) -> Result<()> {
+    let out_dir = wmb_out_path
+        .parent()
+        .filter(|p| !p.as_os_str().is_empty())
+        .unwrap_or_else(|| Path::new("."));
+    for (orig_path, wtb) in modified_banks {
+        let (bank_bytes, _) = wtb.to_bytes();
+        let dest = if overwrite {
+            orig_path.clone()
+        } else if let Some(name) = orig_path.file_name() {
+            out_dir.join(name)
+        } else {
+            orig_path.clone()
+        };
+        fs::write(&dest, bank_bytes)?;
+        println!("Updated paired texture bank {}", dest.display());
+    }
+    Ok(())
+}
+
+fn print_texture_hash_report(report: &TextureHashReport, dry_run: bool) {
+    if report.skipped_b1 {
+        println!("Skipped: {}", report.format);
+        return;
+    }
+    if report.remaps.is_empty() {
+        println!("{}: all texture hashes are valid crc32 & 7f.", report.format);
+        return;
+    }
+    let verb = if dry_run { "Would remap" } else { "Remapped" };
+    println!(
+        "{}: {} {} invalid texture hash(es):",
+        report.format,
+        verb,
+        report.remaps.len()
+    );
+    for r in &report.remaps {
+        let probe_note = if r.collision_probed {
+            " [collision probed]"
+        } else {
+            ""
+        };
+        println!(
+            "  0x{:08X} -> 0x{:08X} (wmb: {}, wta/wtb: {}){}",
+            r.old_id, r.new_id, r.wmb_occurrences, r.wtb_occurrences, probe_note
+        );
+    }
 }

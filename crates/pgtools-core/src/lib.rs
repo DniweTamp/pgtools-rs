@@ -28,6 +28,7 @@ pub mod scene_ops;
 pub mod scr;
 pub mod shader_db;
 pub mod texture_conv;
+pub mod texture_hash;
 pub mod uvd;
 pub mod wmb;
 pub mod wmb3;
@@ -36,6 +37,10 @@ pub mod wtb;
 pub use dat::{
     collect_dat_targets, dat_alignment_for_ext, parse_dat_alignment, validate_custom_dat_alignment,
     DatEntry, DatFile, DatHashMap, DEFAULT_CUSTOM_DAT_ALIGNMENT, MAX_CUSTOM_DAT_ALIGNMENT,
+};
+pub use texture_hash::{
+    is_valid_crc32_7f, remap_wmb3_texture_hashes, remap_wmb_texture_hashes, CRC32_7F_MASK,
+    TextureHashRemapEntry, TextureHashReport,
 };
 pub use uvd::{
     compute_uvd_group_id, compute_uvd_item_id, crop_sprite_from_sheet, extract_group_sprites,

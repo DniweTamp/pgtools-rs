@@ -24,6 +24,7 @@ use pgtools_core::{
         CorePretextureInfo, ShaderOptionDesc,
     },
     texture_conv::{decode_bntx_subtexture_mip_filtered, decode_texture_mip_filtered},
+    texture_hash::{remap_wmb3_texture_hashes, remap_wmb_texture_hashes},
     wmb::{DecodedWmbMaterial, WmbFile},
     wmb3::{Wmb3File, Wmb3Material, Wmb3NamedParameter, Wmb3TextureSlotView},
     wtb::WtbFile,
@@ -1840,6 +1841,7 @@ pub fn mutate_wmb_node(
         let mut init_committed = orig_uid_map;
         init_committed.ensure_wmb3(&wmb3);
         working_uid_map.ensure_wmb3(&wmb3);
+        let mut modified_wtb_banks: Vec<(String, WtbFile)> = Vec::new();
 
         let desc = match operation.as_str() {
             "export_obj" => {
@@ -2512,6 +2514,22 @@ pub fn mutate_wmb_node(
                 }
                 outcome.description
             }
+            "remap_texture_hashes" => {
+                let mut banks = collect_paired_wtb_banks(&snap, &node_id, oodle_opt);
+                let mut bank_refs: Vec<&mut WtbFile> =
+                    banks.iter_mut().map(|(_, b)| b).collect();
+                let report = remap_wmb3_texture_hashes(&mut wmb3, &mut bank_refs, false);
+                if report.remaps.is_empty() {
+                    return build_outline_from_session(&sess);
+                }
+                for idx in report.wtb_modified_indices {
+                    modified_wtb_banks.push(banks[idx].clone());
+                }
+                format!(
+                    "Remap {} invalid texture hash(es) (crc32 & 7f)",
+                    report.remaps.len()
+                )
+            }
             other => return Err(format!("Unsupported WMB3 operation: {other}")),
         };
         sync_wmb3_invariants(&mut wmb3);
@@ -2520,8 +2538,20 @@ pub fn mutate_wmb_node(
         let _ = Wmb3File::from_bytes(&new_wmb3_bytes)
             .map_err(|e| format!("WMB3 round-trip verification failed: {e}"))?;
         let dat_align = sess.settings.effective_dat_alignment();
-        let next_snap =
+        let mut next_snap =
             write_back_subblob_with_align(&snap, &container_parts, new_wmb3_bytes, None, oodle_opt, dat_align)?;
+        for (bank_node_id, wtb) in modified_wtb_banks {
+            let (wtb_bytes, _) = wtb.to_bytes();
+            let (bank_parts, _) = split_container_and_leaf(&bank_node_id);
+            next_snap = write_back_subblob_with_align(
+                &next_snap,
+                &bank_parts,
+                wtb_bytes,
+                None,
+                oodle_opt,
+                dat_align,
+            )?;
+        }
 
         sess.committed_uid_maps
             .entry(container_id.clone())
@@ -2538,6 +2568,7 @@ pub fn mutate_wmb_node(
     let mut target_endian = wmb.endian;
     let is_b2 = wmb.is_bayo2();
     let mut init_committed = orig_uid_map;
+    let mut modified_wtb_banks: Vec<(String, WtbFile)> = Vec::new();
     init_committed.ensure_wmb(&wmb);
     working_uid_map.ensure_wmb(&wmb);
 
@@ -3259,6 +3290,25 @@ pub fn mutate_wmb_node(
             }
             outcome.description
         }
+        "remap_texture_hashes" => {
+            if !is_b2 {
+                return Err("Bayonetta 1 WMBs use index-based textures and 0x8000000x pretextures; crc32 & 7f only applies to Bayonetta 2 and Bayonetta 3 / NieR.".to_string());
+            }
+            let mut banks = collect_paired_wtb_banks(&snap, &node_id, oodle_opt);
+            let mut bank_refs: Vec<&mut WtbFile> =
+                banks.iter_mut().map(|(_, b)| b).collect();
+            let report = remap_wmb_texture_hashes(&mut wmb, &mut bank_refs, false);
+            if report.remaps.is_empty() {
+                return build_outline_from_session(&sess);
+            }
+            for idx in report.wtb_modified_indices {
+                modified_wtb_banks.push(banks[idx].clone());
+            }
+            format!(
+                "Remap {} invalid texture hash(es) (crc32 & 7f)",
+                report.remaps.len()
+            )
+        }
         other => return Err(format!("Unknown WMB operation: {other}")),
     };
 
@@ -3267,7 +3317,19 @@ pub fn mutate_wmb_node(
     let _ = WmbFile::from_bytes(&new_wmb_bytes)
         .map_err(|e| format!("WMB round-trip verification failed: {e}"))?;
     let dat_align = sess.settings.effective_dat_alignment();
-    let next_snap = write_back_subblob_with_align(&snap, &container_parts, new_wmb_bytes, None, oodle_opt, dat_align)?;
+    let mut next_snap = write_back_subblob_with_align(&snap, &container_parts, new_wmb_bytes, None, oodle_opt, dat_align)?;
+    for (bank_node_id, wtb) in modified_wtb_banks {
+        let (wtb_bytes, _) = wtb.to_bytes();
+        let (bank_parts, _) = split_container_and_leaf(&bank_node_id);
+        next_snap = write_back_subblob_with_align(
+            &next_snap,
+            &bank_parts,
+            wtb_bytes,
+            None,
+            oodle_opt,
+            dat_align,
+        )?;
+    }
 
     sess.committed_uid_maps
         .entry(container_id.clone())

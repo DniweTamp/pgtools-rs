@@ -1049,6 +1049,10 @@ export function createMenuBuilders(assetDeps: AssetMenuDeps, fileDeps: FileMenuD
             if (dest) await runWmbMutation(nodeId, "export_obj", { path: dest });
           },
         },
+        {
+          label: "Check & Remap Texture Hashes (CRC32 & 7F)",
+          action: () => runWmbMutation(nodeId, "remap_texture_hashes"),
+        },
         ...(isWmb3
           ? [
               {
