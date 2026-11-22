@@ -42,7 +42,7 @@ export function EditableNumberCell({
       size={1}
       className={className}
       style={style}
-      title={title}
+      data-tooltip={title}
       value={focused ? draft : formatVal(value)}
       onClick={onClick}
       onFocus={() => {

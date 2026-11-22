@@ -1,4 +1,5 @@
 import { invoke } from "@tauri-apps/api/core";
+import { studioConfirm, studioPrompt } from "../components/StudioDialog";
 import {
   DecodedWmbMaterial,
   FsEntry,
@@ -320,7 +321,7 @@ export function createMenuBuilders(assetDeps: AssetMenuDeps, fileDeps: FileMenuD
             shortcut: "F2",
             action: async () => {
               setContextMenu(null);
-              const nextName = window.prompt("Enter new entry filename:");
+              const nextName = await studioPrompt("Enter new entry filename:", "", { title: "Rename Entry" });
               if (nextName && nextName.trim()) {
                 await runContainerMutation(nodeId, "rename_entry", nextName.trim(), {
                   new_name: nextName.trim(),
@@ -342,11 +343,12 @@ export function createMenuBuilders(assetDeps: AssetMenuDeps, fileDeps: FileMenuD
           {
             label: "Delete from Container",
             shortcut: "Del",
-            action: () => {
+            action: async () => {
               setContextMenu(null);
               if (isPkzEntry) {
-                const ok = window.confirm(
-                  `Delete '${nodeId}' from the PKZ archive?\n\nThe change is staged until you save.`
+                const ok = await studioConfirm(
+                  `Delete '${nodeId}' from the PKZ archive?\n\nThe change is staged until you save.`,
+                  { title: "Delete Entry", confirmLabel: "Delete", danger: true }
                 );
                 if (!ok) return;
               }
@@ -453,7 +455,7 @@ export function createMenuBuilders(assetDeps: AssetMenuDeps, fileDeps: FileMenuD
           shortcut: "F2",
           action: async () => {
             setContextMenu(null);
-            const nextPrefix = window.prompt("Enter new PKZ folder path:", folderPrefix);
+            const nextPrefix = await studioPrompt("Enter new PKZ folder path:", folderPrefix, { title: "Rename PKZ Folder" });
             if (nextPrefix !== null && nextPrefix.trim() !== folderPrefix) {
               await runContainerMutation(nodeId, "rename_pkz_folder", nextPrefix.trim(), {
                 folder_prefix: folderPrefix,
@@ -475,10 +477,11 @@ export function createMenuBuilders(assetDeps: AssetMenuDeps, fileDeps: FileMenuD
         {
           label: `Delete Folder '${folderPrefix}/' from PKZ`,
           shortcut: "Del",
-          action: () => {
+          action: async () => {
             setContextMenu(null);
-            const ok = window.confirm(
-              `Delete the folder '${folderPrefix}' and all files under it?\n\nThe change is staged until you save.`
+            const ok = await studioConfirm(
+              `Delete the folder '${folderPrefix}' and all files under it?\n\nThe change is staged until you save.`,
+              { title: "Delete Folder", confirmLabel: "Delete", danger: true }
             );
             if (!ok) return;
             void runContainerMutation(nodeId, "remove_pkz_folder", "", {
@@ -810,10 +813,11 @@ export function createMenuBuilders(assetDeps: AssetMenuDeps, fileDeps: FileMenuD
           {
             label: `Delete ${countLabel}`,
             shortcut: "Del",
-            action: () => {
+            action: async () => {
               setContextMenu(null);
-              const ok = window.confirm(
-                `Delete ${groupIndices.length} UVD group(s)?\n\nWTA texture slots will not be deleted or reordered.`
+              const ok = await studioConfirm(
+                `Delete ${groupIndices.length} UVD group(s)?\n\nWTA texture slots will not be deleted or reordered.`,
+                { title: "Delete UVD Groups", confirmLabel: "Delete", danger: true }
               );
               if (ok) {
                 void uvdActions.runUvdMutation(nodeId, "delete_groups", {
@@ -872,10 +876,11 @@ export function createMenuBuilders(assetDeps: AssetMenuDeps, fileDeps: FileMenuD
           {
             label: `Delete ${countLabel}`,
             shortcut: "Del",
-            action: () => {
+            action: async () => {
               setContextMenu(null);
-              const ok = window.confirm(
-                `Delete ${parsedPairs.length} sprite(s) and repack affected group(s)?`
+              const ok = await studioConfirm(
+                `Delete ${parsedPairs.length} sprite(s) and repack affected group(s)?`,
+                { title: "Delete Sprites", confirmLabel: "Delete", danger: true }
               );
               if (ok) {
                 void uvdActions.runUvdMutation(nodeId, "delete_items", {
@@ -1388,7 +1393,7 @@ export function createMenuBuilders(assetDeps: AssetMenuDeps, fileDeps: FileMenuD
         shortcut: "F2",
         action: async () => {
           setContextMenu(null);
-          const nextName = window.prompt("Rename to:", entry.name);
+          const nextName = await studioPrompt("Rename to:", entry.name, { title: "Rename" });
           if (nextName && nextName.trim() && nextName.trim() !== entry.name) {
             await runFsBatch("rename", [entry.path], undefined, nextName.trim());
           }
@@ -1399,10 +1404,11 @@ export function createMenuBuilders(assetDeps: AssetMenuDeps, fileDeps: FileMenuD
         shortcut: "Del",
         action: async () => {
           setContextMenu(null);
-          const ok = window.confirm(
+          const ok = await studioConfirm(
             targetPaths.length > 1
               ? `Delete ${targetPaths.length} selected items from disk?`
-              : `Delete '${entry.name}' from disk?`
+              : `Delete '${entry.name}' from disk?`,
+            { title: "Delete from Disk", confirmLabel: "Delete", danger: true }
           );
           if (ok) {
             await runFsBatch("delete", targetPaths);
@@ -1415,7 +1421,7 @@ export function createMenuBuilders(assetDeps: AssetMenuDeps, fileDeps: FileMenuD
         label: "New Folder...",
         action: async () => {
           setContextMenu(null);
-          const folderName = window.prompt("New folder name:", "New Folder");
+          const folderName = await studioPrompt("New folder name:", "New Folder", { title: "New Folder" });
           if (folderName && folderName.trim()) {
             await runFsBatch("new_folder", [], currentDir, folderName.trim());
           }

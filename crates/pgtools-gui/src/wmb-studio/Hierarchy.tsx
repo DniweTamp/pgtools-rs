@@ -1,3 +1,4 @@
+import { StudioSelect } from "../components/StudioSelect";
 import React, {
   useCallback,
   useEffect,
@@ -1049,7 +1050,7 @@ export const Hierarchy: React.FC<HierarchyProps> = React.memo(function Hierarchy
             ind ? `drop-${ind}` : ""
           }`}
           style={{ paddingLeft: `${depth * 14 + 8}px` }}
-          title={`Bone #${boneIdx} · Global ID ${bone.globalId} · Local ID ${localIdx} · Parent ${
+          data-tooltip={`Bone #${boneIdx} · Global ID ${bone.globalId} · Local ID ${localIdx} · Parent ${
             bone.parent >= 0 ? `#${bone.parent}` : "None (Root)"
           } — Drag onto another bone to reparent`}
           onClick={(e) =>
@@ -1133,7 +1134,7 @@ export const Hierarchy: React.FC<HierarchyProps> = React.memo(function Hierarchy
           b.isShadowProxy ? "shadow-proxy" : ""
         } ${ind ? `drop-${ind}` : ""}`}
         style={{ paddingLeft: `${depth * 14 + 8}px` }}
-        title={`Batch #${b.index} (${triCount.toLocaleString()} tris) — Drag to reorder or move across meshes/LODs`}
+        data-tooltip={`Batch #${b.index} (${triCount.toLocaleString()} tris) — Drag to reorder or move across meshes/LODs`}
         onClick={(e) =>
           handleRowClick({ kind: "batch", id: b.id }, parentGroupKey, e)
         }
@@ -1164,7 +1165,7 @@ export const Hierarchy: React.FC<HierarchyProps> = React.memo(function Hierarchy
         {(b.indexCount === 0 || b.vertexCount === 0) && (
           <span
             className="wmb-shader-warn-badge"
-            title="Batch has 0 valid triangles or degenerate indices — skipped in viewport"
+            data-tooltip="Batch has 0 valid triangles or degenerate indices — skipped in viewport"
           >
             ⚠
           </span>
@@ -1187,7 +1188,7 @@ export const Hierarchy: React.FC<HierarchyProps> = React.memo(function Hierarchy
         <button
           type="button"
           className={`wmb-tree-eye-btn ${isHidden ? "is-hidden" : ""}`}
-          title={isHidden ? "Show batch in viewport" : "Hide batch in viewport"}
+          data-tooltip={isHidden ? "Show batch in viewport" : "Hide batch in viewport"}
           onClick={(e) => {
             e.stopPropagation();
             onToggleBatchVisibility(b.id);
@@ -1261,7 +1262,7 @@ export const Hierarchy: React.FC<HierarchyProps> = React.memo(function Hierarchy
             type="button"
             className="wmb-mini-btn"
             onClick={collapseAll}
-            title="Collapse all sections, meshes, LODs, and bone subtrees"
+            data-tooltip="Collapse all sections, meshes, LODs, and bone subtrees"
           >
             Collapse
           </button>
@@ -1319,7 +1320,7 @@ export const Hierarchy: React.FC<HierarchyProps> = React.memo(function Hierarchy
               showShadowProxies ? "active" : ""
             }`}
             onClick={() => setShowShadowProxies((p) => !p)}
-            title="PlatinumGames WMB models include low-poly duplicate shadow-caster meshes (isShadowProxy = true). Toggle whether they appear in the outliner."
+            data-tooltip="PlatinumGames WMB models include low-poly duplicate shadow-caster meshes (isShadowProxy = true). Toggle whether they appear in the outliner."
           >
             <IconShadow />
             <span>
@@ -1431,7 +1432,7 @@ export const Hierarchy: React.FC<HierarchyProps> = React.memo(function Hierarchy
                           }
                           className={`wmb-tree-row ${sel ? "selected" : ""}`}
                           style={{ paddingLeft: "30px" }}
-                          title={`Texture #${texIdx} (${tex.idHex}) · ${tex.width}×${tex.height} ${tex.formatName} — Drag onto a material to bind`}
+                          data-tooltip={`Texture #${texIdx} (${tex.idHex}) · ${tex.width}×${tex.height} ${tex.formatName} — Drag onto a material to bind`}
                           onClick={(e) =>
                             handleRowClick(
                               { kind: "texture", id: tid },
@@ -1507,7 +1508,7 @@ export const Hierarchy: React.FC<HierarchyProps> = React.memo(function Hierarchy
                   <button
                     type="button"
                     className="wmb-tree-add-btn"
-                    title="Add new material"
+                    data-tooltip="Add new material"
                     onClick={(e) => {
                       e.stopPropagation();
                       void onMutateOp({ op: "add_material" });
@@ -1570,7 +1571,7 @@ export const Hierarchy: React.FC<HierarchyProps> = React.memo(function Hierarchy
                             ind ? `drop-${ind}` : ""
                           }`}
                           style={{ paddingLeft: "30px" }}
-                          title={`Material #${mat.index} (${shLabel}) — Drag to reorder or drop onto a batch/mesh group`}
+                          data-tooltip={`Material #${mat.index} (${shLabel}) — Drag to reorder or drop onto a batch/mesh group`}
                           onClick={(e) =>
                             handleRowClick(
                               { kind: "material", id: mat.id },
@@ -1613,7 +1614,7 @@ export const Hierarchy: React.FC<HierarchyProps> = React.memo(function Hierarchy
                           {showWarn && (
                             <span
                               className="wmb-shader-warn-badge"
-                              title={warnTitle}
+                              data-tooltip={warnTitle}
                             >
                               ⚠
                             </span>
@@ -1638,7 +1639,7 @@ export const Hierarchy: React.FC<HierarchyProps> = React.memo(function Hierarchy
                       : ""
                   }`}
                   style={{ paddingLeft: "16px" }}
-                  title="Bones hierarchy — Drag any bone onto another bone to reparent, or drop here to make it a root bone"
+                  data-tooltip="Bones hierarchy — Drag any bone onto another bone to reparent, or drop here to make it a root bone"
                   onClick={(e) => toggleExpand("sec:bones", e)}
                   onContextMenu={(e) => {
                     e.preventDefault();
@@ -1662,7 +1663,7 @@ export const Hierarchy: React.FC<HierarchyProps> = React.memo(function Hierarchy
                   <button
                     type="button"
                     className="wmb-tree-add-btn"
-                    title="Add root bone"
+                    data-tooltip="Add root bone"
                     onClick={(e) => {
                       e.stopPropagation();
                       void onMutateOp({
@@ -1715,7 +1716,7 @@ export const Hierarchy: React.FC<HierarchyProps> = React.memo(function Hierarchy
                   <button
                     type="button"
                     className="wmb-tree-add-btn"
-                    title="Add new mesh group"
+                    data-tooltip="Add new mesh group"
                     onClick={(e) => {
                       e.stopPropagation();
                       void onMutateOp({
@@ -1829,7 +1830,7 @@ export const Hierarchy: React.FC<HierarchyProps> = React.memo(function Hierarchy
                               className={`wmb-tree-eye-btn ${
                                 isHidden ? "is-hidden" : ""
                               }`}
-                              title={
+                              data-tooltip={
                                 isHidden
                                   ? "Show mesh group in viewport"
                                   : "Hide mesh group in viewport"
@@ -2042,27 +2043,26 @@ export const Hierarchy: React.FC<HierarchyProps> = React.memo(function Hierarchy
               batch(es). Choose a material to reassign those batches to before
               deleting:
             </p>
-            <label className="wmb-field-row">
+            <div className="wmb-field-row">
               <span>Reassign batches to:</span>
-              <select
-                value={matDeleteModal.reassignToIndex}
-                onChange={(e) =>
+              <StudioSelect
+                className="wmb-prop-select mono"
+                value={String(matDeleteModal.reassignToIndex)}
+                options={manifest.materials
+                  .filter((m) => m.index !== matDeleteModal.material.index)
+                  .map((m) => ({
+                    value: String(m.index),
+                    label: `mat${m.index} — ${m.shaderName ?? m.name}`,
+                  }))}
+                onChange={(val) =>
                   setMatDeleteModal((prev) =>
                     prev
-                      ? { ...prev, reassignToIndex: parseInt(e.target.value, 10) }
+                      ? { ...prev, reassignToIndex: parseInt(val, 10) }
                       : null
                   )
                 }
-              >
-                {manifest.materials
-                  .filter((m) => m.index !== matDeleteModal.material.index)
-                  .map((m) => (
-                    <option key={m.id} value={m.index}>
-                      mat{m.index} — {m.shaderName ?? m.name}
-                    </option>
-                  ))}
-              </select>
-            </label>
+              />
+            </div>
             <div className="wmb-modal-actions">
               <button
                 type="button"
@@ -2108,7 +2108,7 @@ export const Hierarchy: React.FC<HierarchyProps> = React.memo(function Hierarchy
                 type="button"
                 className="wmb-ctx-item"
                 disabled={!canPasteClipboard(clipboardStatus, manifest.game).allowed}
-                title={canPasteClipboard(clipboardStatus, manifest.game).reason}
+                data-tooltip={canPasteClipboard(clipboardStatus, manifest.game).reason}
                 onClick={() => {
                   setContextMenu(null);
                   void onPasteInto(null);
@@ -2245,7 +2245,7 @@ export const Hierarchy: React.FC<HierarchyProps> = React.memo(function Hierarchy
                 type="button"
                 className="wmb-ctx-item"
                 disabled={!canPasteClipboard(clipboardStatus, manifest.game, "materials").allowed}
-                title={canPasteClipboard(clipboardStatus, manifest.game, "materials").reason}
+                data-tooltip={canPasteClipboard(clipboardStatus, manifest.game, "materials").reason}
                 onClick={() => {
                   setContextMenu(null);
                   void onPasteInto(null);
@@ -2413,7 +2413,7 @@ export const Hierarchy: React.FC<HierarchyProps> = React.memo(function Hierarchy
                   !canPasteClipboard(clipboardStatus, manifest.game, "batches").allowed ||
                   manifest.meshGroups.length === 0
                 }
-                title={canPasteClipboard(clipboardStatus, manifest.game, "batches").reason}
+                data-tooltip={canPasteClipboard(clipboardStatus, manifest.game, "batches").reason}
                 onClick={() => {
                   const firstTarget =
                     manifest.meshGroups[0]?.lods[0]?.id ??
@@ -2468,7 +2468,7 @@ export const Hierarchy: React.FC<HierarchyProps> = React.memo(function Hierarchy
                 type="button"
                 className="wmb-ctx-item"
                 disabled={!canPasteClipboard(clipboardStatus, manifest.game, "batches").allowed}
-                title={canPasteClipboard(clipboardStatus, manifest.game, "batches").reason}
+                data-tooltip={canPasteClipboard(clipboardStatus, manifest.game, "batches").reason}
                 onClick={() => {
                   const mg = activeCtxMenu.meshGroup!;
                   setContextMenu(null);
@@ -2521,7 +2521,7 @@ export const Hierarchy: React.FC<HierarchyProps> = React.memo(function Hierarchy
                 type="button"
                 className="wmb-ctx-item"
                 disabled={!canPasteClipboard(clipboardStatus, manifest.game, "batches").allowed}
-                title={canPasteClipboard(clipboardStatus, manifest.game, "batches").reason}
+                data-tooltip={canPasteClipboard(clipboardStatus, manifest.game, "batches").reason}
                 onClick={() => {
                   const l = activeCtxMenu.lod!;
                   setContextMenu(null);

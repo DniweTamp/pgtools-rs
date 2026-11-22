@@ -1,4 +1,7 @@
 import React, { useEffect, useRef, useState } from "react";
+import { studioPrompt } from "../components/StudioDialog";
+import { StudioRange } from "../components/StudioRange";
+import { StudioSelect } from "../components/StudioSelect";
 import { invoke } from "@tauri-apps/api/core";
 import * as THREE from "three";
 import {
@@ -321,7 +324,7 @@ const CubemapSkyViewport: React.FC<CubemapSkyViewportProps> = ({
       <div
         ref={mountRef}
         style={{ flex: 1, minHeight: 0, position: "relative", cursor: "grab" }}
-        title="Drag to orbit cubemap sky, wheel to zoom, double-click to reset camera"
+        data-tooltip="Drag to orbit cubemap sky, wheel to zoom, double-click to reset camera"
       />
       {loadingErr && (
         <div
@@ -355,7 +358,7 @@ const CubemapSkyViewport: React.FC<CubemapSkyViewportProps> = ({
           onKeyDown={(e) => {
             if (e.key === "Enter") commitGammaExposure();
           }}
-          title="Display gamma for the sky render (0.10 - 8.00); 1.00 leaves values unchanged"
+          data-tooltip="Display gamma for the sky render (0.10 - 8.00); 1.00 leaves values unchanged"
         />
 
         <span style={{ color: "var(--brush-muted)", fontSize: 12 }}>Exposure</span>
@@ -369,13 +372,13 @@ const CubemapSkyViewport: React.FC<CubemapSkyViewportProps> = ({
           onKeyDown={(e) => {
             if (e.key === "Enter") commitGammaExposure();
           }}
-          title="Exposure multiplier applied before gamma (0.05 - 20.00)"
+          data-tooltip="Exposure multiplier applied before gamma (0.05 - 20.00)"
         />
 
         <div
           className={`pill-checkbox ${autoExposure ? "checked" : ""}`}
           onClick={() => setAutoExposure(!autoExposure)}
-          title="Normalize the sky to a middle-grey key (0.18) from the cubemap's own values"
+          data-tooltip="Normalize the sky to a middle-grey key (0.18) from the cubemap's own values"
         >
           <span className="pill-checkbox-box">{autoExposure && <IconCheck />}</span>
           <span>Auto exposure</span>
@@ -580,7 +583,7 @@ export const TextureCenterView: React.FC<TextureCenterViewProps> = ({
                 type="button"
                 className="pill-button"
                 onClick={() => setAnimPlaying((p) => !p)}
-                title="Play or pause the layer animation"
+                data-tooltip="Play or pause the layer animation"
               >
                 <span>{animPlaying ? "⏸ Pause" : "▶ Play"}</span>
               </button>
@@ -596,21 +599,20 @@ export const TextureCenterView: React.FC<TextureCenterViewProps> = ({
                 onKeyDown={(e) => {
                   if (e.key === "Enter") commitFps();
                 }}
-                title="Playback speed in frames per second (1 - 240)"
+                data-tooltip="Playback speed in frames per second (1 - 240)"
               />
 
-              <input
-                type="range"
+              <StudioRange
                 min={0}
                 max={Math.max(1, activeTexture.layer_count - 1)}
                 step={1}
                 value={activeTexture.current_layer}
                 style={{ flex: 1 }}
-                onChange={(e) => {
+                onChange={(val) => {
                   setAnimPlaying(false);
-                  onChangeLayer(Number(e.target.value));
+                  onChangeLayer(val);
                 }}
-                title="Scrub through the texture's animation frames / layers"
+                data-tooltip="Scrub through the texture's animation frames / layers"
               />
 
               <span
@@ -771,7 +773,7 @@ export const TextureInspectorView: React.FC<TextureInspectorViewProps> = ({
                       overflow: "hidden",
                       textOverflow: "ellipsis",
                     }}
-                    title={`Built-in BNTX BRTI texture name: ${activeTexture.embedded_name}`}
+                    data-tooltip={`Built-in BNTX BRTI texture name: ${activeTexture.embedded_name}`}
                   >
                     {activeTexture.embedded_name}
                   </span>
@@ -783,7 +785,7 @@ export const TextureInspectorView: React.FC<TextureInspectorViewProps> = ({
                         name: activeTexture.embedded_name,
                       })
                     }
-                    title={`Recalculate CRC32 hash from embedded BNTX name '${activeTexture.embedded_name}'`}
+                    data-tooltip={`Recalculate CRC32 hash from embedded BNTX name '${activeTexture.embedded_name}'`}
                   >
                     <IconRefresh />
                     <span>Recalc CRC32</span>
@@ -821,12 +823,13 @@ export const TextureInspectorView: React.FC<TextureInspectorViewProps> = ({
               <button
                 className="pill-button"
                 disabled={hashDisabled}
-                onClick={() => {
+                onClick={async () => {
                   const defaultName =
                     activeTexture.embedded_name || `tex${activeTexture.index}`;
-                  const inputName = window.prompt(
+                  const inputName = await studioPrompt(
                     "Enter texture name to compute crc32(name) & 0x7FFFFFFF:",
-                    defaultName
+                    defaultName,
+                    { title: "Compute Texture CRC32" }
                   );
                   if (inputName) {
                     runTextureMutation(activeTexture.node_id, "calc_crc32", {
@@ -834,7 +837,7 @@ export const TextureInspectorView: React.FC<TextureInspectorViewProps> = ({
                     });
                   }
                 }}
-                title={
+                data-tooltip={
                   hashDisabled
                     ? "Enable 'Has CRC32 hash' below to edit or compute the table3 hash"
                     : "Compute crc32(name) & 0x7FFFFFFF from a texture name"
@@ -877,7 +880,7 @@ export const TextureInspectorView: React.FC<TextureInspectorViewProps> = ({
                           flag: "crc32",
                         })
                       }
-                      title="Toggle table2 byte 0 bit 0x20 (LE u32 0x00000020): whether this bank entry carries a CRC32 hash in table3"
+                      data-tooltip="Toggle table2 byte 0 bit 0x20 (LE u32 0x00000020): whether this bank entry carries a CRC32 hash in table3"
                     >
                       <span className="pill-checkbox-box">
                         {activeTexture.has_crc32_flag && <IconCheck />}
@@ -899,7 +902,7 @@ export const TextureInspectorView: React.FC<TextureInspectorViewProps> = ({
                           flag: "srgb",
                         })
                       }
-                      title="Toggle table2 byte 3 bit 0x04 (LE u32 0x04000000): sRGB color space"
+                      data-tooltip="Toggle table2 byte 3 bit 0x04 (LE u32 0x04000000): sRGB color space"
                     >
                       <span className="pill-checkbox-box">
                         {activeTexture.srgb_flag && <IconCheck />}
@@ -921,7 +924,7 @@ export const TextureInspectorView: React.FC<TextureInspectorViewProps> = ({
                           flag: "cubemap",
                         })
                       }
-                      title="Toggle table2 byte 3 bit 0x80 (LE u32 0x80000000): cubemap / environment map usage"
+                      data-tooltip="Toggle table2 byte 3 bit 0x80 (LE u32 0x80000000): cubemap / environment map usage"
                     >
                       <span className="pill-checkbox-box">
                         {activeTexture.cubemap_flag && <IconCheck />}
@@ -980,38 +983,27 @@ export const TextureInspectorView: React.FC<TextureInspectorViewProps> = ({
           <div className="card-body">
             <div className="inspector-row">
               <span className="inspector-row-label">Format</span>
-              <select
+              <StudioSelect
                 className="pill-select mono"
                 style={{ width: "100%", fontSize: 11.5 }}
                 value={texEncodeFormat}
-                onChange={(e) => setTexEncodeFormat(e.target.value)}
-              >
-                {ALL_TEXTURE_ENCODE_FORMATS.map((grp) => (
-                  <optgroup key={grp.group} label={grp.group}>
-                    {grp.options.map((opt) => (
-                      <option key={opt.value} value={opt.value}>
-                        {opt.label}
-                      </option>
-                    ))}
-                  </optgroup>
-                ))}
-              </select>
+                groups={ALL_TEXTURE_ENCODE_FORMATS.map((grp) => ({
+                  label: grp.group,
+                  options: grp.options,
+                }))}
+                onChange={(val) => setTexEncodeFormat(val)}
+              />
             </div>
 
             <div className="inspector-row">
               <span className="inspector-row-label">Quality</span>
-              <select
+              <StudioSelect
                 className="pill-select"
                 style={{ width: "100%", fontSize: 11.5 }}
                 value={texQuality}
-                onChange={(e) => setTexQuality(e.target.value)}
-              >
-                {ENCODE_QUALITY_OPTIONS.map((q) => (
-                  <option key={q.value} value={q.value}>
-                    {q.label}
-                  </option>
-                ))}
-              </select>
+                options={ENCODE_QUALITY_OPTIONS}
+                onChange={(val) => setTexQuality(val)}
+              />
             </div>
 
             <div className="inspector-row">
@@ -1032,7 +1024,7 @@ export const TextureInspectorView: React.FC<TextureInspectorViewProps> = ({
               <div
                 className={`pill-checkbox ${texSolidify ? "checked" : ""}`}
                 onClick={() => setTexSolidify(!texSolidify)}
-                title="Multi-source BFS alpha edge bleed (prevents dark fringes on transparent cutouts)"
+                data-tooltip="Multi-source BFS alpha edge bleed (prevents dark fringes on transparent cutouts)"
               >
                 <span className="pill-checkbox-box">
                   {texSolidify && <IconCheck />}
@@ -1060,7 +1052,7 @@ export const TextureInspectorView: React.FC<TextureInspectorViewProps> = ({
                 <div
                   className={`pill-checkbox ${texSyncFlags ? "checked" : ""}`}
                   onClick={() => setTexSyncFlags(!texSyncFlags)}
-                  title="On add or replace, sync the sRGB (b3: 0x04) and cubemap (b3: 0x80) flags from the texture format"
+                  data-tooltip="On add or replace, sync the sRGB (b3: 0x04) and cubemap (b3: 0x80) flags from the texture format"
                 >
                   <span className="pill-checkbox-box">
                     {texSyncFlags && <IconCheck />}
@@ -1220,42 +1212,31 @@ export const TextureImportModal: React.FC<TextureImportModalProps> = ({
 
         <div className="inspector-row">
           <span className="inspector-row-label">Target Format</span>
-          <select
+          <StudioSelect
             className="pill-select mono"
             style={{ width: "100%", fontSize: 11.5 }}
             value={texModalState.encodeFormat}
-            onChange={(e) =>
-              setTexModalState({ ...texModalState, encodeFormat: e.target.value })
+            groups={ALL_TEXTURE_ENCODE_FORMATS.map((grp) => ({
+              label: grp.group,
+              options: grp.options,
+            }))}
+            onChange={(val) =>
+              setTexModalState({ ...texModalState, encodeFormat: val })
             }
-          >
-            {ALL_TEXTURE_ENCODE_FORMATS.map((grp) => (
-              <optgroup key={grp.group} label={grp.group}>
-                {grp.options.map((opt) => (
-                  <option key={opt.value} value={opt.value}>
-                    {opt.label}
-                  </option>
-                ))}
-              </optgroup>
-            ))}
-          </select>
+          />
         </div>
 
         <div className="inspector-row">
           <span className="inspector-row-label">Quality</span>
-          <select
+          <StudioSelect
             className="pill-select"
             style={{ width: "100%", fontSize: 11.5 }}
             value={texModalState.quality}
-            onChange={(e) =>
-              setTexModalState({ ...texModalState, quality: e.target.value })
+            options={ENCODE_QUALITY_OPTIONS}
+            onChange={(val) =>
+              setTexModalState({ ...texModalState, quality: val })
             }
-          >
-            {ENCODE_QUALITY_OPTIONS.map((q) => (
-              <option key={q.value} value={q.value}>
-                {q.label}
-              </option>
-            ))}
-          </select>
+          />
         </div>
 
         <div className="inspector-row">

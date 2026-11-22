@@ -461,7 +461,7 @@ export function DocumentEditors({
           setDraggingSplit("right");
         }}
         onDoubleClick={() => setRightWidth(380)}
-        title="Drag to resize, double-click to reset"
+        data-tooltip="Drag to resize, double-click to reset"
       >
         <div className="splitter-v-grip" />
       </div>
@@ -576,7 +576,7 @@ export function DocumentEditors({
                     <span className="inspector-row-label" style={{ display: "inline-flex", alignItems: "center", gap: 5 }}>
                       <span>Oodle DLL</span>
                       {dll.oodleConfigured && (
-                        <span style={{ color: "var(--brush-success-text)", display: "inline-flex" }} title="Oodle DLL configured">
+                        <span style={{ color: "var(--brush-success-text)", display: "inline-flex" }} data-tooltip="Oodle DLL configured">
                           ✓
                         </span>
                       )}
@@ -602,7 +602,7 @@ export function DocumentEditors({
                     <span className="inspector-row-label" style={{ display: "inline-flex", alignItems: "center", gap: 5 }}>
                       <span>NVTT DLL</span>
                       {dll.nvttConfigured && (
-                        <span style={{ color: "var(--brush-success-text)", display: "inline-flex" }} title="NVTT DLL configured">
+                        <span style={{ color: "var(--brush-success-text)", display: "inline-flex" }} data-tooltip="NVTT DLL configured">
                           ✓
                         </span>
                       )}

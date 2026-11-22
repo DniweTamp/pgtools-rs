@@ -4,6 +4,9 @@ import { ContextMenuState, MenuItemSpec, NodeInspectPayload, PkzSortCol } from "
 import { hexToRgbFloat, rgbFloatToHex } from "../utils/color";
 import { formatBytes } from "../utils/format";
 import { EditableNumberCell } from "../components/EditableNumberCell";
+import { StudioColorPicker } from "../components/StudioColorPicker";
+import { studioConfirm } from "../components/StudioDialog";
+import { StudioSelect } from "../components/StudioSelect";
 import { IconChevronDown, IconCube, IconImage } from "../components/Icons";
 
 export interface StructCenterViewProps {
@@ -141,23 +144,15 @@ export const StructCenterView: React.FC<StructCenterViewProps> = ({
                           style={{ display: "flex", alignItems: "center", gap: 4, fontSize: 11 }}
                           className="mono"
                         >
-                          <input
-                            type="color"
+                          <StudioColorPicker
                             value={rgbFloatToHex(rgb)}
-                            onChange={(ev) => {
-                              const [r, g, b] = hexToRgbFloat(ev.target.value);
+                            onChange={(hex) => {
+                              const [r, g, b] = hexToRgbFloat(hex);
                               const copy = structuredClone(structDraft);
                               copy.entries[ei].colors[ci] = [r, g, b];
                               setStructDraft(copy);
                             }}
-                            style={{
-                              width: 24,
-                              height: 24,
-                              padding: 0,
-                              border: "1px solid var(--brush-border)",
-                              borderRadius: 4,
-                              cursor: "pointer",
-                            }}
+                            style={{ width: 24, height: 24 }}
                           />
                           <span>C{ci}</span>
                         </label>
@@ -732,16 +727,15 @@ export const StructCenterView: React.FC<StructCenterViewProps> = ({
                   </td>
                   <td>
                     <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
-                      <input
-                        type="color"
+                      <StudioColorPicker
                         value={rgbFloatToHex(f.color1 || [1, 1, 1])}
-                        onChange={(e) => {
-                          const [r, g, b] = hexToRgbFloat(e.target.value);
+                        onChange={(hex) => {
+                          const [r, g, b] = hexToRgbFloat(hex);
                           const copy = structuredClone(structDraft);
                           copy.filters[fi].color1 = [r, g, b, f.color1?.[3] ?? 1];
                           setStructDraft(copy);
                         }}
-                        style={{ width: 24, height: 24, padding: 0, borderRadius: 4, cursor: "pointer" }}
+                        style={{ width: 24, height: 24 }}
                       />
                       <span className="mono" style={{ fontSize: 11 }}>
                         {(f.color1 || []).slice(0, 3).map((v: number) => Number(v).toFixed(2)).join(", ")}
@@ -750,16 +744,15 @@ export const StructCenterView: React.FC<StructCenterViewProps> = ({
                   </td>
                   <td>
                     <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
-                      <input
-                        type="color"
+                      <StudioColorPicker
                         value={rgbFloatToHex(f.color2 || [1, 1, 1])}
-                        onChange={(e) => {
-                          const [r, g, b] = hexToRgbFloat(e.target.value);
+                        onChange={(hex) => {
+                          const [r, g, b] = hexToRgbFloat(hex);
                           const copy = structuredClone(structDraft);
                           copy.filters[fi].color2 = [r, g, b, f.color2?.[3] ?? 1];
                           setStructDraft(copy);
                         }}
-                        style={{ width: 24, height: 24, padding: 0, borderRadius: 4, cursor: "pointer" }}
+                        style={{ width: 24, height: 24 }}
                       />
                       <span className="mono" style={{ fontSize: 11 }}>
                         {(f.color2 || []).slice(0, 3).map((v: number) => Number(v).toFixed(2)).join(", ")}
@@ -815,16 +808,15 @@ export const StructCenterView: React.FC<StructCenterViewProps> = ({
                     </td>
                     <td>
                       <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
-                        <input
-                          type="color"
+                        <StudioColorPicker
                           value={rgbFloatToHex(fg.color || [1, 1, 1])}
-                          onChange={(e) => {
-                            const [r, g, b] = hexToRgbFloat(e.target.value);
+                          onChange={(hex) => {
+                            const [r, g, b] = hexToRgbFloat(hex);
                             const copy = structuredClone(structDraft);
                             copy.fogs[fi].color = [r, g, b];
                             setStructDraft(copy);
                           }}
-                          style={{ width: 24, height: 24, padding: 0, borderRadius: 4, cursor: "pointer" }}
+                          style={{ width: 24, height: 24 }}
                         />
                         <span className="mono" style={{ fontSize: 11 }}>
                           {(fg.color || []).map((v: number) => Number(v).toFixed(2)).join(", ")}
@@ -1004,18 +996,17 @@ export const StructCenterView: React.FC<StructCenterViewProps> = ({
                   </td>
                   <td>
                     <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
-                      <input
-                        type="color"
+                      <StudioColorPicker
                         value={rgbFloatToHex(lt.color || [1, 1, 1])}
-                        onChange={(e) => {
-                          const [r, g, b] = hexToRgbFloat(e.target.value);
+                        onChange={(hex) => {
+                          const [r, g, b] = hexToRgbFloat(hex);
                           const copy = structuredClone(structDraft);
                           copy.lights[li].color[0] = r;
                           copy.lights[li].color[1] = g;
                           copy.lights[li].color[2] = b;
                           setStructDraft(copy);
                         }}
-                        style={{ width: 24, height: 24, padding: 0, borderRadius: 4, cursor: "pointer" }}
+                        style={{ width: 24, height: 24 }}
                       />
                       <span className="mono" style={{ fontSize: 11 }}>
                         {(lt.color || []).slice(0, 3).map((v: number) => Number(v).toFixed(2)).join(", ")}
@@ -1375,25 +1366,17 @@ export const StructCenterView: React.FC<StructCenterViewProps> = ({
                         </td>
                         <td>
                           <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
-                            <input
-                              type="color"
+                            <StudioColorPicker
                               value={rgbFloatToHex(rec.color_rgba ?? [1, 1, 1, 1])}
-                              onChange={(e) => {
-                                const [r, g, b] = hexToRgbFloat(e.target.value);
+                              onChange={(hex) => {
+                                const [r, g, b] = hexToRgbFloat(hex);
                                 const copy = structuredClone(estDraft);
                                 copy.records[ri].color_rgba[0] = r;
                                 copy.records[ri].color_rgba[1] = g;
                                 copy.records[ri].color_rgba[2] = b;
                                 setEstDraft(copy);
                               }}
-                              style={{
-                                width: 24,
-                                height: 24,
-                                padding: 0,
-                                border: "1px solid var(--brush-border)",
-                                borderRadius: 4,
-                                cursor: "pointer",
-                              }}
+                              style={{ width: 24, height: 24 }}
                             />
                             <div style={{ display: "grid", gridTemplateColumns: "repeat(4, 1fr)", gap: 4, flex: 1 }}>
                               {[0, 1, 2, 3].map((ci) => (
@@ -1935,7 +1918,7 @@ export const StructCenterView: React.FC<StructCenterViewProps> = ({
                                   folder_prefix: nodePayload.folder_prefix ?? null,
                                 })
                               }
-                              title="Undo staged changes and restore saved PKZ state"
+                              data-tooltip="Undo staged changes and restore saved PKZ state"
                             >
                               ↺ Revert {nodePayload.folder_prefix ? "Folder" : "All"}
                             </button>
@@ -2025,8 +2008,9 @@ export const StructCenterView: React.FC<StructCenterViewProps> = ({
                                 className="pill-button"
                                 style={{ height: 26, fontSize: 11.5 }}
                                 onClick={async () => {
-                                  const ok = window.confirm(
-                                    `Delete ${pkzSelectedIndices.length} selected file(s) from the PKZ archive?\n\nThe change is staged until you save.`
+                                  const ok = await studioConfirm(
+                                    `Delete ${pkzSelectedIndices.length} selected file(s) from the PKZ archive?\n\nThe change is staged until you save.`,
+                                    { title: "Delete PKZ Entries", confirmLabel: "Delete", danger: true }
                                   );
                                   if (!ok) return;
                                   await runContainerMutation(
@@ -2044,7 +2028,7 @@ export const StructCenterView: React.FC<StructCenterViewProps> = ({
                                 className="pill-button"
                                 style={{ height: 26, fontSize: 11 }}
                                 onClick={() => setPkzSelectedIndices([])}
-                                title="Clear selection"
+                                data-tooltip="Clear selection"
                               >
                                 Clear
                               </button>
@@ -2207,7 +2191,7 @@ export const StructCenterView: React.FC<StructCenterViewProps> = ({
                                 onClick={() =>
                                   nodePayload.format === "PKZ" && togglePkzSort("pkz_order")
                                 }
-                                title="Click to restore stored PKZ entry order"
+                                data-tooltip="Click to restore stored PKZ entry order"
                               >
                                 #{pkzSortCol === "pkz_order" && nodePayload.format === "PKZ" ? " •" : ""}
                               </th>
@@ -2218,7 +2202,7 @@ export const StructCenterView: React.FC<StructCenterViewProps> = ({
                                 onClick={() =>
                                   nodePayload.format === "PKZ" && togglePkzSort("name")
                                 }
-                                title="Click to sort by Filename (3rd click returns to PKZ order)"
+                                data-tooltip="Click to sort by Filename (3rd click returns to PKZ order)"
                               >
                                 Entry Name{nodePayload.format === "PKZ" ? sortArrow("name") : ""}
                               </th>
@@ -2226,7 +2210,7 @@ export const StructCenterView: React.FC<StructCenterViewProps> = ({
                                 <th
                                   style={{ width: 85, cursor: "pointer" }}
                                   onClick={() => togglePkzSort("format")}
-                                  title="Click to sort by Format"
+                                  data-tooltip="Click to sort by Format"
                                 >
                                   Format{sortArrow("format")}
                                 </th>
@@ -2239,7 +2223,7 @@ export const StructCenterView: React.FC<StructCenterViewProps> = ({
                                 onClick={() =>
                                   nodePayload.format === "PKZ" && togglePkzSort("compression")
                                 }
-                                title="Click to sort by Compression"
+                                data-tooltip="Click to sort by Compression"
                               >
                                 {nodePayload.format === "PKZ"
                                   ? `Compression${sortArrow("compression")}`
@@ -2254,7 +2238,7 @@ export const StructCenterView: React.FC<StructCenterViewProps> = ({
                                 onClick={() =>
                                   nodePayload.format === "PKZ" && togglePkzSort("size")
                                 }
-                                title="Click to sort by Uncompressed Size"
+                                data-tooltip="Click to sort by Uncompressed Size"
                               >
                                 Size{nodePayload.format === "PKZ" ? sortArrow("size") : ""}
                               </th>
@@ -2347,7 +2331,7 @@ export const StructCenterView: React.FC<StructCenterViewProps> = ({
                                           color: "var(--brush-accent)",
                                           fontWeight: 700,
                                         }}
-                                        title="Staged unsaved change"
+                                        data-tooltip="Staged unsaved change"
                                       >
                                         *
                                       </span>
@@ -2360,7 +2344,7 @@ export const StructCenterView: React.FC<StructCenterViewProps> = ({
                                   )}
                                   <td className="mono" style={{ color: "var(--brush-muted)" }}>
                                     {nodePayload.format === "PKZ" ? (
-                                      <select
+                                      <StudioSelect
                                         className="pill-select mono"
                                         style={{ height: 24, fontSize: 11.5 }}
                                         value={
@@ -2374,9 +2358,12 @@ export const StructCenterView: React.FC<StructCenterViewProps> = ({
                                             ? "ZStandard"
                                             : "None"
                                         }
-                                        onClick={(ev) => ev.stopPropagation()}
-                                        onChange={(ev) => {
-                                          const nextCodec = ev.target.value;
+                                        options={[
+                                          { value: "ZStandard", label: "ZStandard" },
+                                          { value: "OodleKraken", label: "Oodle Kraken" },
+                                          { value: "None", label: "None" },
+                                        ]}
+                                        onChange={(nextCodec) => {
                                           runContainerMutation(
                                             baseContainerId,
                                             "set_pkz_compression",
@@ -2387,11 +2374,7 @@ export const StructCenterView: React.FC<StructCenterViewProps> = ({
                                             }
                                           );
                                         }}
-                                      >
-                                        <option value="ZStandard">ZStandard</option>
-                                        <option value="OodleKraken">Oodle Kraken</option>
-                                        <option value="None">None</option>
-                                      </select>
+                                      />
                                     ) : (
                                       e.compression || e.extension || "BIN"
                                     )}
@@ -2436,7 +2419,7 @@ export const StructCenterView: React.FC<StructCenterViewProps> = ({
                                               { entry_indices: [e.index] }
                                             )
                                           }
-                                          title="Revert staged changes on this row"
+                                          data-tooltip="Revert staged changes on this row"
                                         >
                                           ↺
                                         </button>
@@ -2444,16 +2427,17 @@ export const StructCenterView: React.FC<StructCenterViewProps> = ({
                                       <button
                                         className="pill-button"
                                         style={{ height: 23, padding: "0 7px", fontSize: 11 }}
-                                        onClick={() => {
+                                        onClick={async () => {
                                           if (nodePayload.format === "PKZ") {
-                                            const ok = window.confirm(
-                                              `Delete '${e.name}'?\n\nThe change is staged until you save.`
+                                            const ok = await studioConfirm(
+                                              `Delete '${e.name}'?\n\nThe change is staged until you save.`,
+                                              { title: "Delete Entry", confirmLabel: "Delete", danger: true }
                                             );
                                             if (!ok) return;
                                           }
                                           void runContainerMutation(childNodeId, "remove_entry");
                                         }}
-                                        title="Delete Entry from Container"
+                                        data-tooltip="Delete Entry from Container"
                                       >
                                         ✕
                                       </button>
@@ -2604,7 +2588,7 @@ export const ClothInspectorView: React.FC<ClothInspectorViewProps> = ({
                                 step="0.01"
                                 size={1}
                                 className="field-box mono"
-                                title={`${vecLabel}.${axis}`}
+                                data-tooltip={`${vecLabel}.${axis}`}
                                 value={Number((nodePayload.data.header[vecKey]?.[axis] ?? 0).toFixed(4))}
                                 onChange={(e) => {
                                   const v = parseFloat(e.target.value || "0");

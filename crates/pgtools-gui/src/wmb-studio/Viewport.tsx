@@ -1,3 +1,4 @@
+import { StudioSelect } from "../components/StudioSelect";
 import React, {
   forwardRef,
   useCallback,
@@ -513,7 +514,7 @@ export const Viewport = React.memo(forwardRef<ViewportHandle, ViewportProps>(
               type="button"
               className={`wmb-vp-btn ${wireframe ? "active" : ""}`}
               onClick={onToggleWireframe}
-              title="Toggle wireframe rendering"
+              data-tooltip="Toggle wireframe rendering"
             >
               Wireframe
             </button>
@@ -526,7 +527,7 @@ export const Viewport = React.memo(forwardRef<ViewportHandle, ViewportProps>(
                 if (debugSlot) setDebugSlot(null);
                 onToggleNormalsView();
               }}
-              title="Toggle world-space / normal-map normals view (N * 0.5 + 0.5)"
+              data-tooltip="Toggle world-space / normal-map normals view (N * 0.5 + 0.5)"
             >
               Normals
             </button>
@@ -534,7 +535,7 @@ export const Viewport = React.memo(forwardRef<ViewportHandle, ViewportProps>(
               type="button"
               className={`wmb-vp-btn ${secondaryNormalsEnabled ? "active" : ""}`}
               onClick={() => setSecondaryNormalsEnabled((prev) => !prev)}
-              title="Toggle NormalMap 2/3 & DetailNormalMap affecting surface normals (Off by default)"
+              data-tooltip="Toggle NormalMap 2/3 & DetailNormalMap affecting surface normals (Off by default)"
             >
               NormalMap 2/3
             </button>
@@ -542,7 +543,7 @@ export const Viewport = React.memo(forwardRef<ViewportHandle, ViewportProps>(
               type="button"
               className={`wmb-vp-btn ${skeletonOverlay ? "active" : ""}`}
               onClick={onToggleSkeletonOverlay}
-              title="Toggle 3D skeleton overlay (joints & bones)"
+              data-tooltip="Toggle 3D skeleton overlay (joints & bones)"
             >
               Skeleton
             </button>
@@ -550,30 +551,29 @@ export const Viewport = React.memo(forwardRef<ViewportHandle, ViewportProps>(
               type="button"
               className={`wmb-vp-btn ${gridVisible ? "active" : ""}`}
               onClick={onToggleGridVisible}
-              title="Toggle ground grid & origin axes"
+              data-tooltip="Toggle ground grid & origin axes"
             >
               Grid
             </button>
 
             {manifest && manifest.lodLevels.length > 1 && (
-              <label className="wmb-vp-lod-label" title="Filter WMB3 LOD level">
+              <div className="wmb-vp-lod-label" data-tooltip="Filter WMB3 LOD level">
                 <span>LOD:</span>
-                <select
+                <StudioSelect
                   className="wmb-vp-lod-select"
                   value={activeLodLevel === null ? "all" : String(activeLodLevel)}
-                  onChange={(e) => {
-                    const val = e.target.value;
+                  options={[
+                    { value: "all", label: "All LODs" },
+                    ...manifest.lodLevels.map((lvl) => ({
+                      value: String(lvl),
+                      label: `LOD ${lvl}`,
+                    })),
+                  ]}
+                  onChange={(val) => {
                     onChangeLodLevel(val === "all" ? null : parseInt(val, 10));
                   }}
-                >
-                  <option value="all">All LODs</option>
-                  {manifest.lodLevels.map((lvl) => (
-                    <option key={lvl} value={String(lvl)}>
-                      LOD {lvl}
-                    </option>
-                  ))}
-                </select>
-              </label>
+                />
+              </div>
             )}
 
             <div className="wmb-vp-popover-anchor">
@@ -581,7 +581,7 @@ export const Viewport = React.memo(forwardRef<ViewportHandle, ViewportProps>(
                 type="button"
                 className={`wmb-vp-btn ${debugSlot ? "active" : ""}`}
                 onClick={() => setDebugPopoverOpen((prev) => !prev)}
-                title="Preview individual texture slots and RGBA channels on the 3D model"
+                data-tooltip="Preview individual texture slots and RGBA channels on the 3D model"
               >
                 {debugSlot
                   ? `Tex: ${debugSlot.slotName} (${debugSlot.channel})`
@@ -677,7 +677,7 @@ export const Viewport = React.memo(forwardRef<ViewportHandle, ViewportProps>(
               type="button"
               className="wmb-vp-btn"
               onClick={frameSelection}
-              title="Frame active selection (F)"
+              data-tooltip="Frame active selection (F)"
             >
               Frame Sel (F)
             </button>
@@ -685,7 +685,7 @@ export const Viewport = React.memo(forwardRef<ViewportHandle, ViewportProps>(
               type="button"
               className="wmb-vp-btn"
               onClick={frameAll}
-              title="Frame entire model (Home)"
+              data-tooltip="Frame entire model (Home)"
             >
               Reset View
             </button>

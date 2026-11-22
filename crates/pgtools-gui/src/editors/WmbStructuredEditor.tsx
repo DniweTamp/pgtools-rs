@@ -1,4 +1,7 @@
 import React, { useMemo } from "react";
+import { StudioColorPicker } from "../components/StudioColorPicker";
+import { StudioRange } from "../components/StudioRange";
+import { StudioSelect } from "../components/StudioSelect";
 import { invoke } from "@tauri-apps/api/core";
 import {
   CorePretextureInfo,
@@ -215,30 +218,26 @@ export const WmbStructuredCenterView: React.FC<WmbStructuredCenterProps> = ({
             >
               <div style={{ display: "flex", alignItems: "center", gap: 10, flexWrap: "wrap" }}>
                 <span style={{ fontWeight: 600, color: "var(--brush-heading)" }}>Shader:</span>
-                <select
+                <StudioSelect
                   className="pill-select mono"
                   style={{ minWidth: 230 }}
                   value={wmb3MatDraft.shader_name}
-                  onChange={(e) => {
-                    const nextShader = e.target.value;
+                  options={[
+                    { value: wmb3MatDraft.shader_name, label: wmb3MatDraft.shader_name },
+                    ...availableShaders
+                      .filter((s) => (s.key ?? s.id) !== wmb3MatDraft.shader_name)
+                      .map((s) => ({
+                        value: s.key ?? s.id ?? s.label,
+                        label: s.label,
+                      })),
+                  ]}
+                  onChange={(nextShader) => {
                     runWmbMutation(wmb.node_id, "switch_shader", {
                       index: matIdx,
                       shader: nextShader,
                     });
                   }}
-                >
-                  <option value={wmb3MatDraft.shader_name}>{wmb3MatDraft.shader_name}</option>
-                  {availableShaders
-                    .filter((s) => (s.key ?? s.id) !== wmb3MatDraft.shader_name)
-                    .map((s) => {
-                      const shKey = s.key ?? s.id ?? s.label;
-                      return (
-                        <option key={shKey} value={shKey}>
-                          {s.label}
-                        </option>
-                      );
-                    })}
-                </select>
+                />
 
                 <span style={{ color: "var(--brush-muted)" }}>Technique:</span>
                 <input
@@ -301,21 +300,21 @@ export const WmbStructuredCenterView: React.FC<WmbStructuredCenterProps> = ({
                       setStatusLeft(`Material paste error: ${String(err)}`);
                     }
                   }}
-                  title="Paste material from clipboard"
+                  data-tooltip="Paste material from clipboard"
                 >
                   Paste
                 </button>
                 <button
                   className="pill-button"
                   onClick={() => handleCrossGameMaterialConvert(wmb, "b2")}
-                  title="Convert this WMB3 material to Bayonetta 2 format and copy to clipboard"
+                  data-tooltip="Convert this WMB3 material to Bayonetta 2 format and copy to clipboard"
                 >
                   → B2
                 </button>
                 <button
                   className="pill-button"
                   onClick={() => handleCrossGameMaterialConvert(wmb, "b1")}
-                  title="Convert this WMB3 material to Bayonetta 1 format and copy to clipboard"
+                  data-tooltip="Convert this WMB3 material to Bayonetta 1 format and copy to clipboard"
                 >
                   → B1
                 </button>
@@ -412,7 +411,7 @@ export const WmbStructuredCenterView: React.FC<WmbStructuredCenterProps> = ({
                             <button
                               className="pill-button"
                               style={{ height: 24, padding: "0 8px", fontSize: 11 }}
-                              title={`Jump to ${bankMatch.label}`}
+                              data-tooltip={`Jump to ${bankMatch.label}`}
                               onClick={() => selectAndInspectNode(bankMatch.node_id)}
                             >
                               ↗ Open
@@ -485,34 +484,24 @@ export const WmbStructuredCenterView: React.FC<WmbStructuredCenterProps> = ({
                                 <td className="mono" style={{ color: "var(--brush-muted)" }}>
                                   G{gi} [{startPi}..{endPi}]
                                 </td>
-                                <td className="mono" style={{ fontWeight: 600 }} title={baseName}>
+                                <td className="mono" style={{ fontWeight: 600 }} data-tooltip={baseName}>
                                   {baseName}
                                 </td>
                                 <td>
                                   <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
                                     {isColor && (
-                                      <input
-                                        type="color"
+                                      <StudioColorPicker
                                         value={rgbFloatToHex(vecVals)}
-                                        onChange={(e) => {
-                                          const [r, g, b] = hexToRgbFloat(e.target.value);
+                                        onChange={(hex) => {
+                                          const [r, g, b] = hexToRgbFloat(hex);
                                           const copy = structuredClone(wmb3MatDraft);
                                           copy.parameter_groups[gi][1][compIndices[0]] = r;
                                           copy.parameter_groups[gi][1][compIndices[1]] = g;
                                           copy.parameter_groups[gi][1][compIndices[2]] = b;
                                           setWmb3MatDraft(copy);
                                         }}
-                                        style={{
-                                          width: 26,
-                                          height: 26,
-                                          padding: 0,
-                                          border: "1px solid var(--brush-border)",
-                                          borderRadius: 4,
-                                          background: "transparent",
-                                          cursor: "pointer",
-                                          flexShrink: 0,
-                                        }}
-                                        title="Pick RGB color"
+                                        style={{ width: 26, height: 26 }}
+                                        data-tooltip="Pick RGB color"
                                       />
                                     )}
                                     <div
@@ -538,15 +527,13 @@ export const WmbStructuredCenterView: React.FC<WmbStructuredCenterProps> = ({
                                             </span>
                                             <div className="param-slider-group">
                                               {showUnitSlider && fv >= 0.0 && fv <= 1.0 && (
-                                                <input
-                                                  type="range"
-                                                  min="0"
-                                                  max="1"
-                                                  step="0.01"
+                                                <StudioRange
+                                                  min={0}
+                                                  max={1}
+                                                  step={0.01}
                                                   className="param-range"
                                                   value={fv}
-                                                  onChange={(e) => {
-                                                    const v = parseFloat(e.target.value);
+                                                  onChange={(v) => {
                                                     const copy = structuredClone(wmb3MatDraft);
                                                     copy.parameter_groups[gi][1][cIdx] = v;
                                                     setWmb3MatDraft(copy);
@@ -594,22 +581,20 @@ export const WmbStructuredCenterView: React.FC<WmbStructuredCenterProps> = ({
                             <td className="mono" style={{ color: "var(--brush-muted)" }}>
                               G{gi} [{curPi}]
                             </td>
-                            <td className="mono" style={{ fontWeight: 600 }} title={rawName}>
+                            <td className="mono" style={{ fontWeight: 600 }} data-tooltip={rawName}>
                               {rawName}
                             </td>
                             <td>
                               <div className="param-slider-group" style={{ maxWidth: 280 }}>
                                 {useSlider && (
-                                  <input
-                                    type="range"
-                                    min="0"
-                                    max="1"
-                                    step="0.01"
+                                  <StudioRange
+                                    min={0}
+                                    max={1}
+                                    step={0.01}
                                     className="param-range"
                                     style={{ maxWidth: 120 }}
                                     value={scalarVal}
-                                    onChange={(e) => {
-                                      const v = parseFloat(e.target.value);
+                                    onChange={(v) => {
                                       const copy = structuredClone(wmb3MatDraft);
                                       copy.parameter_groups[gi][1][curPi] = v;
                                       setWmb3MatDraft(copy);
@@ -731,7 +716,7 @@ export const WmbStructuredCenterView: React.FC<WmbStructuredCenterProps> = ({
                     setWmbB2Override(false);
                     selectAndInspectNode(wmb.node_id, undefined, undefined, undefined, false);
                   }}
-                  title="Interpret material using Bayonetta 1 layout database (0x24..0xBC)"
+                  data-tooltip="Interpret material using Bayonetta 1 layout database (0x24..0xBC)"
                 >
                   Bayonetta 1
                 </button>
@@ -742,7 +727,7 @@ export const WmbStructuredCenterView: React.FC<WmbStructuredCenterProps> = ({
                     setWmbB2Override(true);
                     selectAndInspectNode(wmb.node_id, undefined, undefined, undefined, true);
                   }}
-                  title="Interpret material using Bayonetta 2 shader database (843 shaders)"
+                  data-tooltip="Interpret material using Bayonetta 2 shader database (843 shaders)"
                 >
                   Bayonetta 2
                 </button>
@@ -771,35 +756,32 @@ export const WmbStructuredCenterView: React.FC<WmbStructuredCenterProps> = ({
                 <span style={{ fontWeight: 600, color: "var(--brush-heading)" }}>
                   {effectiveB2 ? "Shader:" : "Mat Type:"}
                 </span>
-                <select
+                <StudioSelect
                   className="pill-select mono"
                   style={{ minWidth: 230, height: 28 }}
                   value={currentShaderVal}
-                  onChange={(e) => {
-                    const targetShader = e.target.value;
+                  options={[
+                    {
+                      value: currentShaderVal,
+                      label: wmbMatDraft.shader_name
+                        ? `${wmbMatDraft.shader_name} (0x${wmbMatDraft.mat_type.toString(16).toUpperCase()})`
+                        : `Type ${wmbMatDraft.mat_type ?? 0} (0x${(wmbMatDraft.mat_type ?? 0).toString(16).toUpperCase().padStart(2, "0")})`,
+                    },
+                    ...availableShaders
+                      .filter((s) => (s.key ?? s.id) !== currentShaderVal)
+                      .map((s) => ({
+                        value: s.key ?? s.id ?? s.label,
+                        label: s.label,
+                      })),
+                  ]}
+                  onChange={(targetShader) => {
                     runWmbMutation(wmb.node_id, "switch_shader", {
                       index: wmbMatDraft.index,
                       shader: targetShader,
                       is_bayo2: effectiveB2,
                     });
                   }}
-                >
-                  <option value={currentShaderVal}>
-                    {wmbMatDraft.shader_name
-                      ? `${wmbMatDraft.shader_name} (0x${wmbMatDraft.mat_type.toString(16).toUpperCase()})`
-                      : `Type ${wmbMatDraft.mat_type ?? 0} (0x${(wmbMatDraft.mat_type ?? 0).toString(16).toUpperCase().padStart(2, "0")})`}
-                  </option>
-                  {availableShaders
-                    .filter((s) => (s.key ?? s.id) !== currentShaderVal)
-                    .map((s) => {
-                      const shKey = s.key ?? s.id ?? s.label;
-                      return (
-                        <option key={shKey} value={shKey}>
-                          {s.label}
-                        </option>
-                      );
-                    })}
-                </select>
+                />
               </div>
 
               <div style={{ display: "flex", alignItems: "center", gap: 6, flexWrap: "wrap" }}>
@@ -854,7 +836,7 @@ export const WmbStructuredCenterView: React.FC<WmbStructuredCenterProps> = ({
                   onClick={() =>
                     handleCrossGameMaterialConvert(wmb, effectiveB2 ? "b1" : "b2")
                   }
-                  title={`Convert Material to ${effectiveB2 ? "Bayonetta 1" : "Bayonetta 2"}`}
+                  data-tooltip={`Convert Material to ${effectiveB2 ? "Bayonetta 1" : "Bayonetta 2"}`}
                 >
                   {effectiveB2 ? "→ B1" : "→ B2"}
                 </button>
@@ -862,7 +844,7 @@ export const WmbStructuredCenterView: React.FC<WmbStructuredCenterProps> = ({
                   className="pill-button"
                   style={{ height: 27 }}
                   onClick={() => handleCrossGameMaterialConvert(wmb, "b3")}
-                  title="Convert Material to Bayonetta 3 (WMB3) and copy to clipboard"
+                  data-tooltip="Convert Material to Bayonetta 3 (WMB3) and copy to clipboard"
                 >
                   → B3
                 </button>
@@ -1010,7 +992,7 @@ export const WmbStructuredCenterView: React.FC<WmbStructuredCenterProps> = ({
                                   <button
                                     className="pill-button"
                                     style={{ height: 24, padding: "0 8px", fontSize: 11 }}
-                                    title={`Open ${bankMatch.label} in Texture Viewer`}
+                                    data-tooltip={`Open ${bankMatch.label} in Texture Viewer`}
                                     onClick={() => selectAndInspectNode(bankMatch.node_id)}
                                   >
                                     ↗ Open
@@ -1048,18 +1030,17 @@ export const WmbStructuredCenterView: React.FC<WmbStructuredCenterProps> = ({
                               <td
                                 className="mono"
                                 style={{ fontWeight: 600 }}
-                                title={param.description || param.role || param.param_type}
+                                data-tooltip={param.description || param.role || param.param_type}
                               >
                                 {param.name}
                               </td>
                               <td>
                                 <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
                                   {isColor && (
-                                    <input
-                                      type="color"
+                                    <StudioColorPicker
                                       value={rgbFloatToHex(flts)}
-                                      onChange={(e) => {
-                                        const [r, g, b] = hexToRgbFloat(e.target.value);
+                                      onChange={(hex) => {
+                                        const [r, g, b] = hexToRgbFloat(hex);
                                         const copy = structuredClone(wmbMatDraft);
                                         if (copy.fields[pIdx].float_values) {
                                           copy.fields[pIdx].float_values![0] = r;
@@ -1068,17 +1049,8 @@ export const WmbStructuredCenterView: React.FC<WmbStructuredCenterProps> = ({
                                           setWmbMatDraft(copy);
                                         }
                                       }}
-                                      style={{
-                                        width: 26,
-                                        height: 26,
-                                        padding: 0,
-                                        border: "1px solid var(--brush-border)",
-                                        borderRadius: 4,
-                                        background: "transparent",
-                                        cursor: "pointer",
-                                        flexShrink: 0,
-                                      }}
-                                      title="Pick RGB color"
+                                      style={{ width: 26, height: 26 }}
+                                      data-tooltip="Pick RGB color"
                                     />
                                   )}
                                   <div
@@ -1102,15 +1074,13 @@ export const WmbStructuredCenterView: React.FC<WmbStructuredCenterProps> = ({
                                         </span>
                                         <div className="param-slider-group">
                                           {showSlider && (fv ?? 0) >= 0.0 && (fv ?? 0) <= 1.0 && (
-                                            <input
-                                              type="range"
-                                              min="0"
-                                              max="1"
-                                              step="0.01"
+                                            <StudioRange
+                                              min={0}
+                                              max={1}
+                                              step={0.01}
                                               className="param-range"
                                               value={fv ?? 0}
-                                              onChange={(e) => {
-                                                const val = parseFloat(e.target.value);
+                                              onChange={(val) => {
                                                 const copy = structuredClone(wmbMatDraft);
                                                 if (copy.fields[pIdx].float_values) {
                                                   copy.fields[pIdx].float_values![fi] = val;
@@ -1602,7 +1572,7 @@ export const WmbStructuredCenterView: React.FC<WmbStructuredCenterProps> = ({
                                 <div style={{ display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap" }}>
                                   <span
                                     style={{ cursor: "grab", color: "var(--brush-muted)", fontWeight: 700 }}
-                                    title="Drag to another Mesh Group"
+                                    data-tooltip="Drag to another Mesh Group"
                                   >
                                     ⋮⋮
                                   </span>
@@ -1613,7 +1583,7 @@ export const WmbStructuredCenterView: React.FC<WmbStructuredCenterProps> = ({
                                     onClick={() =>
                                       setExpandedBatchLods((p) => ({ ...p, [lodKey]: !lodExpanded }))
                                     }
-                                    title="Toggle LOD sub-rows"
+                                    data-tooltip="Toggle LOD sub-rows"
                                   >
                                     <span>{lodExpanded ? "▾" : "▸"}</span>
                                     <span className="mono">Batch #{rb.batchIdx}</span>
@@ -1626,7 +1596,7 @@ export const WmbStructuredCenterView: React.FC<WmbStructuredCenterProps> = ({
                                     <span
                                       className="tree-badge"
                                       style={{ background: "rgba(180, 130, 255, 0.16)", color: "#c49bff" }}
-                                      title="Includes -1 SHADOW LOD in WMB3"
+                                      data-tooltip="Includes -1 SHADOW LOD in WMB3"
                                     >
                                       SHADOW LOD
                                     </span>
@@ -1648,12 +1618,16 @@ export const WmbStructuredCenterView: React.FC<WmbStructuredCenterProps> = ({
                                 <div style={{ display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap" }}>
                                   <label style={{ display: "inline-flex", alignItems: "center", gap: 4, fontSize: 11.5 }}>
                                     <span style={{ color: "var(--brush-muted)" }}>Group:</span>
-                                    <select
+                                    <StudioSelect
                                       className="pill-select mono"
-                                      style={{ height: 26, fontSize: 11.5, paddingRight: 24 }}
-                                      value={rb.meshIndex}
-                                      onChange={(e) => {
-                                        const nextMg = parseInt(e.target.value, 10);
+                                      style={{ height: 26, fontSize: 11.5 }}
+                                      value={String(rb.meshIndex)}
+                                      options={Array.from({ length: meshGroupCount }).map((__, mgi) => ({
+                                        value: String(mgi),
+                                        label: `#${mgi} ${meshes3[mgi]?.name || `Group_${mgi}`}`,
+                                      }))}
+                                      onChange={(val) => {
+                                        const nextMg = parseInt(val, 10);
                                         if (!Number.isNaN(nextMg) && nextMg !== rb.meshIndex) {
                                           runWmbMutation(wmb.node_id, "update_wmb3_batch", {
                                             batch_index: rb.batchIdx,
@@ -1661,13 +1635,7 @@ export const WmbStructuredCenterView: React.FC<WmbStructuredCenterProps> = ({
                                           });
                                         }
                                       }}
-                                    >
-                                      {Array.from({ length: meshGroupCount }).map((__, mgi) => (
-                                        <option key={mgi} value={mgi}>
-                                          #{mgi} {meshes3[mgi]?.name || `Group_${mgi}`}
-                                        </option>
-                                      ))}
-                                    </select>
+                                    />
                                   </label>
 
                                   <label style={{ display: "inline-flex", alignItems: "center", gap: 4, fontSize: 11.5 }}>
@@ -1715,7 +1683,7 @@ export const WmbStructuredCenterView: React.FC<WmbStructuredCenterProps> = ({
                                     onClick={() =>
                                       setExpandedBatchLods((p) => ({ ...p, [hdrKey]: !hdrExpanded }))
                                     }
-                                    title="Edit all WMB3 Batch Header fields"
+                                    data-tooltip="Edit all WMB3 Batch Header fields"
                                   >
                                     ⚙ Header
                                   </button>
@@ -1948,7 +1916,7 @@ export const WmbStructuredCenterView: React.FC<WmbStructuredCenterProps> = ({
                       shadow_proxy: !isShadow,
                     })
                   }
-                  title={
+                  data-tooltip={
                     isB2BatchMode
                       ? "Toggle Bayonetta 2 Shadow Proxy (u_e1 = 48 / 0x30)"
                       : "Toggle Bayonetta 1 Shadow Proxy (u_e1 = 32, u_e2 = 15)"
@@ -2236,7 +2204,7 @@ export const WmbStructuredCenterView: React.FC<WmbStructuredCenterProps> = ({
                       type="button"
                       className={`pill-button ${allShadowInMesh ? "accent" : ""}`}
                       style={{ height: 24, padding: "0 8px", fontSize: 11 }}
-                      title={
+                      data-tooltip={
                         isB2BatchMode
                           ? "Toggle Shadow Proxy for all batches in this Mesh (Bayo 2: u_e1=48)"
                           : "Toggle Shadow Proxy for all batches in this Mesh (Bayo 1: u_e1=32, u_e2=15)"
@@ -2291,7 +2259,7 @@ export const WmbStructuredCenterView: React.FC<WmbStructuredCenterProps> = ({
                             <div style={{ display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap" }}>
                               <span
                                 style={{ cursor: "grab", color: "var(--brush-muted)", fontWeight: 700 }}
-                                title="Drag to move batch to another Mesh"
+                                data-tooltip="Drag to move batch to another Mesh"
                               >
                                 ⋮⋮
                               </span>
@@ -2303,7 +2271,7 @@ export const WmbStructuredCenterView: React.FC<WmbStructuredCenterProps> = ({
                                 <span
                                   className="tree-badge"
                                   style={{ background: "rgba(180, 130, 255, 0.18)", color: "#c49bff" }}
-                                  title={`Shadow Proxy (u_e1=${hdr.u_e1}, u_e2=${hdr.u_e2})`}
+                                  data-tooltip={`Shadow Proxy (u_e1=${hdr.u_e1}, u_e2=${hdr.u_e2})`}
                                 >
                                   SHADOW
                                 </span>
@@ -2327,12 +2295,16 @@ export const WmbStructuredCenterView: React.FC<WmbStructuredCenterProps> = ({
                               {meshes.length > 1 && (
                                 <label style={{ display: "inline-flex", alignItems: "center", gap: 4, fontSize: 11.5 }}>
                                   <span style={{ color: "var(--brush-muted)" }}>Mesh:</span>
-                                  <select
+                                  <StudioSelect
                                     className="pill-select mono"
-                                    style={{ height: 26, fontSize: 11.5, paddingRight: 24 }}
-                                    value={mi}
-                                    onChange={(e) => {
-                                      const dstMesh = parseInt(e.target.value, 10);
+                                    style={{ height: 26, fontSize: 11.5 }}
+                                    value={String(mi)}
+                                    options={meshes.map((mOpt, mOptIdx) => ({
+                                      value: String(mOptIdx),
+                                      label: `#${mOptIdx} ${mOpt.name || `Mesh_${mOptIdx}`}`,
+                                    }))}
+                                    onChange={(val) => {
+                                      const dstMesh = parseInt(val, 10);
                                       if (!Number.isNaN(dstMesh) && dstMesh !== mi) {
                                         runWmbMutation(wmb.node_id, "move_wmb_batch", {
                                           from_mesh_index: mi,
@@ -2341,13 +2313,7 @@ export const WmbStructuredCenterView: React.FC<WmbStructuredCenterProps> = ({
                                         });
                                       }
                                     }}
-                                  >
-                                    {meshes.map((mOpt, mOptIdx) => (
-                                      <option key={mOptIdx} value={mOptIdx}>
-                                        #{mOptIdx} {mOpt.name || `Mesh_${mOptIdx}`}
-                                      </option>
-                                    ))}
-                                  </select>
+                                  />
                                 </label>
                               )}
 
@@ -2355,7 +2321,7 @@ export const WmbStructuredCenterView: React.FC<WmbStructuredCenterProps> = ({
                                 type="button"
                                 className={`pill-button ${isShadow ? "accent" : ""}`}
                                 style={{ height: 24, padding: "0 7px", fontSize: 11 }}
-                                title={
+                                data-tooltip={
                                   isB2BatchMode
                                     ? `Shadow Proxy toggle (Bayo 2: u_e1=48, currently u_e1=${hdr.u_e1 ?? 0}, u_e2=${hdr.u_e2 ?? 0})`
                                     : `Shadow Proxy toggle (Bayo 1: u_e1=32, u_e2=15, currently u_e1=${hdr.u_e1 ?? 0}, u_e2=${hdr.u_e2 ?? 0})`
@@ -2375,7 +2341,7 @@ export const WmbStructuredCenterView: React.FC<WmbStructuredCenterProps> = ({
                                 type="button"
                                 className={`pill-button ${hdrExpanded ? "accent" : ""}`}
                                 style={{ height: 24, padding: "0 7px", fontSize: 11 }}
-                                title="Edit WMB0 Batch Header fields (batch_id, flags, u_e1, u_e2, vertex range, bone_refs...)"
+                                data-tooltip="Edit WMB0 Batch Header fields (batch_id, flags, u_e1, u_e2, vertex range, bone_refs...)"
                                 onClick={() =>
                                   setExpandedBatchLods((p) => ({ ...p, [hdrKey]: !hdrExpanded }))
                                 }
@@ -2393,7 +2359,7 @@ export const WmbStructuredCenterView: React.FC<WmbStructuredCenterProps> = ({
                                 type="button"
                                 className="pill-button"
                                 style={{ height: 24, padding: "0 7px", fontSize: 11 }}
-                                title="Duplicate Batch"
+                                data-tooltip="Duplicate Batch"
                                 onClick={() =>
                                   runWmbMutation(wmb.node_id, "duplicate_wmb_batch", {
                                     mesh_index: mi,
@@ -2408,7 +2374,7 @@ export const WmbStructuredCenterView: React.FC<WmbStructuredCenterProps> = ({
                                 className="pill-button"
                                 style={{ height: 24, padding: "0 7px", fontSize: 11 }}
                                 disabled={batches.length <= 1}
-                                title="Delete Batch"
+                                data-tooltip="Delete Batch"
                                 onClick={() =>
                                   runWmbMutation(wmb.node_id, "delete_wmb_batch", {
                                     mesh_index: mi,

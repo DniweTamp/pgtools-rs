@@ -538,7 +538,7 @@ export const BxmCenterView: React.FC<BxmCenterViewProps> = ({
                     <button
                       className="pill-button"
                       style={{ height: 23, padding: "0 7px", fontSize: 11 }}
-                      title="Duplicate Row"
+                      data-tooltip="Duplicate Row"
                       onClick={() => {
                         const copy = structuredClone(bxmTreeDraft);
                         const parent = getBxmNodeByPath(copy, currentContainerPath);
@@ -553,7 +553,7 @@ export const BxmCenterView: React.FC<BxmCenterViewProps> = ({
                     <button
                       className="pill-button"
                       style={{ height: 23, padding: "0 7px", fontSize: 11 }}
-                      title="Delete Row"
+                      data-tooltip="Delete Row"
                       onClick={() => {
                         const copy = structuredClone(bxmTreeDraft);
                         const parent = getBxmNodeByPath(copy, currentContainerPath);
@@ -832,7 +832,7 @@ export const BxmInspectorView: React.FC<BxmInspectorViewProps> = ({
                             <button
                               className="pill-button"
                               style={{ height: 25, padding: 0 }}
-                              title="Remove attribute"
+                              data-tooltip="Remove attribute"
                               onClick={() => {
                                 if (!bxmTreeDraft) return;
                                 const copy = structuredClone(bxmTreeDraft);

@@ -2,6 +2,7 @@ import React, { useEffect, useMemo, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { AssetTreeNode, PointerDragState } from "../types";
 import { isVirtualSubNode } from "../utils/format";
+import { StudioRange } from "../components/StudioRange";
 
 export interface AssetBrowserPanelProps {
   outline: { tree: AssetTreeNode[]; file_name?: string; dirty?: boolean } | null;
@@ -218,7 +219,7 @@ export function AssetBrowserPanel({
               }
               onContextMenu(e, node.id, node.kind);
             }}
-            title={
+            data-tooltip={
               node.compression
                 ? `${node.label} (${node.compression}${node.modified ? " · staged*" : ""})`
                 : node.modified
@@ -263,7 +264,7 @@ export function AssetBrowserPanel({
                   color: "var(--brush-accent)",
                   fontWeight: 700,
                 }}
-                title="Staged unsaved change"
+                data-tooltip="Staged unsaved change"
               >
                 *
               </span>
@@ -296,7 +297,7 @@ export function AssetBrowserPanel({
           {onChangeZoomLevel && (
             <div
               style={{ display: "flex", alignItems: "center", gap: 4 }}
-              title="Asset Browser zoom (List vs. Thumbnail Grid, or Ctrl+Wheel)"
+              data-tooltip="Asset Browser zoom (List vs. Thumbnail Grid, or Ctrl+Wheel)"
             >
               <span
                 className="mono"
@@ -304,14 +305,14 @@ export function AssetBrowserPanel({
               >
                 {tileSize === 0 ? "List" : `${tileSize}px`}
               </span>
-              <input
-                type="range"
+              <StudioRange
                 min={0}
                 max={4}
                 step={1}
                 value={zoomLevel}
                 style={{ width: 64 }}
-                onChange={(e) => onChangeZoomLevel(Number(e.target.value))}
+                ariaLabel="Thumbnail tile zoom"
+                onChange={(v) => onChangeZoomLevel(v)}
               />
             </div>
           )}
@@ -322,7 +323,7 @@ export function AssetBrowserPanel({
                 className="pill-button"
                 style={{ height: 22, padding: "0 6px", fontSize: 10.5 }}
                 onClick={onExpandAll}
-                title="Expand all folders in tree"
+                data-tooltip="Expand all folders in tree"
               >
                 Expand
               </button>
@@ -331,7 +332,7 @@ export function AssetBrowserPanel({
                 className="pill-button"
                 style={{ height: 22, padding: "0 6px", fontSize: 10.5 }}
                 onClick={onCollapseAll}
-                title="Collapse all folders in tree"
+                data-tooltip="Collapse all folders in tree"
               >
                 Collapse
               </button>
@@ -351,7 +352,7 @@ export function AssetBrowserPanel({
               <button
                 type="button"
                 onClick={() => onSearchChange("")}
-                title="Clear filter"
+                data-tooltip="Clear filter"
                 style={{
                   position: "absolute",
                   right: 4,
@@ -433,7 +434,7 @@ export function AssetBrowserPanel({
                           alignItems: "center",
                           gap: 4,
                         }}
-                        title={`${texNode.label} (${texNode.format_badge})`}
+                        data-tooltip={`${texNode.label} (${texNode.format_badge})`}
                       >
                         <div
                           className="checkerboard-canvas"

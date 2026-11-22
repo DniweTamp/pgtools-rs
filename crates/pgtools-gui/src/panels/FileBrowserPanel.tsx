@@ -52,7 +52,7 @@ export function FileBrowserPanel({
             className={`pill-button ${hideUnsupported ? "accent" : ""}`}
             style={{ height: 24, padding: "0 8px", fontSize: 11 }}
             onClick={() => setHideUnsupported(!hideUnsupported)}
-            title="Hide unsupported file extensions (On by default)"
+            data-tooltip="Hide unsupported file extensions (On by default)"
           >
             Supported Only
           </button>
@@ -60,7 +60,7 @@ export function FileBrowserPanel({
             className="pill-button"
             style={{ height: 24, padding: "0 8px", fontSize: 11.5 }}
             onClick={goParent}
-            title="Parent Directory"
+            data-tooltip="Parent Directory"
           >
             ↑ Up
           </button>
@@ -68,7 +68,7 @@ export function FileBrowserPanel({
             className="pill-button"
             style={{ height: 24, padding: "0 8px", fontSize: 11.5 }}
             onClick={onOpenFolder}
-            title="Browse Folder..."
+            data-tooltip="Browse Folder..."
           >
             <IconFolder />
           </button>
@@ -128,7 +128,7 @@ export function FileBrowserPanel({
                 <tr
                   key={entry.path}
                   className={`file-row ${isSelected ? "selected" : ""}`}
-                  title={entry.path}
+                  data-tooltip={entry.path}
                   onClick={(e) => {
                     if (e.ctrlKey || e.metaKey) {
                       setSelectedFilePaths((prev) =>

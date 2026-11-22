@@ -1,5 +1,10 @@
 import React, { useCallback, useEffect, useRef, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
+import { StudioDialogHost, studioAlert, studioConfirm, studioPrompt } from "./components/StudioDialog";
+import { StudioRadio } from "./components/StudioRadio";
+import { StudioRange } from "./components/StudioRange";
+import { StudioSelect } from "./components/StudioSelect";
+import { StudioTooltipHost } from "./components/StudioTooltip";
 import { listen } from "@tauri-apps/api/event";
 import {
   AssetTreeNode,
@@ -848,7 +853,7 @@ export default function App() {
   }
 
   async function openDocumentByPath(path: string, skipDirtyPrompt = false) {
-    if (!skipDirtyPrompt && !confirmDiscardIfDirty(`open "${path.split(/[\\/]/).pop() || path}"`)) {
+    if (!skipDirtyPrompt && !(await confirmDiscardIfDirty(`open "${path.split(/[\\/]/).pop() || path}"`))) {
       return;
     }
     try {
@@ -1072,8 +1077,9 @@ export default function App() {
           } catch (err) {
             const errStr = String(err);
             if (errStr.includes("OODLE_DLL_MISSING")) {
-              const useZstd = window.confirm(
-                "OodleKraken compression requires oo2core_*_win64.dll with OodleLZ_Compress.\n\nClick OK to pack using ZStandard instead, or Cancel to locate oo2core_*_win64.dll."
+              const useZstd = await studioConfirm(
+                "OodleKraken compression requires oo2core_*_win64.dll with OodleLZ_Compress.\n\nClick OK to pack using ZStandard instead, or Cancel to locate oo2core_*_win64.dll.",
+                { title: "Oodle DLL Not Found", confirmLabel: "Use ZStandard", cancelLabel: "Locate DLL" }
               );
               if (useZstd) {
                 await runPack("ZStandard", true);
@@ -1197,7 +1203,7 @@ export default function App() {
         setPkzSelectedIndices(nodePayload.entries.map((e: any) => e.index));
       }
     },
-    renameSelected: () => {
+    renameSelected: async () => {
       const leafSeg = selectedNodeId.split("/").pop() || "";
       if (leafSeg.startsWith("uvditem:")) {
         const curName =
@@ -1213,7 +1219,9 @@ export default function App() {
         void promptRenameUvdGroup(selectedNodeId, curName);
       } else if (selectedNodeId.includes("pkzfolder:")) {
         const folderPrefix = selectedNodeId.split("pkzfolder:").pop() || "";
-        const nextPrefix = window.prompt("Rename PKZ folder:", folderPrefix);
+        const nextPrefix = await studioPrompt("Rename PKZ folder:", folderPrefix, {
+          title: "Rename PKZ Folder",
+        });
         if (nextPrefix !== null && nextPrefix.trim() !== folderPrefix) {
           void runContainerMutation(selectedNodeId, "rename_pkz_folder", nextPrefix.trim(), {
             folder_prefix: folderPrefix,
@@ -1221,7 +1229,9 @@ export default function App() {
           });
         }
       } else if (leafSeg.startsWith("pkz:")) {
-        const nextName = window.prompt("Rename PKZ entry:", nodePayload?.title || "");
+        const nextName = await studioPrompt("Rename PKZ entry:", nodePayload?.title || "", {
+          title: "Rename PKZ Entry",
+        });
         if (nextName && nextName.trim()) {
           void runContainerMutation(selectedNodeId, "rename_entry", nextName.trim(), {
             new_name: nextName.trim(),
@@ -1229,7 +1239,7 @@ export default function App() {
         }
       }
     },
-    deleteSelected: () => {
+    deleteSelected: async () => {
       const leafSeg = selectedNodeId.split("/").pop() || "";
       const multiIds =
         selectedNodeIds.length > 1 && selectedNodeIds.includes(selectedNodeId)
@@ -1242,7 +1252,14 @@ export default function App() {
             return m ? ([parseInt(m[1], 10), parseInt(m[2], 10)] as [number, number]) : null;
           })
           .filter((x): x is [number, number] => x !== null);
-        if (pairs.length > 0 && window.confirm(`Delete ${pairs.length} sprite(s) and repack affected group(s)?`)) {
+        if (
+          pairs.length > 0 &&
+          (await studioConfirm(`Delete ${pairs.length} sprite(s) and repack affected group(s)?`, {
+            title: "Delete Sprites",
+            confirmLabel: "Delete",
+            danger: true,
+          }))
+        ) {
           void runUvdMutation(selectedNodeId, "delete_items", { items: pairs });
         }
       } else if (leafSeg.startsWith("uvdgrp:")) {
@@ -1254,9 +1271,10 @@ export default function App() {
           .filter((n) => n >= 0);
         if (
           gIndices.length > 0 &&
-          window.confirm(
-            `Delete ${gIndices.length} UVD group(s)?\n\nWTA texture slots will not be deleted or reordered.`
-          )
+          (await studioConfirm(
+            `Delete ${gIndices.length} UVD group(s)?\n\nWTA texture slots will not be deleted or reordered.`,
+            { title: "Delete UVD Groups", confirmLabel: "Delete", danger: true }
+          ))
         ) {
           void runUvdMutation(selectedNodeId, "delete_groups", { group_indices: gIndices });
         }
@@ -1266,8 +1284,9 @@ export default function App() {
           : nodePayload.node_id.startsWith("pkzfolder:")
           ? "root"
           : nodePayload.node_id;
-        const ok = window.confirm(
-          `Delete ${pkzSelectedIndices.length} selected file(s) from the PKZ archive?\n\nThe change is staged until you save.`
+        const ok = await studioConfirm(
+          `Delete ${pkzSelectedIndices.length} selected file(s) from the PKZ archive?\n\nThe change is staged until you save.`,
+          { title: "Delete PKZ Entries", confirmLabel: "Delete", danger: true }
         );
         if (!ok) return;
         void runContainerMutation(baseContainerId, "remove_pkz_entries", "", {
@@ -1275,8 +1294,9 @@ export default function App() {
         });
       } else if (selectedNodeId.includes("pkzfolder:")) {
         const folderPrefix = selectedNodeId.split("pkzfolder:").pop() || "";
-        const ok = window.confirm(
-          `Delete the folder '${folderPrefix}' and all files under it?\n\nThe change is staged until you save.`
+        const ok = await studioConfirm(
+          `Delete the folder '${folderPrefix}' and all files under it?\n\nThe change is staged until you save.`,
+          { title: "Delete Folder", confirmLabel: "Delete", danger: true }
         );
         if (ok) {
           void runContainerMutation(selectedNodeId, "remove_pkz_folder", "", {
@@ -1284,8 +1304,9 @@ export default function App() {
           });
         }
       } else if (leafSeg.startsWith("pkz:")) {
-        const ok = window.confirm(
-          `Delete '${nodePayload?.title || selectedNodeId}'?\n\nThe change is staged until you save.`
+        const ok = await studioConfirm(
+          `Delete '${nodePayload?.title || selectedNodeId}'?\n\nThe change is staged until you save.`,
+          { title: "Delete Entry", confirmLabel: "Delete", danger: true }
         );
         if (ok) {
           void runContainerMutation(selectedNodeId, "remove_entry");
@@ -1608,8 +1629,9 @@ export default function App() {
     } catch (err) {
       const msg = String(err);
       if (msg.includes("OODLE_DLL_MISSING")) {
-        const useZstd = window.confirm(
-          "OodleKraken compression requires oo2core_*_win64.dll with OodleLZ_Compress.\n\nClick OK to compress using ZStandard instead, or Cancel to locate oo2core_*_win64.dll."
+        const useZstd = await studioConfirm(
+          "OodleKraken compression requires oo2core_*_win64.dll with OodleLZ_Compress.\n\nClick OK to compress using ZStandard instead, or Cancel to locate oo2core_*_win64.dll.",
+          { title: "Oodle DLL Not Found", confirmLabel: "Use ZStandard", cancelLabel: "Locate DLL" }
         );
         if (useZstd) {
           await runContainerMutation(nodeId, action, targetPath, {
@@ -1794,8 +1816,9 @@ export default function App() {
         msg.includes("CRC32 collision") &&
         !payload?.auto_suffix
       ) {
-        const useSuffix = window.confirm(
-          `${msg}\n\nClick OK to automatically append a numeric suffix (_1, _2, ...) for a unique CRC32 ID, or Cancel to abort.`
+        const useSuffix = await studioConfirm(
+          `${msg}\n\nClick OK to automatically append a numeric suffix (_1, _2, ...) for a unique CRC32 ID, or Cancel to abort.`,
+          { title: "CRC32 Collision", confirmLabel: "Append Suffix" }
         );
         if (useSuffix) {
           await runUvdMutation(nodeId, action, { ...payload, auto_suffix: true });
@@ -1855,7 +1878,7 @@ export default function App() {
     } catch (err) {
       const errMsg = String(err);
       setStatusLeft(`UVD extract error: ${errMsg}`);
-      window.alert(errMsg);
+      await studioAlert(errMsg, "UVD Extract Error");
     } finally {
       setBusyLabel(null);
     }
@@ -1885,16 +1908,17 @@ export default function App() {
 
   async function promptAddUvdGroup(uvdNodeId: string) {
     setContextMenu(null);
-    const rawName = window.prompt(
+    const rawName = await studioPrompt(
       "Enter new UVD Group name (max 31 ASCII characters):",
-      "new_group"
+      "new_group",
+      { title: "New UVD Group" }
     );
     if (!rawName || !rawName.trim()) return;
     const trimmed = rawName.trim();
     if (trimmed.length > 31) {
       const msg = `Group name '${trimmed}' is ${trimmed.length} bytes; maximum allowed is 31 characters.`;
       setStatusLeft(msg);
-      window.alert(msg);
+      await studioAlert(msg, "Invalid Group Name");
       return;
     }
     const paths = await invoke<string[]>("pick_multiple_files_dialog", {
@@ -1909,16 +1933,17 @@ export default function App() {
 
   async function promptAddUvdSprite(groupNodeId: string, groupIndex?: number) {
     setContextMenu(null);
-    const rawName = window.prompt(
+    const rawName = await studioPrompt(
       "Enter new Sprite Item name (max 63 ASCII characters):",
-      "new_sprite_00"
+      "new_sprite_00",
+      { title: "New Sprite Item" }
     );
     if (!rawName || !rawName.trim()) return;
     const trimmed = rawName.trim();
     if (trimmed.length > 63) {
       const msg = `Item name '${trimmed}' is ${trimmed.length} bytes; maximum allowed is 63 characters.`;
       setStatusLeft(msg);
-      window.alert(msg);
+      await studioAlert(msg, "Invalid Sprite Name");
       return;
     }
     const path = await invoke<string | null>("pick_file_dialog", {
@@ -1957,20 +1982,22 @@ export default function App() {
     groupIndex?: number
   ) {
     setContextMenu(null);
-    const rawName = window.prompt(
+    const rawName = await studioPrompt(
       "Rename UVD Group (max 31 ASCII characters):\n\nWarning: Renaming recomputes the Group ID (crc32 & 0x7FFFFFFF). Any .uid file referencing the old Group ID may break.",
-      currentName
+      currentName,
+      { title: "Rename UVD Group" }
     );
     if (!rawName || !rawName.trim() || rawName.trim() === currentName) return;
     const trimmed = rawName.trim();
     if (trimmed.length > 31) {
       const msg = `Group name '${trimmed}' is ${trimmed.length} bytes; maximum allowed is 31 characters.`;
       setStatusLeft(msg);
-      window.alert(msg);
+      await studioAlert(msg, "Invalid Group Name");
       return;
     }
-    const ok = window.confirm(
-      `Rename group '${currentName}' to '${trimmed}'?\n\nNote: The Group ID will be recomputed from the new name, and any .uid layout referencing the old ID may break.`
+    const ok = await studioConfirm(
+      `Rename group '${currentName}' to '${trimmed}'?\n\nNote: The Group ID will be recomputed from the new name, and any .uid layout referencing the old ID may break.`,
+      { title: "Confirm Group Rename", confirmLabel: "Rename" }
     );
     if (!ok) return;
     await runUvdMutation(groupNodeId, "rename_group", {
@@ -1986,20 +2013,22 @@ export default function App() {
     itemIndex?: number
   ) {
     setContextMenu(null);
-    const rawName = window.prompt(
+    const rawName = await studioPrompt(
       "Rename UVD Sprite Item (max 63 ASCII characters):\n\nWarning: Renaming recomputes the Item ID (CRC32). Any .uid file referencing the old Item ID may break.",
-      currentName
+      currentName,
+      { title: "Rename Sprite Item" }
     );
     if (!rawName || !rawName.trim() || rawName.trim() === currentName) return;
     const trimmed = rawName.trim();
     if (trimmed.length > 63) {
       const msg = `Item name '${trimmed}' is ${trimmed.length} bytes; maximum allowed is 63 characters.`;
       setStatusLeft(msg);
-      window.alert(msg);
+      await studioAlert(msg, "Invalid Sprite Name");
       return;
     }
-    const ok = window.confirm(
-      `Rename sprite '${currentName}' to '${trimmed}'?\n\nNote: The Item ID (CRC32) will be recomputed from the new name, and any .uid layout referencing the old ID may break.`
+    const ok = await studioConfirm(
+      `Rename sprite '${currentName}' to '${trimmed}'?\n\nNote: The Item ID (CRC32) will be recomputed from the new name, and any .uid layout referencing the old ID may break.`,
+      { title: "Confirm Sprite Rename", confirmLabel: "Rename" }
     );
     if (!ok) return;
     await runUvdMutation(itemNodeId, "rename_item", {
@@ -2187,7 +2216,7 @@ export default function App() {
                             setActiveTopMenu(null);
                             openDocumentByPath(rf);
                           }}
-                          title={rf}
+                          data-tooltip={rf}
                         >
                           <span style={{ overflow: "hidden", textOverflow: "ellipsis", maxWidth: 260 }}>
                             {rf.split(/[\\/]/).pop()}
@@ -2326,7 +2355,7 @@ export default function App() {
               <div className="context-menu-sep" />
               <button
                 className="context-menu-item"
-                title={oodleDllPath ? `Configured: ${oodleDllPath}` : oodleConfigured ? "Oodle DLL detected" : "Not configured"}
+                data-tooltip={oodleDllPath ? `Configured: ${oodleDllPath}` : oodleConfigured ? "Oodle DLL detected" : "Not configured"}
                 onClick={() => {
                   setActiveTopMenu(null);
                   handlePickOodleDll();
@@ -2341,7 +2370,7 @@ export default function App() {
               </button>
               <button
                 className="context-menu-item"
-                title={nvttDllPath ? `Configured: ${nvttDllPath}` : nvttConfigured ? "NVTT DLL detected" : "Not configured"}
+                data-tooltip={nvttDllPath ? `Configured: ${nvttDllPath}` : nvttConfigured ? "NVTT DLL detected" : "Not configured"}
                 onClick={() => {
                   setActiveTopMenu(null);
                   handlePickNvttDll();
@@ -2357,7 +2386,7 @@ export default function App() {
               <div className="context-menu-sep" />
               <button
                 className="context-menu-item"
-                title={
+                data-tooltip={
                   forceCustomDatAlignment
                     ? `Forcing custom DAT alignment: ${customDatAlignment} B (0x${customDatAlignment
                         .toString(16)
@@ -2459,38 +2488,34 @@ export default function App() {
           {activeTexture && activeTexture.uvd_mode !== "item" && (
             <>
               <span className="toolbar-label">Mip</span>
-              <select
+              <StudioSelect
                 className="pill-select"
                 style={{ width: 156 }}
-                value={mipIndex}
-                onChange={(e) =>
-                  handleTexturePreviewParamChange(Number(e.target.value), channelMode, opaquePreview)
+                value={String(mipIndex)}
+                options={activeTexture.mips.map((m) => ({
+                  value: String(m.index),
+                  label: m.label,
+                }))}
+                onChange={(val) =>
+                  handleTexturePreviewParamChange(Number(val), channelMode, opaquePreview)
                 }
-              >
-                {activeTexture.mips.map((m) => (
-                  <option key={m.index} value={m.index}>
-                    {m.label}
-                  </option>
-                ))}
-              </select>
+              />
 
               <div className="toolbar-spacer" />
 
               <span className="toolbar-label">Channel</span>
-              <select
+              <StudioSelect
                 className="pill-select"
                 style={{ width: 110 }}
                 value={channelMode}
-                onChange={(e) =>
-                  handleTexturePreviewParamChange(mipIndex, e.target.value, opaquePreview)
+                options={["RGBA", "RGB", "R", "G", "B", "A"].map((ch) => ({
+                  value: ch,
+                  label: ch,
+                }))}
+                onChange={(val) =>
+                  handleTexturePreviewParamChange(mipIndex, val, opaquePreview)
                 }
-              >
-                {["RGBA", "RGB", "R", "G", "B", "A"].map((ch) => (
-                  <option key={ch} value={ch}>
-                    {ch}
-                  </option>
-                ))}
-              </select>
+              />
 
               <div className="toolbar-spacer" />
 
@@ -2499,7 +2524,7 @@ export default function App() {
                 onClick={() =>
                   handleTexturePreviewParamChange(mipIndex, channelMode, !opaquePreview)
                 }
-                title="Ignore the alpha channel in the 2D preview"
+                data-tooltip="Ignore the alpha channel in the 2D preview"
               >
                 <span className="pill-checkbox-box">{opaquePreview && <IconCheck />}</span>
                 <span>Opaque Preview</span>
@@ -2510,7 +2535,7 @@ export default function App() {
               <button
                 className="pill-button"
                 onClick={handleResetView}
-                title="Fit preview to viewport (100%)"
+                data-tooltip="Fit preview to viewport (100%)"
               >
                 <IconRefresh />
                 <span>Reset View</span>
@@ -2524,7 +2549,7 @@ export default function App() {
             className="pill-button"
             disabled={!outline?.can_undo}
             onClick={handleUndo}
-            title={outline?.undo_label ? `Undo ${outline.undo_label} (Ctrl+Z)` : "Undo (Ctrl+Z)"}
+            data-tooltip={outline?.undo_label ? `Undo ${outline.undo_label} (Ctrl+Z)` : "Undo (Ctrl+Z)"}
           >
             <IconUndo />
             <span>Undo</span>
@@ -2534,7 +2559,7 @@ export default function App() {
             className="pill-button"
             disabled={!outline?.can_redo}
             onClick={handleRedo}
-            title={outline?.redo_label ? `Redo ${outline.redo_label} (Ctrl+Y)` : "Redo (Ctrl+Y)"}
+            data-tooltip={outline?.redo_label ? `Redo ${outline.redo_label} (Ctrl+Y)` : "Redo (Ctrl+Y)"}
           >
             <IconRedo />
             <span>Redo</span>
@@ -2560,7 +2585,7 @@ export default function App() {
             <button
               className="pill-button accent"
               onClick={handleMenuSave}
-              title="Save modified container in place (Ctrl+S)"
+              data-tooltip="Save modified container in place (Ctrl+S)"
             >
               <span>● Save {outline.file_name}</span>
             </button>
@@ -2568,7 +2593,7 @@ export default function App() {
           <button
             className="pill-button"
             onClick={() => setTheme(theme === "dark" ? "light" : "dark")}
-            title="Toggle light / dark theme"
+            data-tooltip="Toggle light / dark theme"
           >
             <IconSunMoon />
             <span>Theme</span>
@@ -2634,7 +2659,7 @@ export default function App() {
               setDraggingSplit("left-row");
             }}
             onDoubleClick={() => setAssetRatio(0.5)}
-            title="Drag to resize, double-click to reset"
+            data-tooltip="Drag to resize, double-click to reset"
           >
             <div className="splitter-h-grip" />
           </div>
@@ -2669,7 +2694,7 @@ export default function App() {
             setDraggingSplit("left");
           }}
           onDoubleClick={() => setLeftWidth(310)}
-          title="Drag to resize, double-click to reset"
+          data-tooltip="Drag to resize, double-click to reset"
         >
           <div className="splitter-v-grip" />
         </div>
@@ -2789,12 +2814,12 @@ export default function App() {
             <span
               className="mono"
               style={{ color: "var(--brush-accent)", fontWeight: 600 }}
-              title="Forced custom byte alignment on DAT save is enabled"
+              data-tooltip="Forced custom byte alignment on DAT save is enabled"
             >
               DAT Align: {customDatAlignment} B (0x{customDatAlignment.toString(16).toUpperCase()})
             </span>
           )}
-          {activeTexture && <span title="Preview zoom">{Math.round(zoom * 100)}%</span>}
+          {activeTexture && <span data-tooltip="Preview zoom">{Math.round(zoom * 100)}%</span>}
           <span>{outline ? outline.summary_right : "PGTools Studio"}</span>
         </div>
       </footer>
@@ -3036,8 +3061,24 @@ export default function App() {
               ).map(([codecKey, codecLabel, codecDesc]) => {
                 const checked = pkzCompModal.compression === codecKey;
                 return (
-                  <label
+                  <StudioRadio
                     key={codecKey}
+                    checked={checked}
+                    onChange={() => {
+                      const nextLvl = clampPkzLevel(
+                        codecKey,
+                        codecKey === "OodleKraken"
+                          ? 4
+                          : codecKey === "ZStandard"
+                          ? 3
+                          : 0
+                      );
+                      setPkzCompModal((prev) =>
+                        prev
+                          ? { ...prev, compression: codecKey, level: nextLvl }
+                          : null
+                      );
+                    }}
                     style={{
                       display: "flex",
                       alignItems: "flex-start",
@@ -3047,37 +3088,17 @@ export default function App() {
                       border: `1px solid ${
                         checked ? "var(--brush-accent)" : "var(--brush-border)"
                       }`,
-                      cursor: "pointer",
+                      width: "100%",
                     }}
+                    circleStyle={{ marginTop: 2 }}
                   >
-                    <input
-                      type="radio"
-                      name="pkz_codec_choice"
-                      checked={checked}
-                      onChange={() => {
-                        const nextLvl = clampPkzLevel(
-                          codecKey,
-                          codecKey === "OodleKraken"
-                            ? 4
-                            : codecKey === "ZStandard"
-                            ? 3
-                            : 0
-                        );
-                        setPkzCompModal((prev) =>
-                          prev
-                            ? { ...prev, compression: codecKey, level: nextLvl }
-                            : null
-                        );
-                      }}
-                      style={{ marginTop: 2 }}
-                    />
                     <div>
                       <div style={{ fontWeight: 600, fontSize: 12.5 }}>{codecLabel}</div>
                       <div style={{ fontSize: 11.5, color: "var(--brush-muted)", marginTop: 2 }}>
                         {codecDesc}
                       </div>
                     </div>
-                  </label>
+                  </StudioRadio>
                 );
               })}
             </div>
@@ -3092,42 +3113,41 @@ export default function App() {
                     {pkzCompModal.level}
                   </span>
                 </div>
-                <input
-                  type="range"
+                <StudioRange
                   min={1}
                   max={pkzCompModal.compression === "OodleKraken" ? 9 : 22}
+                  step={1}
                   value={pkzCompModal.level}
-                  onChange={(e) => {
-                    const next = parseInt(e.target.value || "3", 10);
+                  ariaLabel="Compression level"
+                  onChange={(next) => {
                     setPkzCompModal((prev) =>
                       prev ? { ...prev, level: next } : null
                     );
                   }}
                 />
-                <label
+                <button
+                  type="button"
+                  role="checkbox"
+                  aria-checked={pkzCompModal.forceCompression}
+                  className={`studio-inline-checkbox${pkzCompModal.forceCompression ? " checked" : ""}`}
                   style={{
-                    display: "flex",
-                    alignItems: "center",
-                    gap: 7,
                     fontSize: 11.5,
                     color: "var(--brush-muted)",
                     marginTop: 2,
-                    cursor: "pointer",
                   }}
+                  onClick={() =>
+                    setPkzCompModal((prev) =>
+                      prev ? { ...prev, forceCompression: !prev.forceCompression } : null
+                    )
+                  }
                 >
-                  <input
-                    type="checkbox"
-                    checked={pkzCompModal.forceCompression}
-                    onChange={(e) =>
-                      setPkzCompModal((prev) =>
-                        prev ? { ...prev, forceCompression: e.target.checked } : null
-                      )
-                    }
-                  />
+                  <span className="pill-checkbox-box">
+                    {pkzCompModal.forceCompression && <IconCheck />}
+                  </span>
                   <span>
                     Force compression even if file stays at ≥ 90% of original size
                   </span>
-                </label>
+                </button>
                 <div style={{ fontSize: 11, color: "var(--brush-muted)", lineHeight: 1.4 }}>
                   {pkzCompModal.forceCompression
                     ? "Every file will be stored compressed even if compression does not reduce size by 10%."
@@ -3369,6 +3389,8 @@ export default function App() {
           </div>
         </div>
       )}
+      <StudioDialogHost />
+      <StudioTooltipHost />
     </div>
   );
 }

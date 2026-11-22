@@ -321,7 +321,7 @@ export const MaterialPickerPopover: React.FC<MaterialPickerPopoverProps> = ({
         ref={triggerRef}
         type="button"
         className={compact ? "batch-mat-pill" : "mat-picker-trigger"}
-        title={title ?? (currentMat ? `Material #${currentMatIdx} (${currentInfo.shaderLabel}) — Click to switch material` : `Material #${currentMatIdx}`)}
+        data-tooltip={title ?? (currentMat ? `Material #${currentMatIdx} (${currentInfo.shaderLabel}) — Click to switch material` : `Material #${currentMatIdx}`)}
         onClick={(e) => {
           e.stopPropagation();
           setOpen((v) => !v);
@@ -360,7 +360,7 @@ export const MaterialPickerPopover: React.FC<MaterialPickerPopoverProps> = ({
         <button
           type="button"
           className="secondary-btn compact-btn"
-          title={`Select Material #${currentMatIdx} in Inspector`}
+          data-tooltip={`Select Material #${currentMatIdx} in Inspector`}
           onClick={(e) => {
             e.stopPropagation();
             onJumpToMaterial(currentMatIdx);
@@ -575,7 +575,7 @@ export const TextureSlotPickerPopover: React.FC<TextureSlotPickerPopoverProps> =
         ref={triggerRef}
         type="button"
         className="mat-picker-trigger"
-        title={`Change sampler slot s${slotIndex} (${slotLabel})`}
+        data-tooltip={`Change sampler slot s${slotIndex} (${slotLabel})`}
         onClick={(e) => {
           e.stopPropagation();
           setOpen((v) => !v);
@@ -608,7 +608,7 @@ export const TextureSlotPickerPopover: React.FC<TextureSlotPickerPopoverProps> =
         <button
           type="button"
           className="secondary-btn compact-btn"
-          title={`Inspect Texture #${bankIdx} (${currentHex})`}
+          data-tooltip={`Inspect Texture #${bankIdx} (${currentHex})`}
           onClick={(e) => {
             e.stopPropagation();
             onJumpToTexture(uCurrentId);

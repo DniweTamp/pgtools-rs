@@ -1,4 +1,5 @@
 import React, { useCallback, useRef, useState } from "react";
+import { studioConfirm } from "../components/StudioDialog";
 import { DocumentOutline } from "../types";
 import { isVirtualSubNode } from "../utils/format";
 
@@ -19,7 +20,7 @@ export interface DocumentSessionApi extends DocumentSessionState {
   setSelectedNodeId: (id: string) => void;
   setSelectedNodeIds: React.Dispatch<React.SetStateAction<string[]>>;
   setAssetSearch: (s: string) => void;
-  confirmDiscardIfDirty: (actionLabel?: string) => boolean;
+  confirmDiscardIfDirty: (actionLabel?: string) => Promise<boolean>;
   expandForOpen: (doc: DocumentOutline) => {
     nextExpanded: Record<string, boolean>;
     defaultTargetId: string;
@@ -44,10 +45,11 @@ export function useDocumentSession(): DocumentSessionApi {
   const [selectedNodeIds, setSelectedNodeIds] = useState<string[]>(["root"]);
   const [assetSearch, setAssetSearch] = useState("");
 
-  const confirmDiscardIfDirty = useCallback((actionLabel = "open another document"): boolean => {
+  const confirmDiscardIfDirty = useCallback(async (actionLabel = "open another document"): Promise<boolean> => {
     if (!outlineRef.current?.dirty) return true;
-    return window.confirm(
-      `You have unsaved changes in "${outlineRef.current.file_name}".\n\nDiscard unsaved changes and ${actionLabel}?`
+    return studioConfirm(
+      `You have unsaved changes in "${outlineRef.current.file_name}".\n\nDiscard unsaved changes and ${actionLabel}?`,
+      { title: "Unsaved Changes", confirmLabel: "Discard", danger: true }
     );
   }, []);
 

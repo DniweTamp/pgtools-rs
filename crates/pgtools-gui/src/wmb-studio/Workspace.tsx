@@ -624,7 +624,7 @@ export const Workspace: React.FC<WorkspaceProps> = React.memo(function Workspace
       <div
         className="splitter splitter-v"
         onMouseDown={onStartResizeRightPanel}
-        title="Drag to resize right inspector column"
+        data-tooltip="Drag to resize right inspector column"
       />
 
       {/* Right Column: Hierarchy (top) + Properties (bottom) */}
@@ -674,7 +674,7 @@ export const Workspace: React.FC<WorkspaceProps> = React.memo(function Workspace
             <div
               className="splitter splitter-h"
               onMouseDown={handleStartVerticalSplitDrag}
-              title="Drag to resize Hierarchy / Properties split"
+              data-tooltip="Drag to resize Hierarchy / Properties split"
             />
 
             <div

@@ -1,4 +1,5 @@
 import React, { useEffect, useMemo, useState } from "react";
+import { IconCheck } from "../components/Icons";
 import { invoke } from "@tauri-apps/api/core";
 import {
   BatchDesc,
@@ -216,7 +217,7 @@ export const Properties: React.FC<PropertiesProps> = React.memo(function Propert
                 headerMeta.vertexFlagsHex ?? (manifest.isWmb3 ? "0x0000" : "0x00000000")
               }
               readOnly={!manifest.isWmb3}
-              title={
+              data-tooltip={
                 manifest.isWmb3
                   ? "WMB3 16-bit model header flags (0x0000..0xFFFF)"
                   : "WMB0-2 vertex_flags defines the binary vertex stride and attribute layout (read-only to prevent vertex stream corruption)"
@@ -256,7 +257,7 @@ export const Properties: React.FC<PropertiesProps> = React.memo(function Propert
                     type="number"
                     step="0.05"
                     readOnly={!manifest.isWmb3}
-                    title={
+                    data-tooltip={
                       manifest.isWmb3
                         ? `Edit WMB3 header bounding box ${lbl}`
                         : "WMB0-2 model bounding box is computed from vertex positions (read-only)"
@@ -584,7 +585,7 @@ export const Properties: React.FC<PropertiesProps> = React.memo(function Propert
                 <button
                   type="button"
                   className="wmb-link-chip mono"
-                  title="Jump to parent bone (drag bone in Scene Outliner to reparent)"
+                  data-tooltip="Jump to parent bone (drag bone in Scene Outliner to reparent)"
                   onClick={() =>
                     onSelect(
                       [
@@ -1025,7 +1026,7 @@ export const Properties: React.FC<PropertiesProps> = React.memo(function Propert
                 <button
                   type="button"
                   className="tree-badge parent-mesh-badge"
-                  title={`Parent Mesh Group #${mg.index} "${mg.name}" — Click to inspect mesh group, or drag batch in Scene Outliner to move`}
+                  data-tooltip={`Parent Mesh Group #${mg.index} "${mg.name}" — Click to inspect mesh group, or drag batch in Scene Outliner to move`}
                   onClick={(e) => {
                     e.stopPropagation();
                     onSelect([{ kind: "meshGroup", id: mg.id }], false);
@@ -1044,7 +1045,7 @@ export const Properties: React.FC<PropertiesProps> = React.memo(function Propert
               <button
                 type="button"
                 className="icon-action-btn"
-                title="Duplicate Batch"
+                data-tooltip="Duplicate Batch"
                 onClick={() =>
                   void onMutateOp({ op: "duplicate_item", itemId: batch.id })
                 }
@@ -1054,7 +1055,7 @@ export const Properties: React.FC<PropertiesProps> = React.memo(function Propert
               <button
                 type="button"
                 className="icon-action-btn danger"
-                title="Delete Batch"
+                data-tooltip="Delete Batch"
                 onClick={() =>
                   void onMutateOp({ op: "delete_items", items: [batch.id] })
                 }
@@ -1119,20 +1120,22 @@ export const Properties: React.FC<PropertiesProps> = React.memo(function Propert
                         />
 
                         <span className="lbl">Shadow Proxy</span>
-                        <label
-                          className="shadow-checkbox-cell"
-                          title="WMB shadow caster flag (B1: u_e1 = 32, u_e2 = 15; B2: u_e1 = 48)"
+                        <button
+                          type="button"
+                          role="checkbox"
+                          aria-checked={batch.isShadowProxy}
+                          className={`studio-inline-checkbox shadow-checkbox-cell${batch.isShadowProxy ? " checked" : ""}`}
+                          data-tooltip="WMB shadow caster flag (B1: u_e1 = 32, u_e2 = 15; B2: u_e1 = 48)"
+                          onClick={() => {
+                            void onDirectWmbMutate("update_batch", {
+                              batch_item_id: batch.id,
+                              shadow_proxy: !batch.isShadowProxy,
+                            });
+                          }}
                         >
-                          <input
-                            type="checkbox"
-                            checked={batch.isShadowProxy}
-                            onChange={(e) => {
-                              void onDirectWmbMutate("update_batch", {
-                                batch_item_id: batch.id,
-                                shadow_proxy: e.target.checked,
-                              });
-                            }}
-                          />
+                          <span className="pill-checkbox-box">
+                            {batch.isShadowProxy && <IconCheck />}
+                          </span>
                           <span className="mono">
                             {batch.isShadowProxy
                               ? manifest.game === "b2"
@@ -1140,7 +1143,7 @@ export const Properties: React.FC<PropertiesProps> = React.memo(function Propert
                                 : "Yes (32/15)"
                               : `No (${uE1}/${uE2})`}
                           </span>
-                        </label>
+                        </button>
 
                         <span className="lbl">u_e1 (Layer)</span>
                         <input

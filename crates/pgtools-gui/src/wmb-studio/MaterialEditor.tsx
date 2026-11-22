@@ -1,4 +1,7 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { StudioColorPicker } from "../components/StudioColorPicker";
+import { StudioRange } from "../components/StudioRange";
+import { StudioSelect } from "../components/StudioSelect";
 import { invoke } from "@tauri-apps/api/core";
 import {
   MaterialDesc,
@@ -251,7 +254,7 @@ export const MaterialEditor: React.FC<MaterialEditorProps> = ({
             {!slot.present && (
               <span
                 className="wmb-missing-tex-badge"
-                title="Texture not found in paired bank or pre_texture"
+                data-tooltip="Texture not found in paired bank or pre_texture"
               >
                 missing
               </span>
@@ -261,7 +264,7 @@ export const MaterialEditor: React.FC<MaterialEditorProps> = ({
           {onChangeDebugSlot && (
             <div
               className="chan-strip"
-              title="Solo this sampler channel on the 3D model in the viewport"
+              data-tooltip="Solo this sampler channel on the 3D model in the viewport"
             >
               {channels.map((ch) => {
                 const isActive =
@@ -342,7 +345,7 @@ export const MaterialEditor: React.FC<MaterialEditorProps> = ({
               <button
                 type="button"
                 className="secondary-btn compact-btn"
-                title="Duplicate this material"
+                data-tooltip="Duplicate this material"
                 onClick={() =>
                   void onMutateOp({ op: "duplicate_item", itemId: material.id })
                 }
@@ -385,31 +388,35 @@ export const MaterialEditor: React.FC<MaterialEditorProps> = ({
               <div className="wmb-field-row">
                 <span>Shader / Type:</span>
                 {availableShaders.length > 0 ? (
-                  <select
+                  <StudioSelect
                     className="wmb-prop-select"
                     value={currentShaderSelectValue}
-                    onChange={(e) => {
+                    options={[
+                      ...availableShaders.map((sh) => ({
+                        value: sh.key,
+                        label: sh.label,
+                      })),
+                      ...(!availableShaders.some(
+                        (sh) => sh.key === currentShaderSelectValue
+                      )
+                        ? [
+                            {
+                              value: currentShaderSelectValue,
+                              label:
+                                material.shaderName ??
+                                `Type ${material.materialType ?? 0}`,
+                            },
+                          ]
+                        : []),
+                    ]}
+                    onChange={(val) => {
                       void onSwitchMaterialShader(
                         material.index,
-                        e.target.value,
+                        val,
                         b2LayoutOverride
                       );
                     }}
-                  >
-                    {availableShaders.map((sh) => (
-                      <option key={sh.key} value={sh.key}>
-                        {sh.label}
-                      </option>
-                    ))}
-                    {!availableShaders.some(
-                      (sh) => sh.key === currentShaderSelectValue
-                    ) && (
-                      <option value={currentShaderSelectValue}>
-                        {material.shaderName ??
-                          `Type ${material.materialType ?? 0}`}
-                      </option>
-                    )}
-                  </select>
+                  />
                 ) : (
                   <input
                     type="text"
@@ -518,7 +525,7 @@ export const MaterialEditor: React.FC<MaterialEditorProps> = ({
                 type="button"
                 className="secondary-btn compact-btn active-solo-btn"
                 onClick={() => onChangeDebugSlot(null)}
-                title="Clear channel soloing and return to shaded 3D view"
+                data-tooltip="Clear channel soloing and return to shaded 3D view"
               >
                 Solo: s{debugSlot.slotIndex}.{debugSlot.channel} ✕
               </button>
@@ -603,7 +610,7 @@ export const MaterialEditor: React.FC<MaterialEditorProps> = ({
                           <div className="param-label-stack">
                             <span
                               className="param-label"
-                              title={param.name}
+                              data-tooltip={param.name}
                             >
                               {param.name}
                             </span>
@@ -612,57 +619,50 @@ export const MaterialEditor: React.FC<MaterialEditorProps> = ({
                             </span>
                           </div>
 
-                          <label
+                          <StudioColorPicker
                             className="color-swatch-btn"
-                            style={{ backgroundColor: hexVal }}
-                            title={`Pick color for ${param.name} (${hexVal.toUpperCase()})`}
-                          >
-                            <input
-                              type="color"
-                              value={hexVal}
-                              onChange={(e) => {
-                                const [nr, ng, nb] = hexToRgbFloats(
-                                  e.target.value
+                            value={hexVal}
+                            data-tooltip={`Pick color for ${param.name} (${hexVal.toUpperCase()})`}
+                            onChange={(hex) => {
+                              const [nr, ng, nb] = hexToRgbFloats(hex);
+                              const next =
+                                vals.length >= 4
+                                  ? [nr, ng, nb, a]
+                                  : [nr, ng, nb];
+                              handleParamLiveChange(param.key, next);
+                              if (colorCommitTimersRef.current[param.key]) {
+                                clearTimeout(
+                                  colorCommitTimersRef.current[param.key]
                                 );
-                                const next =
-                                  vals.length >= 4
-                                    ? [nr, ng, nb, a]
-                                    : [nr, ng, nb];
-                                handleParamLiveChange(param.key, next);
-                                if (colorCommitTimersRef.current[param.key]) {
-                                  clearTimeout(
-                                    colorCommitTimersRef.current[param.key]
-                                  );
-                                }
-                                colorCommitTimersRef.current[param.key] =
-                                  setTimeout(() => {
-                                    delete colorCommitTimersRef.current[
-                                      param.key
-                                    ];
-                                    const latest =
-                                      localParamsRef.current.find(
-                                        (p) => p.key === param.key
-                                      )?.values ?? next;
-                                    void handleParamCommit(param.key, latest);
-                                  }, 180);
-                              }}
-                              onBlur={() => {
-                                if (colorCommitTimersRef.current[param.key]) {
-                                  clearTimeout(
-                                    colorCommitTimersRef.current[param.key]
-                                  );
+                              }
+                              colorCommitTimersRef.current[param.key] =
+                                setTimeout(() => {
                                   delete colorCommitTimersRef.current[
                                     param.key
                                   ];
-                                }
-                                const latest =
-                                  localParamsRef.current.find(
-                                    (p) => p.key === param.key
-                                  )?.values ?? vals;
-                                void handleParamCommit(param.key, latest);
-                              }}
-                            />
-                          </label>
+                                  const latest =
+                                    localParamsRef.current.find(
+                                      (p) => p.key === param.key
+                                    )?.values ?? next;
+                                  void handleParamCommit(param.key, latest);
+                                }, 180);
+                            }}
+                            onCommit={() => {
+                              if (colorCommitTimersRef.current[param.key]) {
+                                clearTimeout(
+                                  colorCommitTimersRef.current[param.key]
+                                );
+                                delete colorCommitTimersRef.current[
+                                  param.key
+                                ];
+                              }
+                              const latest =
+                                localParamsRef.current.find(
+                                  (p) => p.key === param.key
+                                )?.values ?? vals;
+                              void handleParamCommit(param.key, latest);
+                            }}
+                          />
 
                           <div className="vec4-compact-grid">
                             {(vals.length >= 4
@@ -724,23 +724,28 @@ export const MaterialEditor: React.FC<MaterialEditorProps> = ({
                           <div key={param.key} className="param-row-scalar">
                             <span
                               className="param-label"
-                              title={param.name}
+                              data-tooltip={param.name}
                             >
                               {param.name}
                             </span>
-                            <input
-                              type="range"
+                            <StudioRange
                               min={sliderMin}
                               max={sliderMax}
                               step={(sliderMax - sliderMin) / 200}
                               value={v0}
-                              onChange={(e) => {
-                                const num = parseFloat(e.target.value);
+                              onChange={(num) => {
                                 if (Number.isFinite(num)) {
                                   handleParamLiveChange(param.key, [num]);
                                 }
                               }}
                               onPointerUp={() => {
+                                const latest =
+                                  localParamsRef.current.find(
+                                    (p) => p.key === param.key
+                                  )?.values ?? vals;
+                                void handleParamCommit(param.key, latest);
+                              }}
+                              onKeyUp={() => {
                                 const latest =
                                   localParamsRef.current.find(
                                     (p) => p.key === param.key
@@ -780,7 +785,7 @@ export const MaterialEditor: React.FC<MaterialEditorProps> = ({
                         <div key={param.key} className="param-row-vec">
                           <span
                             className="param-label"
-                            title={param.name}
+                            data-tooltip={param.name}
                           >
                             {param.name}
                           </span>
@@ -837,7 +842,7 @@ export const MaterialEditor: React.FC<MaterialEditorProps> = ({
                           <span className="idx">
                             #{dwIdx.toString().padStart(2, "0")}
                           </span>
-                          <span className="flt" title="Float32 interpretation">
+                          <span className="flt" data-tooltip="Float32 interpretation">
                             {flt}f
                           </span>
                         </div>

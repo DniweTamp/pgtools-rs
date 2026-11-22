@@ -1,4 +1,6 @@
 import React, { useEffect, useState } from "react";
+import { StudioRadio } from "../components/StudioRadio";
+import { StudioSelect } from "../components/StudioSelect";
 import { invoke } from "@tauri-apps/api/core";
 import {
   BatchOperationReport,
@@ -153,7 +155,7 @@ export const BatchReplaceModal: React.FC<BatchReplaceModalProps> = ({
                 type="button"
                 className="pill-button"
                 onClick={handleBrowse}
-                title="Browse for a folder"
+                data-tooltip="Browse for a folder"
               >
                 <IconFolder />
               </button>
@@ -174,24 +176,19 @@ export const BatchReplaceModal: React.FC<BatchReplaceModalProps> = ({
             <div style={{ fontSize: 11.5, color: "var(--brush-muted)", marginBottom: 4 }}>
               Texture compression quality
             </div>
-            <select
+            <StudioSelect
               className="pill-select"
               style={{ width: "100%", marginBottom: 10 }}
               value={quality}
-              onChange={(e) => setQuality(e.target.value)}
-            >
-              {ENCODE_QUALITY_OPTIONS.map((q) => (
-                <option key={q.value} value={q.value}>
-                  {q.label}
-                </option>
-              ))}
-            </select>
+              options={ENCODE_QUALITY_OPTIONS}
+              onChange={(val) => setQuality(val)}
+            />
 
             <div
               className={`pill-checkbox ${solidify ? "checked" : ""}`}
               style={{ marginBottom: 8 }}
               onClick={() => setSolidify(!solidify)}
-              title="Fill fully transparent pixels from their nearest opaque neighbors before encoding"
+              data-tooltip="Fill fully transparent pixels from their nearest opaque neighbors before encoding"
             >
               <span className="pill-checkbox-box">{solidify && <IconCheck />}</span>
               <span>Solidify (edge-pad transparent RGB)</span>
@@ -362,23 +359,19 @@ export const BatchRecompressModal: React.FC<BatchRecompressModalProps> = ({
               1. Source Selection
             </div>
             <div style={{ display: "flex", flexDirection: "column", gap: 6, marginBottom: 10 }}>
-              <label style={{ display: "flex", alignItems: "center", gap: 6, cursor: "pointer" }}>
-                <input
-                  type="radio"
-                  checked={sourceMode === "current"}
-                  disabled={!hasOpenDocument}
-                  onChange={() => setSourceMode("current")}
-                />
+              <StudioRadio
+                checked={sourceMode === "current"}
+                disabled={!hasOpenDocument}
+                onChange={() => setSourceMode("current")}
+              >
                 <span>Current document</span>
-              </label>
-              <label style={{ display: "flex", alignItems: "center", gap: 6, cursor: "pointer" }}>
-                <input
-                  type="radio"
-                  checked={sourceMode === "folder"}
-                  onChange={() => setSourceMode("folder")}
-                />
+              </StudioRadio>
+              <StudioRadio
+                checked={sourceMode === "folder"}
+                onChange={() => setSourceMode("folder")}
+              >
                 <span>Folder (.dat / .wta / .wtb / .xt1 / .bntx)</span>
-              </label>
+              </StudioRadio>
             </div>
 
             <div style={{ fontSize: 11.5, color: "var(--brush-muted)", marginBottom: 4 }}>
@@ -425,28 +418,30 @@ export const BatchRecompressModal: React.FC<BatchRecompressModalProps> = ({
             <div style={{ fontSize: 11.5, color: "var(--brush-muted)", marginBottom: 4 }}>
               Opaque Texture Format
             </div>
-            <select
+            <StudioSelect
               className="pill-select mono"
               style={{ width: "100%", marginBottom: 12 }}
               value={opaqueFormat}
-              onChange={(e) => setOpaqueFormat(e.target.value)}
-            >
-              <option value="BC1">BC1 (DXT1 — 4 bpp, auto sRGB/UNORM)</option>
-              <option value="BC7">BC7 (8 bpp, auto sRGB/UNORM)</option>
-            </select>
+              options={[
+                { value: "BC1", label: "BC1 (DXT1 — 4 bpp, auto sRGB/UNORM)" },
+                { value: "BC7", label: "BC7 (8 bpp, auto sRGB/UNORM)" },
+              ]}
+              onChange={(val) => setOpaqueFormat(val)}
+            />
 
             <div style={{ fontSize: 11.5, color: "var(--brush-muted)", marginBottom: 4 }}>
               Alpha / Transparent Format
             </div>
-            <select
+            <StudioSelect
               className="pill-select mono"
               style={{ width: "100%", marginBottom: 10 }}
               value={alphaFormat}
-              onChange={(e) => setAlphaFormat(e.target.value)}
-            >
-              <option value="BC3">BC3 (DXT5 — 8 bpp, auto sRGB/UNORM)</option>
-              <option value="BC7">BC7 (8 bpp, auto sRGB/UNORM)</option>
-            </select>
+              options={[
+                { value: "BC3", label: "BC3 (DXT5 — 8 bpp, auto sRGB/UNORM)" },
+                { value: "BC7", label: "BC7 (8 bpp, auto sRGB/UNORM)" },
+              ]}
+              onChange={(val) => setAlphaFormat(val)}
+            />
 
             <div style={{ fontSize: 11, color: "var(--brush-muted)", lineHeight: 1.4 }}>
               Supports both <span className="mono">.xt1</span> banks and Switch{" "}
@@ -463,34 +458,24 @@ export const BatchRecompressModal: React.FC<BatchRecompressModalProps> = ({
             <div style={{ fontSize: 11.5, color: "var(--brush-muted)", marginBottom: 4 }}>
               Opaque Quality
             </div>
-            <select
+            <StudioSelect
               className="pill-select"
               style={{ width: "100%", marginBottom: 8 }}
               value={opaqueQuality}
-              onChange={(e) => setOpaqueQuality(e.target.value)}
-            >
-              {ENCODE_QUALITY_OPTIONS.map((q) => (
-                <option key={q.value} value={q.value}>
-                  {q.label}
-                </option>
-              ))}
-            </select>
+              options={ENCODE_QUALITY_OPTIONS}
+              onChange={(val) => setOpaqueQuality(val)}
+            />
 
             <div style={{ fontSize: 11.5, color: "var(--brush-muted)", marginBottom: 4 }}>
               Alpha Quality
             </div>
-            <select
+            <StudioSelect
               className="pill-select"
               style={{ width: "100%", marginBottom: 10 }}
               value={alphaQuality}
-              onChange={(e) => setAlphaQuality(e.target.value)}
-            >
-              {ENCODE_QUALITY_OPTIONS.map((q) => (
-                <option key={q.value} value={q.value}>
-                  {q.label}
-                </option>
-              ))}
-            </select>
+              options={ENCODE_QUALITY_OPTIONS}
+              onChange={(val) => setAlphaQuality(val)}
+            />
 
             <div
               className={`pill-checkbox ${downscale ? "checked" : ""}`}
@@ -513,7 +498,7 @@ export const BatchRecompressModal: React.FC<BatchRecompressModalProps> = ({
             <div
               className={`pill-checkbox ${syncFlags ? "checked" : ""}`}
               onClick={() => setSyncFlags(!syncFlags)}
-              title="Only applied to Bayonetta 3 / Astral Chain (SwitchXt1) banks"
+              data-tooltip="Only applied to Bayonetta 3 / Astral Chain (SwitchXt1) banks"
             >
               <span className="pill-checkbox-box">{syncFlags && <IconCheck />}</span>
               <span>Sync WTB sRGB / cubemap flags</span>
@@ -709,28 +694,24 @@ export const ExportTexturesModal: React.FC<ExportTexturesModalProps> = ({
             </div>
 
             <div style={{ display: "flex", flexDirection: "column", gap: 6, marginBottom: 8 }}>
-              <label style={{ display: "flex", alignItems: "center", gap: 6, cursor: "pointer" }}>
-                <input
-                  type="radio"
-                  checked={!subfolderPerBank}
-                  onChange={() => setSubfolderPerBank(false)}
-                />
+              <StudioRadio
+                checked={!subfolderPerBank}
+                onChange={() => setSubfolderPerBank(false)}
+              >
                 <span>One folder for everything</span>
-              </label>
-              <label style={{ display: "flex", alignItems: "center", gap: 6, cursor: "pointer" }}>
-                <input
-                  type="radio"
-                  checked={subfolderPerBank}
-                  onChange={() => setSubfolderPerBank(true)}
-                />
+              </StudioRadio>
+              <StudioRadio
+                checked={subfolderPerBank}
+                onChange={() => setSubfolderPerBank(true)}
+              >
                 <span>Subfolder per bank</span>
-              </label>
+              </StudioRadio>
             </div>
 
             <div
               className={`pill-checkbox ${includeBntxName ? "checked" : ""}`}
               onClick={() => setIncludeBntxName(!includeBntxName)}
-              title="Include embedded BRTI texture name in exported filenames for Switch .bntx banks"
+              data-tooltip="Include embedded BRTI texture name in exported filenames for Switch .bntx banks"
             >
               <span className="pill-checkbox-box">{includeBntxName && <IconCheck />}</span>
               <span>Include BNTX name in filename</span>
@@ -745,16 +726,17 @@ export const ExportTexturesModal: React.FC<ExportTexturesModalProps> = ({
             <div style={{ fontSize: 11.5, color: "var(--brush-muted)", marginBottom: 4 }}>
               File Format
             </div>
-            <select
+            <StudioSelect
               className="pill-select mono"
               style={{ width: "100%", marginBottom: 10 }}
               value={format}
-              onChange={(e) => setFormat(e.target.value as "png" | "dds" | "raw")}
-            >
-              <option value="png">PNG (.png — decoded RGBA8)</option>
-              <option value="dds">DDS (.dds — lossless multi-mip deswizzle)</option>
-              <option value="raw">Raw (.xt1 / .dds / .gtx / .bntx)</option>
-            </select>
+              options={[
+                { value: "png", label: "PNG (.png — decoded RGBA8)" },
+                { value: "dds", label: "DDS (.dds — lossless multi-mip deswizzle)" },
+                { value: "raw", label: "Raw (.xt1 / .dds / .gtx / .bntx)" },
+              ]}
+              onChange={(val) => setFormat(val as "png" | "dds" | "raw")}
+            />
             <div style={{ fontSize: 11, color: "var(--brush-muted)", lineHeight: 1.4 }}>
               {format === "png"
                 ? "Decodes mip 0 (base level) of each texture to a lossless 32-bit PNG."
@@ -865,49 +847,48 @@ export const NewBankModal: React.FC<NewBankModalProps> = ({
         </div>
 
         <div style={{ display: "flex", flexDirection: "column", gap: 10, marginTop: 4 }}>
-          <label style={{ display: "flex", alignItems: "flex-start", gap: 8, cursor: "pointer" }}>
-            <input
-              type="radio"
-              checked={isSplit}
-              onChange={() => setIsSplit(true)}
-              style={{ marginTop: 3 }}
-            />
+          <StudioRadio
+            checked={isSplit}
+            onChange={() => setIsSplit(true)}
+            style={{ alignItems: "flex-start", gap: 8 }}
+            circleStyle={{ marginTop: 2 }}
+          >
             <div>
               <div style={{ fontWeight: 600 }}>Split bank (.wta + .wtp)</div>
               <div style={{ fontSize: 11.5, color: "var(--brush-muted)", marginTop: 2 }}>
                 A header file plus a separate payload stream (used for models, UI, and effects).
               </div>
             </div>
-          </label>
+          </StudioRadio>
 
-          <label style={{ display: "flex", alignItems: "flex-start", gap: 8, cursor: "pointer" }}>
-            <input
-              type="radio"
-              checked={!isSplit}
-              onChange={() => setIsSplit(false)}
-              style={{ marginTop: 3 }}
-            />
+          <StudioRadio
+            checked={!isSplit}
+            onChange={() => setIsSplit(false)}
+            style={{ alignItems: "flex-start", gap: 8 }}
+            circleStyle={{ marginTop: 2 }}
+          >
             <div>
               <div style={{ fontWeight: 600 }}>Standalone bank (.wtb)</div>
               <div style={{ fontSize: 11.5, color: "var(--brush-muted)", marginTop: 2 }}>
                 A single file with the payload inline.
               </div>
             </div>
-          </label>
+          </StudioRadio>
 
           <div className="inspector-row" style={{ marginTop: 6 }}>
             <span className="inspector-row-label">Game Profile</span>
-            <select
+            <StudioSelect
               className="pill-select"
               style={{ width: "100%" }}
               value={gameProfile}
-              onChange={(e) => setGameProfile(e.target.value)}
-            >
-              <option value="switch_xt1">Bayonetta 3 / Astral Chain (Switch XT1)</option>
-              <option value="bayo1">Bayonetta 1 / Vanquish / MGR:R (PC DDS)</option>
-              <option value="nier">NieR:Automata (PC DDS)</option>
-              <option value="bayo2_wiiu">Bayonetta 2 (Wii U GTX)</option>
-            </select>
+              options={[
+                { value: "switch_xt1", label: "Bayonetta 3 / Astral Chain (Switch XT1)" },
+                { value: "bayo1", label: "Bayonetta 1 / Vanquish / MGR:R (PC DDS)" },
+                { value: "nier", label: "NieR:Automata (PC DDS)" },
+                { value: "bayo2_wiiu", label: "Bayonetta 2 (Wii U GTX)" },
+              ]}
+              onChange={(val) => setGameProfile(val)}
+            />
           </div>
         </div>
 
@@ -1110,31 +1091,25 @@ export const BatchDatAlignModal: React.FC<BatchDatAlignModalProps> = ({
               1. Source Selection
             </div>
             <div style={{ display: "flex", flexDirection: "column", gap: 6, marginBottom: 10 }}>
-              <label style={{ display: "flex", alignItems: "center", gap: 6, cursor: "pointer" }}>
-                <input
-                  type="radio"
-                  checked={sourceMode === "current"}
-                  disabled={!hasOpenDocument}
-                  onChange={() => setSourceMode("current")}
-                />
+              <StudioRadio
+                checked={sourceMode === "current"}
+                disabled={!hasOpenDocument}
+                onChange={() => setSourceMode("current")}
+              >
                 <span>Current document</span>
-              </label>
-              <label style={{ display: "flex", alignItems: "center", gap: 6, cursor: "pointer" }}>
-                <input
-                  type="radio"
-                  checked={sourceMode === "folder"}
-                  onChange={() => setSourceMode("folder")}
-                />
+              </StudioRadio>
+              <StudioRadio
+                checked={sourceMode === "folder"}
+                onChange={() => setSourceMode("folder")}
+              >
                 <span>Folder (.dat / .dtt / .evn)</span>
-              </label>
-              <label style={{ display: "flex", alignItems: "center", gap: 6, cursor: "pointer" }}>
-                <input
-                  type="radio"
-                  checked={sourceMode === "files"}
-                  onChange={() => setSourceMode("files")}
-                />
+              </StudioRadio>
+              <StudioRadio
+                checked={sourceMode === "files"}
+                onChange={() => setSourceMode("files")}
+              >
                 <span>Selected files ({selectedFiles.length})</span>
-              </label>
+              </StudioRadio>
             </div>
 
             {sourceMode === "files" ? (
@@ -1159,7 +1134,7 @@ export const BatchDatAlignModal: React.FC<BatchDatAlignModalProps> = ({
                     type="button"
                     className="pill-button"
                     onClick={handlePickFiles}
-                    title="Select .dat / .dtt / .evn files"
+                    data-tooltip="Select .dat / .dtt / .evn files"
                   >
                     <IconFolder />
                   </button>
@@ -1203,7 +1178,7 @@ export const BatchDatAlignModal: React.FC<BatchDatAlignModalProps> = ({
             <div
               className={`pill-checkbox ${pairDtt ? "checked" : ""}`}
               onClick={() => setPairDtt(!pairDtt)}
-              title="Automatically re-align sibling .dtt archives alongside .dat archives"
+              data-tooltip="Automatically re-align sibling .dtt archives alongside .dat archives"
             >
               <span className="pill-checkbox-box">{pairDtt && <IconCheck />}</span>
               <span>Include paired .dtt archives</span>
@@ -1216,22 +1191,18 @@ export const BatchDatAlignModal: React.FC<BatchDatAlignModalProps> = ({
               2. Alignment
             </div>
             <div style={{ display: "flex", flexDirection: "column", gap: 6, marginBottom: 10 }}>
-              <label style={{ display: "flex", alignItems: "center", gap: 6, cursor: "pointer" }}>
-                <input
-                  type="radio"
-                  checked={alignMode === "custom"}
-                  onChange={() => setAlignMode("custom")}
-                />
+              <StudioRadio
+                checked={alignMode === "custom"}
+                onChange={() => setAlignMode("custom")}
+              >
                 <span>Custom alignment</span>
-              </label>
-              <label style={{ display: "flex", alignItems: "center", gap: 6, cursor: "pointer" }}>
-                <input
-                  type="radio"
-                  checked={alignMode === "default"}
-                  onChange={() => setAlignMode("default")}
-                />
+              </StudioRadio>
+              <StudioRadio
+                checked={alignMode === "default"}
+                onChange={() => setAlignMode("default")}
+              >
                 <span>Default (per file type)</span>
-              </label>
+              </StudioRadio>
             </div>
 
             <div
@@ -1265,7 +1236,7 @@ export const BatchDatAlignModal: React.FC<BatchDatAlignModalProps> = ({
               value={alignInputText}
               onChange={(e) => handleAlignInputChange(e.target.value)}
               placeholder="2048"
-              title="Enter byte alignment in decimal (e.g. 2048) or hex (e.g. 0x800)"
+              data-tooltip="Enter byte alignment in decimal (e.g. 2048) or hex (e.g. 0x800)"
             />
 
             <div style={{ display: "flex", flexWrap: "wrap", gap: 5 }}>
@@ -1302,24 +1273,20 @@ export const BatchDatAlignModal: React.FC<BatchDatAlignModalProps> = ({
                 opacity: sourceMode === "current" ? 0.5 : 1,
               }}
             >
-              <label style={{ display: "flex", alignItems: "center", gap: 6, cursor: "pointer" }}>
-                <input
-                  type="radio"
-                  disabled={sourceMode === "current"}
-                  checked={destMode === "inplace"}
-                  onChange={() => setDestMode("inplace")}
-                />
+              <StudioRadio
+                disabled={sourceMode === "current"}
+                checked={destMode === "inplace"}
+                onChange={() => setDestMode("inplace")}
+              >
                 <span>Overwrite existing files</span>
-              </label>
-              <label style={{ display: "flex", alignItems: "center", gap: 6, cursor: "pointer" }}>
-                <input
-                  type="radio"
-                  disabled={sourceMode === "current"}
-                  checked={destMode === "outfolder"}
-                  onChange={() => setDestMode("outfolder")}
-                />
+              </StudioRadio>
+              <StudioRadio
+                disabled={sourceMode === "current"}
+                checked={destMode === "outfolder"}
+                onChange={() => setDestMode("outfolder")}
+              >
                 <span>Custom output folder</span>
-              </label>
+              </StudioRadio>
             </div>
 
             <div style={{ fontSize: 11.5, color: "var(--brush-muted)", marginBottom: 4 }}>
@@ -1347,7 +1314,7 @@ export const BatchDatAlignModal: React.FC<BatchDatAlignModalProps> = ({
             <div
               className={`pill-checkbox ${alignNested ? "checked" : ""}`}
               onClick={() => setAlignNested(!alignNested)}
-              title="Recursively re-align nested .dat / .dtt archives stored inside outer DAT containers"
+              data-tooltip="Recursively re-align nested .dat / .dtt archives stored inside outer DAT containers"
             >
               <span className="pill-checkbox-box">{alignNested && <IconCheck />}</span>
               <span>Also re-align nested .dat / .dtt</span>
@@ -1475,47 +1442,39 @@ export const DatAlignmentSettingsModal: React.FC<DatAlignmentSettingsModalProps>
         </div>
 
         <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
-          <label
+          <StudioRadio
+            checked={!forceCustomDatAlignment}
+            onChange={() => onChangeForceCustomDatAlignment(false)}
             style={{
               display: "flex",
-              alignItems: "center",
+              width: "100%",
               gap: 8,
               padding: "9px 11px",
               borderRadius: 8,
               border: `1px solid ${
                 !forceCustomDatAlignment ? "var(--brush-accent)" : "var(--brush-border)"
               }`,
-              cursor: "pointer",
             }}
           >
-            <input
-              type="radio"
-              checked={!forceCustomDatAlignment}
-              onChange={() => onChangeForceCustomDatAlignment(false)}
-            />
             <span style={{ fontWeight: 600 }}>Default (per file type)</span>
-          </label>
+          </StudioRadio>
 
-          <label
+          <StudioRadio
+            checked={forceCustomDatAlignment}
+            onChange={() => onChangeForceCustomDatAlignment(true)}
             style={{
               display: "flex",
-              alignItems: "center",
+              width: "100%",
               gap: 8,
               padding: "9px 11px",
               borderRadius: 8,
               border: `1px solid ${
                 forceCustomDatAlignment ? "var(--brush-accent)" : "var(--brush-border)"
               }`,
-              cursor: "pointer",
             }}
           >
-            <input
-              type="radio"
-              checked={forceCustomDatAlignment}
-              onChange={() => onChangeForceCustomDatAlignment(true)}
-            />
             <span style={{ fontWeight: 600 }}>Force custom alignment on DAT save</span>
-          </label>
+          </StudioRadio>
         </div>
 
         <div className="studio-card" style={{ padding: 12, gap: 8 }}>
@@ -1542,7 +1501,7 @@ export const DatAlignmentSettingsModal: React.FC<DatAlignmentSettingsModalProps>
             value={inputText}
             onChange={(e) => handleInputChange(e.target.value)}
             placeholder="2048"
-            title="Enter byte alignment in decimal (e.g. 2048) or hex (e.g. 0x800)"
+            data-tooltip="Enter byte alignment in decimal (e.g. 2048) or hex (e.g. 0x800)"
           />
 
           <div style={{ display: "flex", flexWrap: "wrap", gap: 5 }}>

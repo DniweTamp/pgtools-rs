@@ -1,4 +1,6 @@
 import React, { useState } from "react";
+import { studioConfirm } from "../components/StudioDialog";
+import { StudioSelect } from "../components/StudioSelect";
 import {
   PendingUvdSheetInfo,
   SaveEncodeOptions,
@@ -219,7 +221,7 @@ export const UvdCenterView: React.FC<UvdCenterViewProps> = ({
                           direction: "up",
                         })
                       }
-                      title="Move group up (UVD-side only)"
+                      data-tooltip="Move group up (UVD-side only)"
                     >
                       ↑
                     </button>
@@ -234,7 +236,7 @@ export const UvdCenterView: React.FC<UvdCenterViewProps> = ({
                           direction: "down",
                         })
                       }
-                      title="Move group down (UVD-side only)"
+                      data-tooltip="Move group down (UVD-side only)"
                     >
                       ↓
                     </button>
@@ -242,10 +244,11 @@ export const UvdCenterView: React.FC<UvdCenterViewProps> = ({
                       type="button"
                       className="pill-button"
                       style={{ height: 22, padding: "0 7px", fontSize: 11 }}
-                      onClick={() => {
+                      onClick={async () => {
                         if (
-                          window.confirm(
-                            `Delete UVD group '${grp.name}' (${grp.id_hex})?\n\nWTA texture slots will not be deleted or reordered.`
+                          await studioConfirm(
+                            `Delete UVD group '${grp.name}' (${grp.id_hex})?\n\nWTA texture slots will not be deleted or reordered.`,
+                            { title: "Delete UVD Group", confirmLabel: "Delete", danger: true }
                           )
                         ) {
                           void uvdActions.runUvdMutation(grp.node_id, "delete_groups", {
@@ -331,7 +334,7 @@ export const UvdInspectorSection: React.FC<UvdInspectorSectionProps> = ({
                     color: "var(--brush-accent)",
                   }}
                   onClick={() => void uvdActions.selectAndInspectNode(grp.node_id)}
-                  title="Click to inspect parent UVD Group sheet"
+                  data-tooltip="Click to inspect parent UVD Group sheet"
                 >
                   {grp.name} ({item.group_id_hex})
                 </span>
@@ -400,7 +403,7 @@ export const UvdInspectorSection: React.FC<UvdInspectorSectionProps> = ({
                       direction: "up",
                     })
                   }
-                  title="Move sprite up in group and repack"
+                  data-tooltip="Move sprite up in group and repack"
                 >
                   ↑ Up
                 </button>
@@ -415,17 +418,18 @@ export const UvdInspectorSection: React.FC<UvdInspectorSectionProps> = ({
                       direction: "down",
                     })
                   }
-                  title="Move sprite down in group and repack"
+                  data-tooltip="Move sprite down in group and repack"
                 >
                   ↓ Down
                 </button>
                 <button
                   type="button"
                   className="pill-button"
-                  onClick={() => {
+                  onClick={async () => {
                     if (
-                      window.confirm(
-                        `Delete sprite '${item.name}' (${item.id_hex}) from group '${grp.name}' and repack?`
+                      await studioConfirm(
+                        `Delete sprite '${item.name}' (${item.id_hex}) from group '${grp.name}' and repack?`,
+                        { title: "Delete Sprite", confirmLabel: "Delete", danger: true }
                       )
                     ) {
                       void uvdActions.runUvdMutation(item.node_id, "delete_items", {
@@ -512,7 +516,7 @@ export const UvdInspectorSection: React.FC<UvdInspectorSectionProps> = ({
                       group_index: grp.index,
                     })
                   }
-                  title="Re-run deterministic power-of-two rectangle packer on this group"
+                  data-tooltip="Re-run deterministic power-of-two rectangle packer on this group"
                 >
                   Repack
                 </button>
@@ -535,10 +539,11 @@ export const UvdInspectorSection: React.FC<UvdInspectorSectionProps> = ({
                 <button
                   type="button"
                   className="pill-button"
-                  onClick={() => {
+                  onClick={async () => {
                     if (
-                      window.confirm(
-                        `Delete UVD group '${grp.name}' (${grp.id_hex})?\n\nWTA texture slots will not be deleted or reordered.`
+                      await studioConfirm(
+                        `Delete UVD group '${grp.name}' (${grp.id_hex})?\n\nWTA texture slots will not be deleted or reordered.`,
+                        { title: "Delete UVD Group", confirmLabel: "Delete", danger: true }
                       )
                     ) {
                       void uvdActions.runUvdMutation(grp.node_id, "delete_groups", {
@@ -575,7 +580,7 @@ export const UvdInspectorSection: React.FC<UvdInspectorSectionProps> = ({
                         cursor: "pointer",
                       }}
                       onClick={() => void uvdActions.selectAndInspectNode(it.node_id)}
-                      title={`Click to inspect sprite '${it.name}' (${it.id_hex})`}
+                      data-tooltip={`Click to inspect sprite '${it.name}' (${it.id_hex})`}
                     >
                       <span
                         className="mono"
@@ -630,20 +635,18 @@ export const UvdInspectorSection: React.FC<UvdInspectorSectionProps> = ({
             </div>
             <div className="inspector-row">
               <span className="inspector-row-label">Max Sheet Size</span>
-              <select
+              <StudioSelect
                 className="pill-select mono"
                 style={{ width: 130, fontSize: 11.5 }}
-                value={uvdActions.uvdMaxSize}
-                onChange={(e) =>
-                  uvdActions.setUvdMaxSize(parseInt(e.target.value || "4096", 10) || 4096)
+                value={String(uvdActions.uvdMaxSize)}
+                options={[256, 512, 1024, 2048, 4096, 8192].map((sz) => ({
+                  value: String(sz),
+                  label: `${sz} × ${sz}`,
+                }))}
+                onChange={(val) =>
+                  uvdActions.setUvdMaxSize(parseInt(val || "4096", 10) || 4096)
                 }
-              >
-                {[256, 512, 1024, 2048, 4096, 8192].map((sz) => (
-                  <option key={sz} value={sz}>
-                    {sz} × {sz}
-                  </option>
-                ))}
-              </select>
+              />
             </div>
             <div style={{ color: "var(--brush-muted)", fontSize: 11, marginTop: 2 }}>
               Deterministic power-of-two rectangle packer (rectangular sheets allowed, no rotation, exact IEEE 1/W &amp; 1/H).
@@ -743,38 +746,27 @@ export const UvdSaveEncodeModal: React.FC<UvdSaveEncodeModalProps> = ({
 
         <div className="inspector-row">
           <span className="inspector-row-label">Target Format</span>
-          <select
+          <StudioSelect
             className="pill-select mono"
             style={{ width: "100%", fontSize: 11.5 }}
             value={encodeFormat}
-            onChange={(e) => setEncodeFormat(e.target.value)}
-          >
-            {ALL_TEXTURE_ENCODE_FORMATS.map((grp) => (
-              <optgroup key={grp.group} label={grp.group}>
-                {grp.options.map((opt) => (
-                  <option key={opt.value} value={opt.value}>
-                    {opt.label}
-                  </option>
-                ))}
-              </optgroup>
-            ))}
-          </select>
+            groups={ALL_TEXTURE_ENCODE_FORMATS.map((grp) => ({
+              label: grp.group,
+              options: grp.options,
+            }))}
+            onChange={(val) => setEncodeFormat(val)}
+          />
         </div>
 
         <div className="inspector-row">
           <span className="inspector-row-label">Quality</span>
-          <select
+          <StudioSelect
             className="pill-select"
             style={{ width: "100%", fontSize: 11.5 }}
             value={quality}
-            onChange={(e) => setQuality(e.target.value)}
-          >
-            {ENCODE_QUALITY_OPTIONS.map((q) => (
-              <option key={q.value} value={q.value}>
-                {q.label}
-              </option>
-            ))}
-          </select>
+            options={ENCODE_QUALITY_OPTIONS}
+            onChange={(val) => setQuality(val)}
+          />
         </div>
 
         <div className="inspector-row">
