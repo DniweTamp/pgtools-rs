@@ -42,16 +42,15 @@ import {
   BatchDatAlignModal,
   BatchRecompressModal,
   BatchReplaceModal,
-  DatAlignmentSettingsModal,
   ExportTexturesModal,
   NewBankModal,
 } from "./modals/TextureBatchModals";
+import { SettingsModal } from "./modals/SettingsModal";
 import { createMenuBuilders } from "./menus/contextMenus";
 import {
   IconCheck,
   IconRedo,
   IconRefresh,
-  IconSunMoon,
   IconUndo,
 } from "./components/Icons";
 import { Workspace } from "./wmb-studio/Workspace";
@@ -102,6 +101,9 @@ export default function App() {
     hideUnsupported,
     fileSortCol,
     fileSortAsc,
+    defaultImportFormat,
+    defaultEncodeQuality,
+    syncXt1FlagsOnImport,
     assetBrowserZoom,
     uvdPadding,
     uvdMaxSize,
@@ -129,6 +131,9 @@ export default function App() {
     setHideUnsupported,
     setFileSortCol,
     setFileSortAsc,
+    setDefaultImportFormat,
+    setDefaultEncodeQuality,
+    setSyncXt1FlagsOnImport,
     setAssetBrowserZoom,
     setUvdPadding,
     setUvdMaxSize,
@@ -143,11 +148,10 @@ export default function App() {
   const assetSearchInputRef = useRef<HTMLInputElement | null>(null);
 
   const [wmbDocGeneration, setWmbDocGeneration] = useState<number>(0);
-  const [coreDatModalOpen, setCoreDatModalOpen] = useState<boolean>(false);
+  const [settingsModalOpen, setSettingsModalOpen] = useState<boolean>(false);
   const [batchReplaceNodeId, setBatchReplaceNodeId] = useState<string | null>(null);
   const [batchRecompressOpen, setBatchRecompressOpen] = useState<boolean>(false);
   const [batchDatAlignOpen, setBatchDatAlignOpen] = useState<boolean>(false);
-  const [datAlignSettingsOpen, setDatAlignSettingsOpen] = useState<boolean>(false);
   const [exportFolderModalOpen, setExportFolderModalOpen] = useState<boolean>(false);
   const [newBankModalOpen, setNewBankModalOpen] = useState<boolean>(false);
   const [uvdSaveModalTarget, setUvdSaveModalTarget] = useState<string | null | undefined>(undefined);
@@ -564,6 +568,9 @@ export default function App() {
     wmbNormalsView,
     wmbSkeletonOverlay,
     wmbGridVisible,
+    defaultImportFormat,
+    defaultEncodeQuality,
+    syncXt1FlagsOnImport,
     assetBrowserZoom,
     uvdPadding,
     uvdMaxSize,
@@ -602,7 +609,12 @@ export default function App() {
             target.tagName === "SELECT" ||
             target.isContentEditable)
       );
-      if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === "o") {
+      if ((e.ctrlKey || e.metaKey) && e.key === ",") {
+        e.preventDefault();
+        setActiveTopMenu(null);
+        setContextMenu(null);
+        setSettingsModalOpen(true);
+      } else if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === "o") {
         e.preventDefault();
         shortcutHandlersRef.current.openFile();
       } else if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === "s") {
@@ -643,6 +655,7 @@ export default function App() {
         setPointerDrag(null);
         setPkzCompModal(null);
         setPkzConflictModal(null);
+        setSettingsModalOpen(false);
       }
     };
     window.addEventListener("keydown", onKeyDown);
@@ -2253,6 +2266,17 @@ export default function App() {
               >
                 <span>PKZ from Folder...</span>
               </button>
+              <div className="context-menu-sep" />
+              <button
+                className="context-menu-item"
+                onClick={() => {
+                  setActiveTopMenu(null);
+                  setSettingsModalOpen(true);
+                }}
+              >
+                <span>Settings...</span>
+                <span className="context-menu-shortcut">Ctrl+,</span>
+              </button>
             </div>
           )}
         </div>
@@ -2352,68 +2376,7 @@ export default function App() {
               >
                 <span>WMB: Cleanup unused materials</span>
               </button>
-              <div className="context-menu-sep" />
-              <button
-                className="context-menu-item"
-                data-tooltip={oodleDllPath ? `Configured: ${oodleDllPath}` : oodleConfigured ? "Oodle DLL detected" : "Not configured"}
-                onClick={() => {
-                  setActiveTopMenu(null);
-                  handlePickOodleDll();
-                }}
-              >
-                <span>Configure Oodle Kraken DLL (oo2core)...</span>
-                {oodleConfigured && (
-                  <span className="menu-check-badge" aria-label="Configured">
-                    <IconCheck />
-                  </span>
-                )}
-              </button>
-              <button
-                className="context-menu-item"
-                data-tooltip={nvttDllPath ? `Configured: ${nvttDllPath}` : nvttConfigured ? "NVTT DLL detected" : "Not configured"}
-                onClick={() => {
-                  setActiveTopMenu(null);
-                  handlePickNvttDll();
-                }}
-              >
-                <span>Configure NVIDIA Texture Tools DLL (nvtt30205)...</span>
-                {nvttConfigured && (
-                  <span className="menu-check-badge" aria-label="Configured">
-                    <IconCheck />
-                  </span>
-                )}
-              </button>
-              <div className="context-menu-sep" />
-              <button
-                className="context-menu-item"
-                data-tooltip={
-                  forceCustomDatAlignment
-                    ? `Forcing custom DAT alignment: ${customDatAlignment} B (0x${customDatAlignment
-                        .toString(16)
-                        .toUpperCase()})`
-                    : `Default per-file-type alignment (Custom override preset: ${customDatAlignment} B)`
-                }
-                onClick={() => {
-                  setActiveTopMenu(null);
-                  setDatAlignSettingsOpen(true);
-                }}
-              >
-                <span>Configure DAT save alignment...</span>
-                {forceCustomDatAlignment && (
-                  <span className="menu-check-badge" aria-label="Custom DAT alignment active">
-                    <IconCheck />
-                  </span>
-                )}
-              </button>
-              <button
-                className="context-menu-item"
-                onClick={() => {
-                  setActiveTopMenu(null);
-                  setCoreDatModalOpen(true);
-                }}
-              >
-                <span>Configure core.dat (per game)...</span>
-              </button>
+
               <div className="context-menu-sep" />
               <div style={{ padding: "4px 10px", fontSize: 11, color: "var(--brush-muted)", fontWeight: 600 }}>
                 Open demo model
@@ -2590,14 +2553,7 @@ export default function App() {
               <span>● Save {outline.file_name}</span>
             </button>
           )}
-          <button
-            className="pill-button"
-            onClick={() => setTheme(theme === "dark" ? "light" : "dark")}
-            data-tooltip="Toggle light / dark theme"
-          >
-            <IconSunMoon />
-            <span>Theme</span>
-          </button>
+
         </div>
       </div>
       <div className="studio-main">
@@ -2962,24 +2918,77 @@ export default function App() {
         />
       )}
 
-      {datAlignSettingsOpen && (
-        <DatAlignmentSettingsModal
-          forceCustomDatAlignment={forceCustomDatAlignment}
-          customDatAlignment={customDatAlignment}
-          onChangeForceCustomDatAlignment={(val) => {
-            setForceCustomDatAlignment(val);
-            setStatusLeft(
-              val
-                ? `Enabled forced custom alignment on DAT save (${customDatAlignment} B / 0x${customDatAlignment
-                    .toString(16)
-                    .toUpperCase()})`
-                : "Restored default per-file-type alignment on DAT save"
-            );
+      {settingsModalOpen && (
+        <SettingsModal
+          initialValues={{
+            theme,
+            hideUnsupported,
+            assetBrowserZoom,
+            oodleDllPath,
+            nvttDllPath,
+            coreDatB1,
+            coreDatB2,
+            coreDatB3,
+            pkzDefaultCompression,
+            pkzDefaultLevel,
+            forceCustomDatAlignment,
+            customDatAlignment,
+            defaultImportFormat,
+            defaultEncodeQuality,
+            syncXt1FlagsOnImport,
+            uvdPadding,
+            uvdMaxSize,
           }}
-          onChangeCustomDatAlignment={(val) => {
-            setCustomDatAlignment(val);
+          oodleConfigured={oodleConfigured}
+          nvttConfigured={nvttConfigured}
+          recentFilesCount={recentFiles.length}
+          onClearRecentFiles={() => {
+            setRecentFiles([]);
+            setStatusLeft("Cleared recent files list");
           }}
-          onClose={() => setDatAlignSettingsOpen(false)}
+          onResetPaneLayout={() => {
+            setLeftWidth(310);
+            setRightWidth(380);
+            setAssetRatio(0.5);
+            setWmbHierarchyRatio(0.48);
+            setStatusLeft("Restored default pane layout");
+          }}
+          onSave={(next) => {
+            const coreDatChanged =
+              next.coreDatB1 !== coreDatB1 ||
+              next.coreDatB2 !== coreDatB2 ||
+              next.coreDatB3 !== coreDatB3;
+            const oodleChanged = next.oodleDllPath !== oodleDllPath;
+            setTheme(next.theme);
+            setHideUnsupported(next.hideUnsupported);
+            setAssetBrowserZoom(next.assetBrowserZoom);
+            setOodleDllPath(next.oodleDllPath);
+            setNvttDllPath(next.nvttDllPath);
+            setCoreDatB1(next.coreDatB1);
+            setCoreDatB2(next.coreDatB2);
+            setCoreDatB3(next.coreDatB3);
+            setPkzDefaultCompression(next.pkzDefaultCompression);
+            setPkzDefaultLevel(next.pkzDefaultLevel);
+            setForceCustomDatAlignment(next.forceCustomDatAlignment);
+            setCustomDatAlignment(next.customDatAlignment);
+            setDefaultImportFormat(next.defaultImportFormat);
+            setDefaultEncodeQuality(next.defaultEncodeQuality);
+            setSyncXt1FlagsOnImport(next.syncXt1FlagsOnImport);
+            setTexEncodeFormat(next.defaultImportFormat);
+            setTexQuality(next.defaultEncodeQuality);
+            setTexSyncFlags(next.syncXt1FlagsOnImport);
+            setUvdPadding(next.uvdPadding);
+            setUvdMaxSize(next.uvdMaxSize);
+            if (coreDatChanged) {
+              setWmbDocGeneration((g) => g + 1);
+            }
+            if (oodleChanged) {
+              void refreshOodleValidation(next.oodleDllPath);
+            }
+            setSettingsModalOpen(false);
+            setStatusLeft("Saved studio settings");
+          }}
+          onClose={() => setSettingsModalOpen(false)}
         />
       )}
 
@@ -3295,101 +3304,6 @@ export default function App() {
         </div>
       )}
 
-      {coreDatModalOpen && (
-        <div
-          className="context-menu-backdrop"
-          style={{
-            display: "flex",
-            alignItems: "center",
-            justifyContent: "center",
-            backgroundColor: "rgba(0, 0, 0, 0.55)",
-          }}
-          onClick={() => setCoreDatModalOpen(false)}
-        >
-          <div
-            className="studio-card"
-            style={{
-              width: 540,
-              maxWidth: "94vw",
-              padding: 16,
-              display: "flex",
-              flexDirection: "column",
-              gap: 12,
-            }}
-            onClick={(e) => e.stopPropagation()}
-          >
-            <div style={{ fontWeight: 700, fontSize: 14, color: "var(--brush-heading)" }}>
-              Configure Global Engine Textures (core.dat / pre_texture.wtb)
-            </div>
-            <div style={{ fontSize: 12, color: "var(--brush-muted)", lineHeight: 1.45 }}>
-              Assign each game&apos;s <span className="mono">core.dat</span> (or extracted{" "}
-              <span className="mono">pre_texture.wtb</span>) so global cubemaps and specular LUTs{" "}
-              (<span className="mono">0x8000000N</span>) load with authentic stage reflections.
-            </div>
-            {(
-              [
-                ["Bayonetta 1 (core.dat / pre_texture.wtb)", coreDatB1, setCoreDatB1],
-                ["Bayonetta 2 (core.dat / pre_texture.wta)", coreDatB2, setCoreDatB2],
-                ["Bayonetta 3 (core.dat / pre_texture.wta)", coreDatB3, setCoreDatB3],
-              ] as const
-            ).map(([label, val, setter]) => (
-              <div key={label} style={{ display: "flex", flexDirection: "column", gap: 4 }}>
-                <span style={{ fontSize: 11.5, fontWeight: 600 }}>{label}</span>
-                <div style={{ display: "flex", gap: 6 }}>
-                  <input
-                    type="text"
-                    className="field-box mono"
-                    style={{ flex: 1, fontSize: 11.5 }}
-                    placeholder="Not configured (using studio procedural fallback)"
-                    value={val}
-                    onChange={(e) => setter(e.target.value)}
-                  />
-                  <button
-                    type="button"
-                    className="pill-button"
-                    onClick={async () => {
-                      const picked = await invoke<string | null>("pick_file_dialog", {
-                        title: `Select ${label}`,
-                        extensions: ["dat", "wtb", "wta"],
-                      });
-                      if (picked) {
-                        setter(picked);
-                        setWmbDocGeneration((g) => g + 1);
-                      }
-                    }}
-                  >
-                    Browse…
-                  </button>
-                  {val && (
-                    <button
-                      type="button"
-                      className="pill-button"
-                      onClick={() => {
-                        setter("");
-                        setWmbDocGeneration((g) => g + 1);
-                      }}
-                    >
-                      Clear
-                    </button>
-                  )}
-                </div>
-              </div>
-            ))}
-            <div style={{ display: "flex", justifyContent: "flex-end", gap: 8, marginTop: 4 }}>
-              <button
-                type="button"
-                className="pill-button accent"
-                onClick={() => {
-                  setCoreDatModalOpen(false);
-                  setWmbDocGeneration((g) => g + 1);
-                }}
-              >
-                Done
-              </button>
-            </div>
-          </div>
-        </div>
-      )}
       <StudioDialogHost />
       <StudioTooltipHost />
     </div>

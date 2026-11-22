@@ -59,6 +59,9 @@ export interface StudioSettingsState {
   hideUnsupported: boolean;
   fileSortCol: FileSortCol;
   fileSortAsc: boolean;
+  defaultImportFormat: string;
+  defaultEncodeQuality: string;
+  syncXt1FlagsOnImport: boolean;
   assetBrowserZoom: number;
   uvdPadding: number;
   uvdMaxSize: number;
@@ -91,6 +94,9 @@ export interface StudioSettingsApi extends StudioSettingsState {
   setHideUnsupported: React.Dispatch<React.SetStateAction<boolean>>;
   setFileSortCol: React.Dispatch<React.SetStateAction<FileSortCol>>;
   setFileSortAsc: React.Dispatch<React.SetStateAction<boolean>>;
+  setDefaultImportFormat: React.Dispatch<React.SetStateAction<string>>;
+  setDefaultEncodeQuality: React.Dispatch<React.SetStateAction<string>>;
+  setSyncXt1FlagsOnImport: React.Dispatch<React.SetStateAction<boolean>>;
   setAssetBrowserZoom: React.Dispatch<React.SetStateAction<number>>;
   setUvdPadding: React.Dispatch<React.SetStateAction<number>>;
   setUvdMaxSize: React.Dispatch<React.SetStateAction<number>>;
@@ -150,6 +156,9 @@ export function useStudioSettings(): StudioSettingsApi {
   const [hideUnsupported, setHideUnsupported] = useState(true);
   const [fileSortCol, setFileSortCol] = useState<FileSortCol>("name");
   const [fileSortAsc, setFileSortAsc] = useState(true);
+  const [defaultImportFormat, setDefaultImportFormat] = useState<string>("Auto");
+  const [defaultEncodeQuality, setDefaultEncodeQuality] = useState<string>("Normal");
+  const [syncXt1FlagsOnImport, setSyncXt1FlagsOnImport] = useState<boolean>(true);
   const [assetBrowserZoom, setAssetBrowserZoom] = useState<number>(0);
   const [uvdPadding, setUvdPadding] = useState<number>(4);
   const [uvdMaxSize, setUvdMaxSize] = useState<number>(4096);
@@ -177,6 +186,9 @@ export function useStudioSettings(): StudioSettingsApi {
     wmbNormalsView,
     wmbSkeletonOverlay,
     wmbGridVisible,
+    defaultImportFormat,
+    defaultEncodeQuality,
+    syncXt1FlagsOnImport,
     assetBrowserZoom,
     uvdPadding,
     uvdMaxSize,
@@ -204,6 +216,9 @@ export function useStudioSettings(): StudioSettingsApi {
     wmbNormalsView,
     wmbSkeletonOverlay,
     wmbGridVisible,
+    defaultImportFormat,
+    defaultEncodeQuality,
+    syncXt1FlagsOnImport,
     assetBrowserZoom,
     uvdPadding,
     uvdMaxSize,
@@ -245,6 +260,15 @@ export function useStudioSettings(): StudioSettingsApi {
     if (typeof s.wmb_normals_view === "boolean") setWmbNormalsView(s.wmb_normals_view);
     if (typeof s.wmb_skeleton_overlay === "boolean") setWmbSkeletonOverlay(s.wmb_skeleton_overlay);
     if (typeof s.wmb_grid_visible === "boolean") setWmbGridVisible(s.wmb_grid_visible);
+    if (typeof s.default_import_format === "string" && s.default_import_format.trim()) {
+      setDefaultImportFormat(s.default_import_format);
+    }
+    if (typeof s.default_encode_quality === "string" && s.default_encode_quality.trim()) {
+      setDefaultEncodeQuality(s.default_encode_quality);
+    }
+    if (typeof s.sync_xt1_flags_on_import === "boolean") {
+      setSyncXt1FlagsOnImport(s.sync_xt1_flags_on_import);
+    }
     if (typeof s.asset_browser_zoom === "number" && s.asset_browser_zoom >= 0 && s.asset_browser_zoom <= 4) setAssetBrowserZoom(s.asset_browser_zoom);
     if (typeof s.uvd_padding === "number" && s.uvd_padding >= 0 && s.uvd_padding <= 64) {
       setUvdPadding(Math.round(s.uvd_padding));
@@ -287,6 +311,9 @@ export function useStudioSettings(): StudioSettingsApi {
         wmb_normals_view: s.wmbNormalsView,
         wmb_skeleton_overlay: s.wmbSkeletonOverlay,
         wmb_grid_visible: s.wmbGridVisible,
+        default_import_format: s.defaultImportFormat,
+        default_encode_quality: s.defaultEncodeQuality,
+        sync_xt1_flags_on_import: s.syncXt1FlagsOnImport,
         asset_browser_zoom: s.assetBrowserZoom,
         uvd_padding: s.uvdPadding,
         uvd_max_size: s.uvdMaxSize,
@@ -322,6 +349,9 @@ export function useStudioSettings(): StudioSettingsApi {
     hideUnsupported,
     fileSortCol,
     fileSortAsc,
+    defaultImportFormat,
+    defaultEncodeQuality,
+    syncXt1FlagsOnImport,
     assetBrowserZoom,
     uvdPadding,
     uvdMaxSize,
@@ -349,6 +379,9 @@ export function useStudioSettings(): StudioSettingsApi {
     setHideUnsupported,
     setFileSortCol,
     setFileSortAsc,
+    setDefaultImportFormat,
+    setDefaultEncodeQuality,
+    setSyncXt1FlagsOnImport,
     setAssetBrowserZoom,
     setUvdPadding,
     setUvdMaxSize,
