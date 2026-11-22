@@ -1781,61 +1781,481 @@ pub fn encode_rgba8_to_bc6h_linear(img: &RgbaImage, _signed: bool) -> Vec<u8> {
     out
 }
 
-/// Decode a single 16-byte BC6H block into 16 RGBA8 pixels.
-pub fn decode_bc6h_block(block: &[u8], _signed: bool) -> [[u8; 4]; 16] {
+#[inline]
+fn bc6h_bits(v: u128, start: u32, len: u32) -> i32 {
+    ((v >> start) & ((1u128 << len) - 1)) as i32
+}
+
+#[inline]
+fn bc6h_bit(v: u128, pos: u32) -> i32 {
+    ((v >> pos) & 1) as i32
+}
+
+#[inline]
+fn bc6h_bits_rev(v: u128, start: u32, len: u32) -> i32 {
+    let mut out = 0i32;
+    for i in 0..len {
+        out |= bc6h_bit(v, start + i) << (len - 1 - i);
+    }
+    out
+}
+
+#[inline]
+fn bc6h_sign_extend(val: i32, bits: u32) -> i32 {
+    let shift = 32 - bits;
+    (val << shift) >> shift
+}
+
+#[inline]
+fn bc6h_unquantize(comp: i32, bits: u32, signed: bool) -> i32 {
+    if !signed {
+        if bits >= 15 {
+            comp
+        } else if comp == 0 {
+            0
+        } else if comp == ((1 << bits) - 1) {
+            0xFFFF
+        } else {
+            ((comp << 16) + 0x8000) >> bits
+        }
+    } else if bits >= 16 {
+        comp
+    } else {
+        let (neg, c) = if comp < 0 { (true, -comp) } else { (false, comp) };
+        let unq = if c == 0 {
+            0
+        } else if c >= ((1 << (bits - 1)) - 1) {
+            0x7FFF
+        } else {
+            ((c << 15) + 0x4000) >> (bits - 1)
+        };
+        if neg { -unq } else { unq }
+    }
+}
+
+#[inline]
+fn bc6h_finish_unquantize(comp: i32, signed: bool) -> u16 {
+    if !signed {
+        ((comp * 31) >> 6) as u16
+    } else {
+        let scaled = if comp < 0 {
+            -(((-comp) * 31) >> 5)
+        } else {
+            (comp * 31) >> 5
+        };
+        if scaled < 0 {
+            (0x8000 | (-scaled)) as u16
+        } else {
+            scaled as u16
+        }
+    }
+}
+
+/// Decode a single 16-byte BC6H block (UF16 or SF16) into 16 RGBA8 pixels
+/// following the Direct3D 11 / Khronos BPTC_FLOAT specification across all 14 modes.
+pub fn decode_bc6h_block(block: &[u8], signed: bool) -> [[u8; 4]; 16] {
     if block.len() < 16 {
         return [[0, 0, 0, 255]; 16];
     }
     let mut arr = [0u8; 16];
     arr.copy_from_slice(&block[0..16]);
-    let mut bs = BitStream::from_bytes(&arr);
-    let mode5 = bs.read_bits(5);
+    let b = u128::from_le_bytes(arr);
+
+    const BC6H_PART2: [u16; 32] = [
+        0xCCCC, 0x8888, 0xEEEE, 0xECC8, 0xC880, 0xFEEC, 0xFEC8, 0xEC80,
+        0xC800, 0xFFEC, 0xFE80, 0xE800, 0xFFE8, 0xFF00, 0xFFF0, 0xF000,
+        0xF710, 0x008E, 0x7100, 0x08CE, 0x008C, 0x7310, 0x3100, 0x8CCE,
+        0x088C, 0x3110, 0x6666, 0x366C, 0x17E8, 0x0FF0, 0x718E, 0x399C,
+    ];
+    const BC6H_ANCHOR2: [u8; 32] = [
+        15, 15, 15, 15, 15, 15, 15, 15, 15, 15, 15, 15, 15, 15, 15, 15,
+        15,  2,  8,  2,  2,  8,  8, 15,  2,  8,  2,  2,  8,  8,  2,  2,
+    ];
+    const WEIGHTS_3: [i32; 8] = [0, 9, 18, 27, 37, 46, 55, 64];
     const WEIGHTS_4: [i32; 16] = [0, 4, 9, 13, 17, 21, 26, 30, 34, 38, 43, 47, 51, 55, 60, 64];
 
-    if mode5 == 0x03 {
-        let mut ep0 = [0i32; 3];
-        let mut ep1 = [0i32; 3];
-        for c in 0..3 {
-            ep0[c] = (bs.read_bits(10) >> 2).clamp(0, 255);
-        }
-        for c in 0..3 {
-            ep1[c] = (bs.read_bits(10) >> 2).clamp(0, 255);
-        }
-        let mut out = [[0u8; 4]; 16];
-        for (i, dst) in out.iter_mut().enumerate() {
-            let idx = if i == 0 {
-                bs.read_bits(3) as usize
-            } else {
-                bs.read_bits(4) as usize
-            };
-            let w = WEIGHTS_4[idx & 15];
-            for c in 0..3 {
-                dst[c] = (((64 - w) * ep0[c] + w * ep1[c] + 32) >> 6).clamp(0, 255) as u8;
+    let mode2 = bc6h_bits(b, 0, 2);
+    let mode5 = bc6h_bits(b, 0, 5);
+
+    // ep[subset][endpoint_a_or_b][channel_rgb]
+    let mut ep = [[[0i32; 3]; 2]; 2];
+    let two_subsets: bool;
+    let transformed: bool;
+    let ep_bits: u32;
+    let delta_bits: [u32; 3];
+
+    if mode2 == 0b00 {
+        // Mode 1: 2 subsets, transformed, (10.555, 10.555, 10.555)
+        two_subsets = true;
+        transformed = true;
+        ep_bits = 10;
+        delta_bits = [5, 5, 5];
+        ep[0][0][0] = bc6h_bits(b, 5, 10);
+        ep[0][0][1] = bc6h_bits(b, 15, 10);
+        ep[0][0][2] = bc6h_bits(b, 25, 10);
+        ep[0][1][0] = bc6h_bits(b, 35, 5);
+        ep[0][1][1] = bc6h_bits(b, 45, 5);
+        ep[0][1][2] = bc6h_bits(b, 55, 5);
+        ep[1][0][0] = bc6h_bits(b, 65, 5);
+        ep[1][0][1] = bc6h_bits(b, 41, 4) | (bc6h_bit(b, 2) << 4);
+        ep[1][0][2] = bc6h_bits(b, 61, 4) | (bc6h_bit(b, 3) << 4);
+        ep[1][1][0] = bc6h_bits(b, 71, 5);
+        ep[1][1][1] = bc6h_bits(b, 51, 4) | (bc6h_bit(b, 40) << 4);
+        ep[1][1][2] = bc6h_bit(b, 50)
+            | (bc6h_bit(b, 60) << 1)
+            | (bc6h_bit(b, 70) << 2)
+            | (bc6h_bit(b, 76) << 3)
+            | (bc6h_bit(b, 4) << 4);
+    } else if mode2 == 0b01 {
+        // Mode 2: 2 subsets, transformed, (7666, 7666, 7666)
+        two_subsets = true;
+        transformed = true;
+        ep_bits = 7;
+        delta_bits = [6, 6, 6];
+        ep[0][0][0] = bc6h_bits(b, 5, 7);
+        ep[0][0][1] = bc6h_bits(b, 15, 7);
+        ep[0][0][2] = bc6h_bits(b, 25, 7);
+        ep[0][1][0] = bc6h_bits(b, 35, 6);
+        ep[0][1][1] = bc6h_bits(b, 45, 6);
+        ep[0][1][2] = bc6h_bits(b, 55, 6);
+        ep[1][0][0] = bc6h_bits(b, 65, 6);
+        ep[1][0][1] = bc6h_bits(b, 41, 4) | (bc6h_bit(b, 24) << 4) | (bc6h_bit(b, 2) << 5);
+        ep[1][0][2] = bc6h_bits(b, 61, 4) | (bc6h_bit(b, 14) << 4) | (bc6h_bit(b, 22) << 5);
+        ep[1][1][0] = bc6h_bits(b, 71, 6);
+        ep[1][1][1] = bc6h_bits(b, 51, 4) | (bc6h_bit(b, 3) << 4) | (bc6h_bit(b, 4) << 5);
+        ep[1][1][2] = bc6h_bit(b, 12)
+            | (bc6h_bit(b, 13) << 1)
+            | (bc6h_bit(b, 23) << 2)
+            | (bc6h_bit(b, 32) << 3)
+            | (bc6h_bit(b, 34) << 4)
+            | (bc6h_bit(b, 33) << 5);
+    } else {
+        match mode5 {
+            0b00010 => {
+                // Mode 3: 2 subsets, transformed, (11.555, 11.444, 11.444)
+                two_subsets = true;
+                transformed = true;
+                ep_bits = 11;
+                delta_bits = [5, 4, 4];
+                ep[0][0][0] = bc6h_bits(b, 5, 10) | (bc6h_bit(b, 40) << 10);
+                ep[0][0][1] = bc6h_bits(b, 15, 10) | (bc6h_bit(b, 49) << 10);
+                ep[0][0][2] = bc6h_bits(b, 25, 10) | (bc6h_bit(b, 59) << 10);
+                ep[0][1][0] = bc6h_bits(b, 35, 5);
+                ep[0][1][1] = bc6h_bits(b, 45, 4);
+                ep[0][1][2] = bc6h_bits(b, 55, 4);
+                ep[1][0][0] = bc6h_bits(b, 65, 5);
+                ep[1][0][1] = bc6h_bits(b, 41, 4);
+                ep[1][0][2] = bc6h_bits(b, 61, 4);
+                ep[1][1][0] = bc6h_bits(b, 71, 5);
+                ep[1][1][1] = bc6h_bits(b, 51, 4);
+                ep[1][1][2] = bc6h_bit(b, 50)
+                    | (bc6h_bit(b, 60) << 1)
+                    | (bc6h_bit(b, 70) << 2)
+                    | (bc6h_bit(b, 76) << 3);
             }
-            dst[3] = 255;
+            0b00110 => {
+                // Mode 4: 2 subsets, transformed, (11.444, 11.555, 11.444)
+                two_subsets = true;
+                transformed = true;
+                ep_bits = 11;
+                delta_bits = [4, 5, 4];
+                ep[0][0][0] = bc6h_bits(b, 5, 10) | (bc6h_bit(b, 39) << 10);
+                ep[0][0][1] = bc6h_bits(b, 15, 10) | (bc6h_bit(b, 50) << 10);
+                ep[0][0][2] = bc6h_bits(b, 25, 10) | (bc6h_bit(b, 59) << 10);
+                ep[0][1][0] = bc6h_bits(b, 35, 4);
+                ep[0][1][1] = bc6h_bits(b, 45, 5);
+                ep[0][1][2] = bc6h_bits(b, 55, 4);
+                ep[1][0][0] = bc6h_bits(b, 65, 4);
+                ep[1][0][1] = bc6h_bits(b, 41, 4) | (bc6h_bit(b, 75) << 4);
+                ep[1][0][2] = bc6h_bits(b, 61, 4);
+                ep[1][1][0] = bc6h_bits(b, 71, 4);
+                ep[1][1][1] = bc6h_bits(b, 51, 4) | (bc6h_bit(b, 40) << 4);
+                ep[1][1][2] = bc6h_bit(b, 69)
+                    | (bc6h_bit(b, 60) << 1)
+                    | (bc6h_bit(b, 70) << 2)
+                    | (bc6h_bit(b, 76) << 3);
+            }
+            0b01010 => {
+                // Mode 5: 2 subsets, transformed, (11.444, 11.444, 11.555)
+                two_subsets = true;
+                transformed = true;
+                ep_bits = 11;
+                delta_bits = [4, 4, 5];
+                ep[0][0][0] = bc6h_bits(b, 5, 10) | (bc6h_bit(b, 39) << 10);
+                ep[0][0][1] = bc6h_bits(b, 15, 10) | (bc6h_bit(b, 49) << 10);
+                ep[0][0][2] = bc6h_bits(b, 25, 10) | (bc6h_bit(b, 60) << 10);
+                ep[0][1][0] = bc6h_bits(b, 35, 4);
+                ep[0][1][1] = bc6h_bits(b, 45, 4);
+                ep[0][1][2] = bc6h_bits(b, 55, 5);
+                ep[1][0][0] = bc6h_bits(b, 65, 4);
+                ep[1][0][1] = bc6h_bits(b, 41, 4);
+                ep[1][0][2] = bc6h_bits(b, 61, 4) | (bc6h_bit(b, 40) << 4);
+                ep[1][1][0] = bc6h_bits(b, 71, 4);
+                ep[1][1][1] = bc6h_bits(b, 51, 4);
+                ep[1][1][2] = bc6h_bit(b, 50)
+                    | (bc6h_bit(b, 69) << 1)
+                    | (bc6h_bit(b, 70) << 2)
+                    | (bc6h_bit(b, 76) << 3)
+                    | (bc6h_bit(b, 75) << 4);
+            }
+            0b01110 => {
+                // Mode 6: 2 subsets, transformed, (9555, 9555, 9555)
+                two_subsets = true;
+                transformed = true;
+                ep_bits = 9;
+                delta_bits = [5, 5, 5];
+                ep[0][0][0] = bc6h_bits(b, 5, 9);
+                ep[0][0][1] = bc6h_bits(b, 15, 9);
+                ep[0][0][2] = bc6h_bits(b, 25, 9);
+                ep[0][1][0] = bc6h_bits(b, 35, 5);
+                ep[0][1][1] = bc6h_bits(b, 45, 5);
+                ep[0][1][2] = bc6h_bits(b, 55, 5);
+                ep[1][0][0] = bc6h_bits(b, 65, 5);
+                ep[1][0][1] = bc6h_bits(b, 41, 4) | (bc6h_bit(b, 24) << 4);
+                ep[1][0][2] = bc6h_bits(b, 61, 4) | (bc6h_bit(b, 14) << 4);
+                ep[1][1][0] = bc6h_bits(b, 71, 5);
+                ep[1][1][1] = bc6h_bits(b, 51, 4) | (bc6h_bit(b, 40) << 4);
+                ep[1][1][2] = bc6h_bit(b, 50)
+                    | (bc6h_bit(b, 60) << 1)
+                    | (bc6h_bit(b, 70) << 2)
+                    | (bc6h_bit(b, 76) << 3)
+                    | (bc6h_bit(b, 34) << 4);
+            }
+            0b10010 => {
+                // Mode 7: 2 subsets, transformed, (8666, 8555, 8555)
+                two_subsets = true;
+                transformed = true;
+                ep_bits = 8;
+                delta_bits = [6, 5, 5];
+                ep[0][0][0] = bc6h_bits(b, 5, 8);
+                ep[0][0][1] = bc6h_bits(b, 15, 8);
+                ep[0][0][2] = bc6h_bits(b, 25, 8);
+                ep[0][1][0] = bc6h_bits(b, 35, 6);
+                ep[0][1][1] = bc6h_bits(b, 45, 5);
+                ep[0][1][2] = bc6h_bits(b, 55, 5);
+                ep[1][0][0] = bc6h_bits(b, 65, 6);
+                ep[1][0][1] = bc6h_bits(b, 41, 4) | (bc6h_bit(b, 24) << 4);
+                ep[1][0][2] = bc6h_bits(b, 61, 4) | (bc6h_bit(b, 14) << 4);
+                ep[1][1][0] = bc6h_bits(b, 71, 6);
+                ep[1][1][1] = bc6h_bits(b, 51, 4) | (bc6h_bit(b, 13) << 4);
+                ep[1][1][2] = bc6h_bit(b, 50)
+                    | (bc6h_bit(b, 60) << 1)
+                    | (bc6h_bit(b, 23) << 2)
+                    | (bc6h_bit(b, 33) << 3)
+                    | (bc6h_bit(b, 34) << 4);
+            }
+            0b10110 => {
+                // Mode 8: 2 subsets, transformed, (8555, 8666, 8555)
+                two_subsets = true;
+                transformed = true;
+                ep_bits = 8;
+                delta_bits = [5, 6, 5];
+                ep[0][0][0] = bc6h_bits(b, 5, 8);
+                ep[0][0][1] = bc6h_bits(b, 15, 8);
+                ep[0][0][2] = bc6h_bits(b, 25, 8);
+                ep[0][1][0] = bc6h_bits(b, 35, 5);
+                ep[0][1][1] = bc6h_bits(b, 45, 6);
+                ep[0][1][2] = bc6h_bits(b, 55, 5);
+                ep[1][0][0] = bc6h_bits(b, 65, 5);
+                ep[1][0][1] = bc6h_bits(b, 41, 4) | (bc6h_bit(b, 24) << 4) | (bc6h_bit(b, 23) << 5);
+                ep[1][0][2] = bc6h_bits(b, 61, 4) | (bc6h_bit(b, 14) << 4);
+                ep[1][1][0] = bc6h_bits(b, 71, 5);
+                ep[1][1][1] = bc6h_bits(b, 51, 4) | (bc6h_bit(b, 40) << 4) | (bc6h_bit(b, 33) << 5);
+                ep[1][1][2] = bc6h_bit(b, 13)
+                    | (bc6h_bit(b, 60) << 1)
+                    | (bc6h_bit(b, 70) << 2)
+                    | (bc6h_bit(b, 76) << 3)
+                    | (bc6h_bit(b, 34) << 4);
+            }
+            0b11010 => {
+                // Mode 9: 2 subsets, transformed, (8555, 8555, 8666)
+                two_subsets = true;
+                transformed = true;
+                ep_bits = 8;
+                delta_bits = [5, 5, 6];
+                ep[0][0][0] = bc6h_bits(b, 5, 8);
+                ep[0][0][1] = bc6h_bits(b, 15, 8);
+                ep[0][0][2] = bc6h_bits(b, 25, 8);
+                ep[0][1][0] = bc6h_bits(b, 35, 5);
+                ep[0][1][1] = bc6h_bits(b, 45, 5);
+                ep[0][1][2] = bc6h_bits(b, 55, 6);
+                ep[1][0][0] = bc6h_bits(b, 65, 5);
+                ep[1][0][1] = bc6h_bits(b, 41, 4) | (bc6h_bit(b, 24) << 4);
+                ep[1][0][2] = bc6h_bits(b, 61, 4) | (bc6h_bit(b, 14) << 4) | (bc6h_bit(b, 23) << 5);
+                ep[1][1][0] = bc6h_bits(b, 71, 5);
+                ep[1][1][1] = bc6h_bits(b, 51, 4) | (bc6h_bit(b, 40) << 4);
+                ep[1][1][2] = bc6h_bit(b, 50)
+                    | (bc6h_bit(b, 13) << 1)
+                    | (bc6h_bit(b, 70) << 2)
+                    | (bc6h_bit(b, 76) << 3)
+                    | (bc6h_bit(b, 34) << 4)
+                    | (bc6h_bit(b, 33) << 5);
+            }
+            0b11110 => {
+                // Mode 10: 2 subsets, untransformed, (6666, 6666, 6666)
+                two_subsets = true;
+                transformed = false;
+                ep_bits = 6;
+                delta_bits = [6, 6, 6];
+                ep[0][0][0] = bc6h_bits(b, 5, 6);
+                ep[0][0][1] = bc6h_bits(b, 15, 6);
+                ep[0][0][2] = bc6h_bits(b, 25, 6);
+                ep[0][1][0] = bc6h_bits(b, 35, 6);
+                ep[0][1][1] = bc6h_bits(b, 45, 6);
+                ep[0][1][2] = bc6h_bits(b, 55, 6);
+                ep[1][0][0] = bc6h_bits(b, 65, 6);
+                ep[1][0][1] = bc6h_bits(b, 41, 4) | (bc6h_bit(b, 24) << 4) | (bc6h_bit(b, 21) << 5);
+                ep[1][0][2] = bc6h_bits(b, 61, 4) | (bc6h_bit(b, 14) << 4) | (bc6h_bit(b, 22) << 5);
+                ep[1][1][0] = bc6h_bits(b, 71, 6);
+                ep[1][1][1] = bc6h_bits(b, 51, 4) | (bc6h_bit(b, 11) << 4) | (bc6h_bit(b, 31) << 5);
+                ep[1][1][2] = bc6h_bit(b, 12)
+                    | (bc6h_bit(b, 13) << 1)
+                    | (bc6h_bit(b, 23) << 2)
+                    | (bc6h_bit(b, 32) << 3)
+                    | (bc6h_bit(b, 34) << 4)
+                    | (bc6h_bit(b, 33) << 5);
+            }
+            0b00011 => {
+                // Mode 11: 1 subset, untransformed, (10.10, 10.10, 10.10)
+                two_subsets = false;
+                transformed = false;
+                ep_bits = 10;
+                delta_bits = [10, 10, 10];
+                ep[0][0][0] = bc6h_bits(b, 5, 10);
+                ep[0][0][1] = bc6h_bits(b, 15, 10);
+                ep[0][0][2] = bc6h_bits(b, 25, 10);
+                ep[0][1][0] = bc6h_bits(b, 35, 10);
+                ep[0][1][1] = bc6h_bits(b, 45, 10);
+                ep[0][1][2] = bc6h_bits(b, 55, 10);
+            }
+            0b00111 => {
+                // Mode 12: 1 subset, transformed, (11.9, 11.9, 11.9)
+                two_subsets = false;
+                transformed = true;
+                ep_bits = 11;
+                delta_bits = [9, 9, 9];
+                ep[0][0][0] = bc6h_bits(b, 5, 10) | (bc6h_bit(b, 44) << 10);
+                ep[0][0][1] = bc6h_bits(b, 15, 10) | (bc6h_bit(b, 54) << 10);
+                ep[0][0][2] = bc6h_bits(b, 25, 10) | (bc6h_bit(b, 64) << 10);
+                ep[0][1][0] = bc6h_bits(b, 35, 9);
+                ep[0][1][1] = bc6h_bits(b, 45, 9);
+                ep[0][1][2] = bc6h_bits(b, 55, 9);
+            }
+            0b01011 => {
+                // Mode 13: 1 subset, transformed, (12.8, 12.8, 12.8)
+                two_subsets = false;
+                transformed = true;
+                ep_bits = 12;
+                delta_bits = [8, 8, 8];
+                ep[0][0][0] = bc6h_bits(b, 5, 10) | (bc6h_bits_rev(b, 43, 2) << 10);
+                ep[0][0][1] = bc6h_bits(b, 15, 10) | (bc6h_bits_rev(b, 53, 2) << 10);
+                ep[0][0][2] = bc6h_bits(b, 25, 10) | (bc6h_bits_rev(b, 63, 2) << 10);
+                ep[0][1][0] = bc6h_bits(b, 35, 8);
+                ep[0][1][1] = bc6h_bits(b, 45, 8);
+                ep[0][1][2] = bc6h_bits(b, 55, 8);
+            }
+            0b01111 => {
+                // Mode 14: 1 subset, transformed, (16.4, 16.4, 16.4)
+                two_subsets = false;
+                transformed = true;
+                ep_bits = 16;
+                delta_bits = [4, 4, 4];
+                ep[0][0][0] = bc6h_bits(b, 5, 10) | (bc6h_bits_rev(b, 39, 6) << 10);
+                ep[0][0][1] = bc6h_bits(b, 15, 10) | (bc6h_bits_rev(b, 49, 6) << 10);
+                ep[0][0][2] = bc6h_bits(b, 25, 10) | (bc6h_bits_rev(b, 59, 6) << 10);
+                ep[0][1][0] = bc6h_bits(b, 35, 4);
+                ep[0][1][1] = bc6h_bits(b, 45, 4);
+                ep[0][1][2] = bc6h_bits(b, 55, 4);
+            }
+            _ => {
+                // Reserved modes (10011, 10111, 11011, 11111): return black with alpha 1.0
+                return [[0, 0, 0, 255]; 16];
+            }
         }
-        return out;
     }
 
-    // Fallback approximation for other BC6H modes: extract low 10-bit endpoints and 3/4-bit weights
-    let mut ep0 = [0i32; 3];
-    let mut ep1 = [0i32; 3];
+    // Sign extension
+    let num_subsets = if two_subsets { 2 } else { 1 };
     for c in 0..3 {
-        ep0[c] = (bs.read_bits(10) >> 2).clamp(0, 255);
+        if signed {
+            ep[0][0][c] = bc6h_sign_extend(ep[0][0][c], ep_bits);
+        }
+        if transformed || signed {
+            ep[0][1][c] = bc6h_sign_extend(ep[0][1][c], delta_bits[c]);
+            if two_subsets {
+                ep[1][0][c] = bc6h_sign_extend(ep[1][0][c], delta_bits[c]);
+                ep[1][1][c] = bc6h_sign_extend(ep[1][1][c], delta_bits[c]);
+            }
+        }
     }
-    for c in 0..3 {
-        ep1[c] = (bs.read_bits(10) >> 2).clamp(0, 255);
+
+    // Inverse delta transform
+    if transformed {
+        let mask = (1i32 << ep_bits) - 1;
+        for c in 0..3 {
+            let base = ep[0][0][c];
+            ep[0][1][c] = (ep[0][1][c] + base) & mask;
+            if signed {
+                ep[0][1][c] = bc6h_sign_extend(ep[0][1][c], ep_bits);
+            }
+            if two_subsets {
+                ep[1][0][c] = (ep[1][0][c] + base) & mask;
+                ep[1][1][c] = (ep[1][1][c] + base) & mask;
+                if signed {
+                    ep[1][0][c] = bc6h_sign_extend(ep[1][0][c], ep_bits);
+                    ep[1][1][c] = bc6h_sign_extend(ep[1][1][c], ep_bits);
+                }
+            }
+        }
     }
+
+    // Unquantize endpoints
+    for s in 0..num_subsets {
+        for e in 0..2 {
+            for c in 0..3 {
+                ep[s][e][c] = bc6h_unquantize(ep[s][e][c], ep_bits, signed);
+            }
+        }
+    }
+
+    // Unpack palette indices & interpolate
+    let partition = if two_subsets {
+        (bc6h_bits(b, 77, 5) as usize) & 31
+    } else {
+        0
+    };
+    let part_mask = if two_subsets { BC6H_PART2[partition] } else { 0 };
+    let anchor2 = if two_subsets { BC6H_ANCHOR2[partition] as usize } else { 0 };
+    let mut bit_pos: u32 = if two_subsets { 82 } else { 65 };
+    let idx_bits: u32 = if two_subsets { 3 } else { 4 };
+
     let mut out = [[0u8; 4]; 16];
     for (i, dst) in out.iter_mut().enumerate() {
-        let idx = if i == 0 {
-            bs.read_bits(3) as usize
+        let subset = if two_subsets {
+            ((part_mask >> i) & 1) as usize
         } else {
-            bs.read_bits(4) as usize
+            0
         };
-        let w = WEIGHTS_4[idx & 15];
+        let is_anchor = i == 0 || (two_subsets && i == anchor2);
+        let nbits = if is_anchor { idx_bits - 1 } else { idx_bits };
+        let idx = bc6h_bits(b, bit_pos, nbits) as usize;
+        bit_pos += nbits;
+
+        let w = if two_subsets {
+            WEIGHTS_3[idx & 7]
+        } else {
+            WEIGHTS_4[idx & 15]
+        };
+
         for c in 0..3 {
-            dst[c] = (((64 - w) * ep0[c] + w * ep1[c] + 32) >> 6).clamp(0, 255) as u8;
+            let interp = (ep[subset][0][c] * (64 - w) + ep[subset][1][c] * w + 32) >> 6;
+            let h16 = bc6h_finish_unquantize(interp, signed);
+            let f = crate::io::F16(h16).to_f32();
+            dst[c] = if f.is_nan() || f <= 0.0 {
+                0
+            } else {
+                ((f / (1.0 + f)) * 255.0).round().clamp(0.0, 255.0) as u8
+            };
         }
         dst[3] = 255;
     }

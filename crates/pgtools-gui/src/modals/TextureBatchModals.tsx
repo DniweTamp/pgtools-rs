@@ -111,7 +111,7 @@ export const BatchReplaceModal: React.FC<BatchReplaceModalProps> = ({
         style={{ width: 880, maxWidth: "95vw", maxHeight: "90vh", display: "flex", flexDirection: "column" }}
         onClick={(e) => e.stopPropagation()}
       >
-        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", flexShrink: 0 }}>
           <div style={{ fontSize: 15, fontWeight: 600, color: "var(--brush-heading)" }}>
             Batch replace textures
           </div>
@@ -125,7 +125,8 @@ export const BatchReplaceModal: React.FC<BatchReplaceModalProps> = ({
           </button>
         </div>
 
-        <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10 }}>
+        <div style={{ flex: 1, minHeight: 0, overflowY: "auto", display: "flex", flexDirection: "column", gap: 10 }}>
+        <div style={{ display: "grid", gridTemplateColumns: "repeat(2, minmax(0, 1fr))", gap: 10, flexShrink: 0 }}>
           {/* Source Card */}
           <div className="studio-card" style={{ padding: 12 }}>
             <div style={{ fontWeight: 600, marginBottom: 8, color: "var(--brush-heading)" }}>
@@ -214,7 +215,7 @@ export const BatchReplaceModal: React.FC<BatchReplaceModalProps> = ({
         {/* Scan / Log Console */}
         <div
           className="studio-card"
-          style={{ padding: 12, flex: 1, minHeight: 220, display: "flex", flexDirection: "column" }}
+          style={{ padding: 12, flex: "1 0 140px", minHeight: 140, display: "flex", flexDirection: "column" }}
         >
           <div style={{ fontWeight: 600, marginBottom: 6, color: "var(--brush-heading)" }}>
             Scan / Log
@@ -240,10 +241,11 @@ export const BatchReplaceModal: React.FC<BatchReplaceModalProps> = ({
               : "Browse for a folder above to preview matches."}
           </pre>
         </div>
+        </div>
 
-        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", flexShrink: 0, gap: 10 }}>
           <span style={{ fontSize: 11.5, color: "var(--brush-muted)" }}>{statusText}</span>
-          <div style={{ display: "flex", gap: 8 }}>
+          <div style={{ display: "flex", gap: 8, flexShrink: 0 }}>
             <button
               type="button"
               className="pill-button accent"
@@ -338,7 +340,7 @@ export const BatchRecompressModal: React.FC<BatchRecompressModalProps> = ({
         style={{ width: 980, maxWidth: "96vw", maxHeight: "92vh", display: "flex", flexDirection: "column" }}
         onClick={(e) => e.stopPropagation()}
       >
-        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", flexShrink: 0 }}>
           <div style={{ fontSize: 15, fontWeight: 600, color: "var(--brush-heading)" }}>
             Batch recompress (ASTC to BC)
           </div>
@@ -352,7 +354,8 @@ export const BatchRecompressModal: React.FC<BatchRecompressModalProps> = ({
           </button>
         </div>
 
-        <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr 1fr", gap: 10 }}>
+        <div style={{ flex: 1, minHeight: 0, overflowY: "auto", display: "flex", flexDirection: "column", gap: 10 }}>
+        <div style={{ display: "grid", gridTemplateColumns: "repeat(3, minmax(0, 1fr))", gap: 10, flexShrink: 0 }}>
           {/* 1. Source Selection */}
           <div className="studio-card" style={{ padding: 12 }}>
             <div style={{ fontWeight: 600, marginBottom: 8, color: "var(--brush-heading)" }}>
@@ -509,7 +512,7 @@ export const BatchRecompressModal: React.FC<BatchRecompressModalProps> = ({
         {/* File Processing List Log */}
         <div
           className="studio-card"
-          style={{ padding: 12, flex: 1, minHeight: 220, display: "flex", flexDirection: "column" }}
+          style={{ padding: 12, flex: "1 0 140px", minHeight: 140, display: "flex", flexDirection: "column" }}
         >
           <div style={{ fontWeight: 600, marginBottom: 6, color: "var(--brush-heading)" }}>
             File Processing List
@@ -533,10 +536,11 @@ export const BatchRecompressModal: React.FC<BatchRecompressModalProps> = ({
               : "Click Run to start batch recompression."}
           </pre>
         </div>
+        </div>
 
-        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", flexShrink: 0, gap: 10 }}>
           <span style={{ fontSize: 11.5, color: "var(--brush-muted)" }}>{statusText}</span>
-          <div style={{ display: "flex", gap: 8 }}>
+          <div style={{ display: "flex", gap: 8, flexShrink: 0 }}>
             <button
               type="button"
               className="pill-button accent"
@@ -623,7 +627,7 @@ export const ExportTexturesModal: React.FC<ExportTexturesModalProps> = ({
         style={{ width: 980, maxWidth: "96vw", maxHeight: "92vh", display: "flex", flexDirection: "column" }}
         onClick={(e) => e.stopPropagation()}
       >
-        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", flexShrink: 0 }}>
           <div style={{ fontSize: 15, fontWeight: 600, color: "var(--brush-heading)" }}>
             Export textures from folder
           </div>
@@ -637,7 +641,8 @@ export const ExportTexturesModal: React.FC<ExportTexturesModalProps> = ({
           </button>
         </div>
 
-        <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr 1fr", gap: 10 }}>
+        <div style={{ flex: 1, minHeight: 0, overflowY: "auto", display: "flex", flexDirection: "column", gap: 10 }}>
+        <div style={{ display: "grid", gridTemplateColumns: "repeat(3, minmax(0, 1fr))", gap: 10, flexShrink: 0 }}>
           {/* 1. Source */}
           <div className="studio-card" style={{ padding: 12 }}>
             <div style={{ fontWeight: 600, marginBottom: 8, color: "var(--brush-heading)" }}>
@@ -750,7 +755,7 @@ export const ExportTexturesModal: React.FC<ExportTexturesModalProps> = ({
         {/* Export Log */}
         <div
           className="studio-card"
-          style={{ padding: 12, flex: 1, minHeight: 220, display: "flex", flexDirection: "column" }}
+          style={{ padding: 12, flex: "1 0 140px", minHeight: 140, display: "flex", flexDirection: "column" }}
         >
           <div style={{ fontWeight: 600, marginBottom: 6, color: "var(--brush-heading)" }}>
             Export Log
@@ -774,10 +779,11 @@ export const ExportTexturesModal: React.FC<ExportTexturesModalProps> = ({
               : "Click Export to scan and extract textures."}
           </pre>
         </div>
+        </div>
 
-        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", flexShrink: 0, gap: 10 }}>
           <span style={{ fontSize: 11.5, color: "var(--brush-muted)" }}>{statusText}</span>
-          <div style={{ display: "flex", gap: 8 }}>
+          <div style={{ display: "flex", gap: 8, flexShrink: 0 }}>
             <button
               type="button"
               className="pill-button accent"
@@ -1064,7 +1070,7 @@ export const BatchDatAlignModal: React.FC<BatchDatAlignModalProps> = ({
         }}
         onClick={(e) => e.stopPropagation()}
       >
-        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", flexShrink: 0 }}>
           <div style={{ fontSize: 15, fontWeight: 600, color: "var(--brush-heading)" }}>
             Batch DAT custom align
           </div>
@@ -1078,11 +1084,13 @@ export const BatchDatAlignModal: React.FC<BatchDatAlignModalProps> = ({
           </button>
         </div>
 
+        <div style={{ flex: 1, minHeight: 0, overflowY: "auto", display: "flex", flexDirection: "column", gap: 10 }}>
         <div
           style={{
             display: "grid",
             gridTemplateColumns: "repeat(3, minmax(0, 1fr))",
             gap: 10,
+            flexShrink: 0,
           }}
         >
           {/* 1. Source Selection */}
@@ -1327,8 +1335,8 @@ export const BatchDatAlignModal: React.FC<BatchDatAlignModalProps> = ({
           className="studio-card"
           style={{
             padding: 12,
-            flex: 1,
-            minHeight: 220,
+            flex: "1 0 140px",
+            minHeight: 140,
             display: "flex",
             flexDirection: "column",
           }}
@@ -1355,10 +1363,11 @@ export const BatchDatAlignModal: React.FC<BatchDatAlignModalProps> = ({
               : "Click Run to start batch DAT alignment."}
           </pre>
         </div>
+        </div>
 
-        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", flexShrink: 0, gap: 10 }}>
           <span style={{ fontSize: 11.5, color: "var(--brush-muted)" }}>{statusText}</span>
-          <div style={{ display: "flex", gap: 8 }}>
+          <div style={{ display: "flex", gap: 8, flexShrink: 0 }}>
             <button
               type="button"
               className="pill-button accent"

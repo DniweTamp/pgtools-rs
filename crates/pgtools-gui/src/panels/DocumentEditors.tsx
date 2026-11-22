@@ -227,24 +227,19 @@ export function DocumentEditors({
         <div className="studio-card viewer-card">
           <div className="underline-tabbar">
             {activeTexture ? (
-              <>
-                <button
-                  className={`underline-tab ${centerTab === "primary" ? "active" : ""}`}
-                  onClick={() => setCenterTab("primary")}
-                >
-                  <IconImage size={12} />
-                  <span>{activeTexture.uvd_mode === "item" ? "Sprite Crop" : "2D"}</span>
-                </button>
-                {activeTexture.uvd_mode !== "item" && (
-                  <button
-                    className={`underline-tab ${centerTab === "secondary" ? "active" : ""}`}
-                    onClick={() => setCenterTab("secondary")}
-                  >
+              <button className="underline-tab active" type="button">
+                {activeTexture.dimension === "Cube" && activeTexture.uvd_mode !== "item" ? (
+                  <>
                     <IconCube size={12} />
                     <span>Cube-3D</span>
-                  </button>
+                  </>
+                ) : (
+                  <>
+                    <IconImage size={12} />
+                    <span>{activeTexture.uvd_mode === "item" ? "Sprite Crop" : "2D"}</span>
+                  </>
                 )}
-              </>
+              </button>
             ) : nodePayload?.view_type === "UVD" ? (
               <button className="underline-tab active" onClick={() => setCenterTab("primary")}>
                 <IconImage size={12} />
@@ -297,7 +292,6 @@ export function DocumentEditors({
           {activeTexture ? (
             <TextureCenterView
               activeTexture={activeTexture}
-              centerTab={activeTexture.uvd_mode === "item" ? "primary" : centerTab}
               mipIndex={mipIndex}
               layerIndex={layerIndex}
               channelMode={drafts.channelMode}

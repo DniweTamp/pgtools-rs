@@ -384,6 +384,155 @@ export function uploadSurfaceToGl2(
   }
 }
 
+export function uploadCubemapToGl2(
+  gl: WebGL2RenderingContext,
+  tex: WebGLTexture,
+  surface: DecodedGpuSurface,
+  exts: Gl2TextureExts
+): boolean {
+  if (!surface.cube || surface.faceByteLen <= 0) return false;
+  gl.bindTexture(gl.TEXTURE_CUBE_MAP, tex);
+  gl.pixelStorei(gl.UNPACK_ALIGNMENT, 1);
+  gl.pixelStorei(gl.UNPACK_FLIP_Y_WEBGL, 0);
+  gl.texParameteri(gl.TEXTURE_CUBE_MAP, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
+  gl.texParameteri(gl.TEXTURE_CUBE_MAP, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
+  gl.texParameteri(gl.TEXTURE_CUBE_MAP, gl.TEXTURE_WRAP_R, gl.CLAMP_TO_EDGE);
+  gl.texParameteri(gl.TEXTURE_CUBE_MAP, gl.TEXTURE_MIN_FILTER, gl.LINEAR);
+  gl.texParameteri(gl.TEXTURE_CUBE_MAP, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
+
+  const w = Math.max(1, surface.width);
+  const h = Math.max(1, surface.height);
+  const faceLen = surface.faceByteLen;
+
+  for (let f = 0; f < 6; f++) {
+    const target = gl.TEXTURE_CUBE_MAP_POSITIVE_X + f;
+    const start = f * faceLen;
+    if (start + faceLen > surface.data.byteLength) return false;
+    const slice = surface.data.subarray(start, start + faceLen);
+
+    switch (surface.gpuFormat) {
+      case GPU_FMT.RGBA8:
+        gl.texImage2D(target, 0, gl.RGBA8, w, h, 0, gl.RGBA, gl.UNSIGNED_BYTE, slice);
+        break;
+      case GPU_FMT.R8:
+        gl.texImage2D(target, 0, gl.R8, w, h, 0, gl.RED, gl.UNSIGNED_BYTE, slice);
+        break;
+      case GPU_FMT.RG8:
+        gl.texImage2D(target, 0, gl.RG8, w, h, 0, gl.RG, gl.UNSIGNED_BYTE, slice);
+        break;
+      case GPU_FMT.RGBA16F: {
+        const aligned = slice.byteOffset % 2 === 0 ? slice : slice.slice();
+        const u16 = new Uint16Array(
+          aligned.buffer as ArrayBuffer,
+          aligned.byteOffset,
+          Math.floor(aligned.byteLength / 2)
+        );
+        gl.texImage2D(target, 0, gl.RGBA16F, w, h, 0, gl.RGBA, gl.HALF_FLOAT, u16);
+        break;
+      }
+      case GPU_FMT.BC1:
+        if (!exts.s3tc) return false;
+        gl.compressedTexImage2D(target, 0, exts.s3tc.COMPRESSED_RGBA_S3TC_DXT1_EXT, w, h, 0, slice);
+        break;
+      case GPU_FMT.BC2:
+        if (!exts.s3tc) return false;
+        gl.compressedTexImage2D(target, 0, exts.s3tc.COMPRESSED_RGBA_S3TC_DXT3_EXT, w, h, 0, slice);
+        break;
+      case GPU_FMT.BC3:
+        if (!exts.s3tc) return false;
+        gl.compressedTexImage2D(target, 0, exts.s3tc.COMPRESSED_RGBA_S3TC_DXT5_EXT, w, h, 0, slice);
+        break;
+      case GPU_FMT.BC4:
+        if (!exts.rgtc) return false;
+        gl.compressedTexImage2D(target, 0, exts.rgtc.COMPRESSED_RED_RGTC1_EXT, w, h, 0, slice);
+        break;
+      case GPU_FMT.BC5:
+        if (!exts.rgtc) return false;
+        gl.compressedTexImage2D(target, 0, exts.rgtc.COMPRESSED_RED_GREEN_RGTC2_EXT, w, h, 0, slice);
+        break;
+      case GPU_FMT.BC6H_UF16:
+        if (!exts.bptc) return false;
+        gl.compressedTexImage2D(target, 0, exts.bptc.COMPRESSED_RGB_BPTC_UNSIGNED_FLOAT_EXT, w, h, 0, slice);
+        break;
+      case GPU_FMT.BC6H_SF16:
+        if (!exts.bptc) return false;
+        gl.compressedTexImage2D(target, 0, exts.bptc.COMPRESSED_RGB_BPTC_SIGNED_FLOAT_EXT, w, h, 0, slice);
+        break;
+      case GPU_FMT.BC7:
+        if (!exts.bptc) return false;
+        gl.compressedTexImage2D(target, 0, exts.bptc.COMPRESSED_RGBA_BPTC_UNORM_EXT, w, h, 0, slice);
+        break;
+      default:
+        return false;
+    }
+  }
+  return true;
+}
+
+export const GL2_CUBEMAP_SKY_VS = `#version 300 es
+out vec2 vNdc;
+void main() {
+  vec2 pos = vec2((gl_VertexID == 1) ? 3.0 : -1.0, (gl_VertexID == 2) ? 3.0 : -1.0);
+  vNdc = pos;
+  gl_Position = vec4(pos, 0.0, 1.0);
+}
+`;
+
+export const GL2_CUBEMAP_SKY_FS = `#version 300 es
+precision highp float;
+in vec2 vNdc;
+uniform samplerCube uCube;
+uniform vec3 uForward;
+uniform vec3 uRight;
+uniform vec3 uUp;
+uniform float uAspect;
+uniform float uTanHalfFov;
+uniform int uFormatMode;
+uniform int uChannelMode;
+uniform int uOpaque;
+uniform float uExposure;
+uniform float uGamma;
+out vec4 outColor;
+
+void main() {
+  vec3 dir = normalize(
+    uForward + uRight * (vNdc.x * uAspect * uTanHalfFov) + uUp * (vNdc.y * uTanHalfFov)
+  );
+  vec4 s = texture(uCube, dir);
+  vec3 col = s.rgb;
+  float alpha = clamp(s.a, 0.0, 1.0);
+  if (uFormatMode == 1) {
+    col = vec3(s.r);
+    alpha = 1.0;
+  } else if (uFormatMode == 2) {
+    col = vec3(s.r, s.g, 0.0);
+    alpha = 1.0;
+  } else if (uFormatMode == 4) {
+    float nx = s.r * 2.0 - 1.0;
+    float ny = s.g * 2.0 - 1.0;
+    float nz = sqrt(max(1.0 - (nx * nx + ny * ny), 0.0));
+    col = vec3(s.r, s.g, nz * 0.5 + 0.5);
+    alpha = 1.0;
+  }
+  col = max(col, vec3(0.0)) * uExposure;
+  if (uFormatMode == 3) {
+    col = col / (vec3(1.0) + col);
+  }
+  col = pow(max(col, vec3(0.0)), vec3(1.0 / max(uGamma, 0.1)));
+
+  if (uChannelMode == 2) {
+    col = vec3(col.r);
+  } else if (uChannelMode == 3) {
+    col = vec3(col.g);
+  } else if (uChannelMode == 4) {
+    col = vec3(col.b);
+  } else if (uChannelMode == 5) {
+    col = vec3(uOpaque != 0 ? 1.0 : alpha);
+  }
+  outColor = vec4(col, 1.0);
+}
+`;
+
 export const GL2_QUAD_VS = `#version 300 es
 out vec2 vUv;
 void main() {

@@ -733,24 +733,36 @@ pub fn compute_xt1_layout(
         (list, cursor)
     };
 
+    let is_array = tex_type == 5 && base_depth > 1;
     let (mut mip_list, mut cursor) = build_mips(None);
-    let face_count = if is_cube { 6 } else { 1 };
+    let face_count = if is_cube {
+        6
+    } else if is_array {
+        base_depth
+    } else {
+        1
+    };
     let face_size = cursor;
     let base_mip_surface = mip_list.first().map(|m| m.slice_surface_size).unwrap_or(0);
-    let cube_page_align = is_cube && base_mip_surface >= 4096;
+    let cube_page_align = (is_cube || is_array) && base_mip_surface >= 4096;
     let face_stride = if cube_page_align {
         align(face_size, 4096)
     } else {
         face_size
     };
-    let mut computed = if is_cube {
+    let mut computed = if is_cube || is_array {
         face_count * face_stride
     } else {
         cursor
     };
 
     let mut note = None;
-    if computed as u64 != stored_image_size && mips == 1 && !is_cube && mip_list.len() == 1 {
+    if computed as u64 != stored_image_size
+        && mips == 1
+        && !is_cube
+        && !is_array
+        && mip_list.len() == 1
+    {
         let mip = &mip_list[0];
         let padded_rows = align(mip.height_blocks, mip.lines);
         let units = padded_rows * mip.slice_count;
@@ -4428,8 +4440,11 @@ pub fn decode_texture_layer_filtered(
 
         let is_cube = tex_type == 3 || tex_type == 8;
         let is_3d = tex_type == 2;
+        let is_array = tex_type == 5 && depth > 1;
         let layer_count = if is_cube {
             6
+        } else if is_array {
+            depth
         } else if is_3d {
             mip_info.slice_count.max(1) as u32
         } else {
@@ -4465,7 +4480,7 @@ pub fn decode_texture_layer_filtered(
                 linear.copy_from_slice(&vol_linear[slice_start..slice_start + single_slice_bytes]);
             }
         } else {
-            let sub_offset = if is_cube {
+            let sub_offset = if is_cube || is_array {
                 clamped_layer * layout.face_stride + mip_info.offset
             } else if is_3d {
                 mip_info.offset + clamped_layer * mip_info.slice_surface_size
@@ -4506,6 +4521,94 @@ pub fn decode_texture_layer_filtered(
             channel,
             opaque,
         );
+    }
+
+    if &blob[0..4] == b"DDS " {
+        let meta = inspect_texture_blob(blob)?;
+        let header_size = if blob.len() >= 148 && &blob[84..88] == b"DX10" {
+            148
+        } else {
+            128
+        };
+        if blob.len() < header_size {
+            return Err(PgError::InvalidData("DDS shorter than header".into()));
+        }
+        let payload = &blob[header_size..];
+        let (bw, bh) = meta.format.block_dimensions();
+        let bpb = meta.format.bytes_per_block();
+        let layer_count = meta.layer_count.max(1);
+        let clamped_layer = (layer_index as usize).min((layer_count as usize).saturating_sub(1));
+
+        if meta.width == 0 || meta.height == 0 || meta.width > 16384 || meta.height > 16384 {
+            return Err(PgError::InvalidData(format!(
+                "Invalid DDS texture dimensions: {}x{}",
+                meta.width, meta.height
+            )));
+        }
+
+        let mut face_stride = 0usize;
+        let mut cw = meta.width.max(1);
+        let mut ch = meta.height.max(1);
+        for _ in 0..meta.mip_count.clamp(1, 32) {
+            let bx = ((cw as usize) + bw - 1) / bw;
+            let by = ((ch as usize) + bh - 1) / bh;
+            let mip_bytes = bx
+                .max(1)
+                .checked_mul(by.max(1))
+                .and_then(|n| n.checked_mul(bpb))
+                .ok_or_else(|| PgError::InvalidData("DDS face stride overflow".into()))?;
+            face_stride = face_stride
+                .checked_add(mip_bytes)
+                .ok_or_else(|| PgError::InvalidData("DDS face stride overflow".into()))?;
+            cw = (cw / 2).max(1);
+            ch = (ch / 2).max(1);
+        }
+
+        let clamped_mip = mip_index.min(meta.mip_count.saturating_sub(1));
+        let mut mip_offset = clamped_layer.saturating_mul(face_stride);
+        let mut cur_w = meta.width.max(1);
+        let mut cur_h = meta.height.max(1);
+        for _ in 0..clamped_mip {
+            let bx = ((cur_w as usize) + bw - 1) / bw;
+            let by = ((cur_h as usize) + bh - 1) / bh;
+            let mip_bytes = bx
+                .max(1)
+                .checked_mul(by.max(1))
+                .and_then(|n| n.checked_mul(bpb))
+                .ok_or_else(|| PgError::InvalidData("DDS mip size overflow".into()))?;
+            if mip_offset.saturating_add(mip_bytes) <= payload.len() {
+                mip_offset += mip_bytes;
+                cur_w = (cur_w / 2).max(1);
+                cur_h = (cur_h / 2).max(1);
+            } else {
+                break;
+            }
+        }
+        if cur_w == 0 || cur_h == 0 || cur_w > 16384 || cur_h > 16384 {
+            return Err(PgError::InvalidData(format!(
+                "Invalid DDS texture dimensions: {cur_w}x{cur_h}"
+            )));
+        }
+        let bx = ((cur_w as usize) + bw - 1) / bw;
+        let by = ((cur_h as usize) + bh - 1) / bh;
+        let needed = bx
+            .max(1)
+            .checked_mul(by.max(1))
+            .and_then(|n| n.checked_mul(bpb))
+            .ok_or_else(|| PgError::InvalidData("DDS surface size overflow".into()))?;
+        if needed > crate::io::MAX_ARCHIVE_ALLOC_BYTES {
+            return Err(PgError::InvalidData(
+                "DDS surface exceeds safety allocation limit".into(),
+            ));
+        }
+        let mut linear = vec![0u8; needed];
+        if mip_offset < payload.len() {
+            let avail = (payload.len() - mip_offset).min(needed);
+            linear[..avail].copy_from_slice(&payload[mip_offset..mip_offset + avail]);
+        }
+        let mut img = decode_linear_blocks_to_rgba8(&linear, cur_w, cur_h, meta.format)?;
+        apply_channel_and_opaque_filter(&mut img, channel, opaque);
+        return Ok((img, cur_w, cur_h, layer_count));
     }
 
     let meta = inspect_texture_blob(blob).ok();
@@ -5043,8 +5146,11 @@ fn extract_gpu_texture_surface_inner(
 
         let is_cube = tex_type == 3 || tex_type == 8;
         let is_3d = tex_type == 2;
+        let is_array = tex_type == 5 && depth > 1;
         let layer_count = if is_cube {
             6
+        } else if is_array {
+            depth
         } else if is_3d {
             mip_info.slice_count.max(1) as u32
         } else {
@@ -5103,7 +5209,7 @@ fn extract_gpu_texture_surface_inner(
                 linear.copy_from_slice(&vol_linear[slice_start..slice_start + single_slice_bytes]);
             }
         } else {
-            let sub_offset = if is_cube {
+            let sub_offset = if is_cube || is_array {
                 clamped_layer * layout.face_stride + mip_info.offset
             } else if is_3d {
                 mip_info.offset + clamped_layer * mip_info.slice_surface_size

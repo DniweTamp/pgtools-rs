@@ -183,6 +183,23 @@ impl StudioSession {
         self.container_wtb_cache.clear();
     }
 
+    pub(crate) fn invalidate_single_texture_cache(
+        &mut self,
+        node_ids: &[&str],
+        container_id: &str,
+    ) {
+        for &nid in node_ids {
+            if self.tex_thumb_cache.remove(nid).is_some() {
+                self.tex_thumb_order.retain(|k| k != nid);
+            }
+        }
+        self.wtx1_cache.clear();
+        self.wtx1_order.clear();
+        self.wtx1_cache_bytes = 0;
+        self.paired_wtb_cache.clear();
+        self.container_wtb_cache.remove(container_id);
+    }
+
     pub(crate) fn insert_thumb_cached(&mut self, key: String, val: (String, Option<String>)) {
         if !self.tex_thumb_cache.contains_key(&key) {
             while self.tex_thumb_cache.len() >= MAX_THUMB_CACHE_ENTRIES {

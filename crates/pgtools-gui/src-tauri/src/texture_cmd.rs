@@ -630,6 +630,117 @@ pub async fn get_texture_gpu_surface(
     Ok(tauri::ipc::Response::new(wtx2))
 }
 
+#[tauri::command]
+pub async fn get_texture_gpu_cubemap(
+    node_id: String,
+    mip_index: u32,
+    state: State<'_, AppState>,
+) -> Result<tauri::ipc::Response, String> {
+    let (snap, oodle_path, cached_wtbs) = {
+        let sess = lock_session(&state);
+        let snap = sess.current.clone().ok_or("No active document loaded")?;
+        (
+            snap,
+            sess.settings.oodle_dll_path.clone(),
+            sess.container_wtb_cache.clone(),
+        )
+    };
+
+    let (wtx2, newly_cached) = tauri::async_runtime::spawn_blocking(
+        move || -> Result<(Vec<u8>, Option<(String, Arc<WtbFile>)>), String> {
+            let oodle_opt = if oodle_path.is_empty() {
+                None
+            } else {
+                Some(Path::new(oodle_path.as_str()))
+            };
+            let effective_node_id =
+                crate::uvd_cmd::resolve_uvd_group_to_wta_tex_node(&snap, &node_id, oodle_opt)
+                    .unwrap_or_else(|| node_id.clone());
+            let (container_parts, leaf) = split_container_and_leaf(&effective_node_id);
+            let container_id = container_parts.join("/");
+
+            let mut newly_cached: Option<(String, Arc<WtbFile>)> = None;
+            let (blob, sub_idx) = if leaf.starts_with("tex:") {
+                let tex_idx: usize = leaf
+                    .strip_prefix("tex:")
+                    .and_then(|s| s.parse().ok())
+                    .unwrap_or(0);
+                if let Some(wtb) = cached_wtbs.get(&container_id) {
+                    let entry = wtb
+                        .entries
+                        .get(tex_idx)
+                        .ok_or_else(|| format!("Texture index {tex_idx} out of range"))?;
+                    (entry.data.clone(), entry.index)
+                } else {
+                    let (_, sub_bytes, sub_wtp, _) =
+                        resolve_subblob(&snap, &container_id, oodle_opt)?;
+                    if is_bntx_blob(&sub_bytes) {
+                        (sub_bytes, tex_idx)
+                    } else {
+                        let wtb = Arc::new(
+                            WtbFile::from_bytes(&sub_bytes, sub_wtp.as_deref())
+                                .map_err(|e| e.to_string())?,
+                        );
+                        let entry = wtb
+                            .entries
+                            .get(tex_idx)
+                            .ok_or_else(|| format!("Texture index {tex_idx} out of range"))?;
+                        let res = (entry.data.clone(), entry.index);
+                        newly_cached = Some((container_id, wtb));
+                        res
+                    }
+                }
+            } else {
+                let (b, idx, _) =
+                    resolve_texture_blob_for_node(&snap, &effective_node_id, oodle_opt)?;
+                (b, idx)
+            };
+
+            let mut faces = Vec::with_capacity(6);
+            for face in 0..6u32 {
+                let surf = extract_gpu_texture_surface(&blob, sub_idx, mip_index, face)
+                    .map_err(|e| format!("Failed to extract GPU cubemap face {face}: {e}"))?;
+                faces.push(surf);
+            }
+            let w = faces[0].width;
+            let h = faces[0].height;
+            let is_srgb = faces[0].is_srgb;
+            let gpu_format = faces[0].gpu_format;
+            let face_byte_len = faces[0].data.len();
+            let mut combined = Vec::with_capacity(face_byte_len * 6);
+            for f in &faces {
+                if f.data.len() == face_byte_len {
+                    combined.extend_from_slice(&f.data);
+                } else {
+                    let mut padded = vec![0u8; face_byte_len];
+                    let copy_len = f.data.len().min(face_byte_len);
+                    padded[..copy_len].copy_from_slice(&f.data[..copy_len]);
+                    combined.extend_from_slice(&padded);
+                }
+            }
+            let bytes = encode_wtx2_blob(
+                w,
+                h,
+                true,
+                is_srgb,
+                gpu_format,
+                face_byte_len as u32,
+                &combined,
+            );
+            Ok((bytes, newly_cached))
+        },
+    )
+    .await
+    .map_err(|e| format!("GPU cubemap worker failed: {e}"))??;
+
+    if let Some((cid, wtb)) = newly_cached {
+        let mut sess = lock_session(&state);
+        sess.container_wtb_cache.insert(cid, wtb);
+    }
+
+    Ok(tauri::ipc::Response::new(wtx2))
+}
+
 /// Binary batch thumbnail response (`WTB2`):
 /// `[0..4] "WTB2"`, `[4..8] count: u32`, repeated: `[id_len: u32][id_utf8][blob_len: u32][wtx2_bytes]`
 #[tauri::command]
@@ -1202,7 +1313,7 @@ pub fn mutate_texture_node(
             let dat_align = sess.settings.effective_dat_alignment();
             let next_snap =
                 write_back_subblob_with_align(&snap, &container_parts, new_blob, None, oodle_opt, dat_align)?;
-            sess.invalidate_texture_caches();
+            sess.invalidate_single_texture_cache(&[&node_id, &effective_node_id], &container_id);
             record_mutation(
                 &mut sess,
                 format!("Replace standalone {target_ext} texture ({target_fmt:?})"),
@@ -1824,7 +1935,17 @@ pub fn mutate_texture_node(
         oodle_opt,
         dat_align,
     )?;
-    sess.invalidate_texture_caches();
+    match action.as_str() {
+        "replace_file" | "dummy_out" => {
+            sess.invalidate_single_texture_cache(&[&node_id, &effective_node_id], &container_id);
+        }
+        "set_hash" | "calc_crc32" | "toggle_xt1_flag" | "set_flags" | "add_texture" => {
+            sess.invalidate_single_texture_cache(&[], &container_id);
+        }
+        _ => {
+            sess.invalidate_texture_caches();
+        }
+    }
     record_mutation(&mut sess, desc, next_snap);
     build_outline_from_session(&sess)
 }

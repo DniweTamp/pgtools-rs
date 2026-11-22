@@ -4,7 +4,17 @@ import { StudioRange } from "../components/StudioRange";
 import { StudioSelect } from "../components/StudioSelect";
 import { GpuTextureCanvas, GpuTextureCanvasHandle } from "../components/GpuTextureCanvas";
 import { invoke } from "@tauri-apps/api/core";
-import * as THREE from "three";
+import {
+  channelModeToInt,
+  compileGl2Program,
+  decodeWtxBlob,
+  formatModeForGpuFormat,
+  GL2_CUBEMAP_SKY_FS,
+  GL2_CUBEMAP_SKY_VS,
+  Gl2TextureExts,
+  queryGl2Exts,
+  uploadCubemapToGl2,
+} from "../utils/gpuTexture";
 import {
   ContextMenuState,
   CubemapPreviewPayload,
@@ -17,7 +27,6 @@ import { UvdActions, UvdInspectorSection } from "./UvdEditor";
 import {
   IconCheck,
   IconChevronDown,
-  IconCube,
   IconImage,
   IconRefresh,
 } from "../components/Icons";
@@ -93,13 +102,17 @@ export const ENCODE_QUALITY_OPTIONS = [
 interface CubemapSkyViewportProps {
   nodeId: string;
   mipIndex: number;
+  channelMode: string;
   opaquePreview: boolean;
+  revision?: string;
 }
 
 const CubemapSkyViewport: React.FC<CubemapSkyViewportProps> = ({
   nodeId,
   mipIndex,
+  channelMode,
   opaquePreview,
+  revision,
 }) => {
   const mountRef = useRef<HTMLDivElement | null>(null);
   const [gammaDraft, setGammaDraft] = useState("1.00");
@@ -110,133 +123,207 @@ const CubemapSkyViewport: React.FC<CubemapSkyViewportProps> = ({
   const [autoScale, setAutoScale] = useState(1.0);
   const [loadingErr, setLoadingErr] = useState<string | null>(null);
 
-  const uniformsRef = useRef<{
-    uCube: { value: THREE.CubeTexture | null };
-    uExposure: { value: number };
-    uGamma: { value: number };
-  }>({
-    uCube: { value: null },
-    uExposure: { value: 1.0 },
-    uGamma: { value: 1.0 },
+  const glStateRef = useRef<{
+    canvas: HTMLCanvasElement;
+    gl: WebGL2RenderingContext;
+    exts: Gl2TextureExts;
+    program: WebGLProgram;
+    tex: WebGLTexture;
+    uCube: WebGLUniformLocation | null;
+    uForward: WebGLUniformLocation | null;
+    uRight: WebGLUniformLocation | null;
+    uUp: WebGLUniformLocation | null;
+    uAspect: WebGLUniformLocation | null;
+    uTanHalfFov: WebGLUniformLocation | null;
+    uFormatMode: WebGLUniformLocation | null;
+    uChannelMode: WebGLUniformLocation | null;
+    uOpaque: WebGLUniformLocation | null;
+    uExposure: WebGLUniformLocation | null;
+    uGamma: WebGLUniformLocation | null;
+    formatMode: number;
+    hasTexture: boolean;
+  } | null>(null);
+
+  const viewStateRef = useRef({
+    yaw: 0,
+    pitch: 0,
+    fov: 60,
+    exposure: 1.0,
+    baseExposure: 1.0,
+    autoExposure: true,
+    gamma: 1.0,
+    channelMode: 0,
+    opaque: 0,
   });
 
-  useEffect(() => {
-    const effExp = exposure * (autoExposure ? autoScale : 1.0);
-    uniformsRef.current.uExposure.value = effExp;
-    uniformsRef.current.uGamma.value = Math.max(0.1, gamma);
-  }, [exposure, gamma, autoExposure, autoScale]);
+  const drawSky = (
+    overrideExp?: number,
+    overrideGamma?: number,
+    overrideChannel?: number,
+    overrideViewportSize?: number
+  ) => {
+    const st = glStateRef.current;
+    if (!st || !st.hasTexture) return;
+    const { gl, canvas } = st;
+    const w = overrideViewportSize ?? Math.max(1, canvas.width);
+    const h = overrideViewportSize ?? Math.max(1, canvas.height);
+    const vs = viewStateRef.current;
 
-  useEffect(() => {
-    let cancelled = false;
-    setLoadingErr(null);
+    const phi = ((90 - vs.pitch) * Math.PI) / 180;
+    const theta = (vs.yaw * Math.PI) / 180;
+    const fx = Math.sin(phi) * Math.cos(theta);
+    const fy = Math.cos(phi);
+    const fz = Math.sin(phi) * Math.sin(theta);
 
-    (async () => {
-      try {
-        const res = await invoke<CubemapPreviewPayload>("get_cubemap_faces_preview", {
-          nodeId,
-          mipIndex,
-          opaque: opaquePreview,
-        });
-        if (cancelled) return;
-        setAutoScale(res.auto_exposure_scale || 1.0);
+    // right = normalize(cross(forward, (0, 1, 0))) = normalize((-fz, 0, fx))
+    let rx = -fz;
+    let ry = 0;
+    let rz = fx;
+    const rLen = Math.hypot(rx, ry, rz) || 1;
+    rx /= rLen;
+    rz /= rLen;
 
-        const loader = new THREE.ImageLoader();
-        const images = await Promise.all(
-          res.face_data_urls.map(
-            (url) =>
-              new Promise<HTMLImageElement>((resolve, reject) => {
-                loader.load(url, resolve, undefined, reject);
-              })
-          )
-        );
-        if (cancelled) return;
-        const cubeTex = new THREE.CubeTexture(images);
-        cubeTex.needsUpdate = true;
-        if (uniformsRef.current.uCube.value) {
-          uniformsRef.current.uCube.value.dispose();
+    // up = cross(right, forward)
+    const ux = ry * fz - rz * fy;
+    const uy = rz * fx - rx * fz;
+    const uz = rx * fy - ry * fx;
+
+    const tanHalfFov = Math.tan(((vs.fov * 0.5) * Math.PI) / 180);
+
+    gl.viewport(0, 0, w, h);
+    gl.clearColor(0.08, 0.08, 0.1, 1.0);
+    gl.clear(gl.COLOR_BUFFER_BIT);
+    gl.useProgram(st.program);
+    gl.activeTexture(gl.TEXTURE0);
+    gl.bindTexture(gl.TEXTURE_CUBE_MAP, st.tex);
+    gl.uniform1i(st.uCube, 0);
+    gl.uniform3f(st.uForward, fx, fy, fz);
+    gl.uniform3f(st.uRight, rx, ry, rz);
+    gl.uniform3f(st.uUp, ux, uy, uz);
+    gl.uniform1f(st.uAspect, w / h);
+    gl.uniform1f(st.uTanHalfFov, tanHalfFov);
+    gl.uniform1i(st.uFormatMode, st.formatMode);
+    gl.uniform1i(st.uChannelMode, overrideChannel ?? vs.channelMode);
+    gl.uniform1i(st.uOpaque, vs.opaque);
+    gl.uniform1f(st.uExposure, overrideExp ?? vs.exposure);
+    gl.uniform1f(st.uGamma, Math.max(0.1, overrideGamma ?? vs.gamma));
+    gl.drawArrays(gl.TRIANGLES, 0, 3);
+  };
+
+  const estimateAutoExposureFromGl = () => {
+    const st = glStateRef.current;
+    if (!st || !st.hasTexture) return 1.0;
+    const { gl, canvas } = st;
+    const grid = Math.min(8, Math.max(1, canvas.width), Math.max(1, canvas.height));
+    const isHdr = st.formatMode === 3;
+    const savedYaw = viewStateRef.current.yaw;
+    const savedPitch = viewStateRef.current.pitch;
+    const savedFov = viewStateRef.current.fov;
+
+    // Render 6 square 90 deg faces into a tiny grid x grid viewport (6 readbacks instead of 384)
+    const dirs: Array<[number, number]> = [
+      [0, 0],
+      [90, 0],
+      [180, 0],
+      [270, 0],
+      [0, 89],
+      [0, -89],
+    ];
+    const buf = new Uint8Array(grid * grid * 4);
+    let logSum = 0;
+    let count = 0;
+    viewStateRef.current.fov = 90;
+    for (const [dyaw, dpitch] of dirs) {
+      viewStateRef.current.yaw = dyaw;
+      viewStateRef.current.pitch = dpitch;
+      drawSky(1.0, 1.0, 0, grid);
+      gl.readPixels(0, 0, grid, grid, gl.RGBA, gl.UNSIGNED_BYTE, buf);
+      for (let i = 0; i < buf.length; i += 4) {
+        let r = buf[i] / 255.0;
+        let g = buf[i + 1] / 255.0;
+        let b = buf[i + 2] / 255.0;
+        if (isHdr) {
+          r = r / Math.max(0.004, 1.0 - r);
+          g = g / Math.max(0.004, 1.0 - g);
+          b = b / Math.max(0.004, 1.0 - b);
         }
-        uniformsRef.current.uCube.value = cubeTex;
-      } catch (err) {
-        if (!cancelled) {
-          setLoadingErr(String(err));
-        }
+        const lum = Math.max(1e-4, 0.2126 * r + 0.7152 * g + 0.0722 * b);
+        logSum += Math.log(lum);
+        count++;
       }
-    })();
+    }
+    viewStateRef.current.yaw = savedYaw;
+    viewStateRef.current.pitch = savedPitch;
+    viewStateRef.current.fov = savedFov;
+    if (count === 0) return 1.0;
+    const scale = 0.18 / Math.exp(logSum / count);
+    if (!Number.isFinite(scale)) return 1.0;
+    return Math.max(1 / 32, Math.min(32, scale));
+  };
 
-    return () => {
-      cancelled = true;
-    };
-  }, [nodeId, mipIndex, opaquePreview]);
-
+  // Initialize direct WebGL2 cubemap skybox context once per mount
   useEffect(() => {
     const host = mountRef.current;
     if (!host) return;
 
-    const scene = new THREE.Scene();
-    const camera = new THREE.PerspectiveCamera(
-      60,
-      Math.max(1, host.clientWidth) / Math.max(1, host.clientHeight),
-      0.1,
-      100
-    );
-    camera.position.set(0, 0, 0.01);
-
-    const renderer = new THREE.WebGLRenderer({ antialias: true });
-    renderer.setSize(host.clientWidth, host.clientHeight);
-    renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+    const canvas = document.createElement("canvas");
+    canvas.style.width = "100%";
+    canvas.style.height = "100%";
+    canvas.style.display = "block";
     host.innerHTML = "";
-    host.appendChild(renderer.domElement);
+    host.appendChild(canvas);
 
-    const skyMat = new THREE.ShaderMaterial({
-      uniforms: uniformsRef.current,
-      vertexShader: `
-        varying vec3 vDir;
-        void main() {
-          vDir = position;
-          gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0);
-        }
-      `,
-      fragmentShader: `
-        uniform samplerCube uCube;
-        uniform float uExposure;
-        uniform float uGamma;
-        varying vec3 vDir;
-        void main() {
-          vec4 texel = textureCube(uCube, normalize(vDir));
-          vec3 col = texel.rgb * uExposure;
-          col = pow(max(col, vec3(0.0)), vec3(1.0 / max(uGamma, 0.1)));
-          gl_FragColor = vec4(col, 1.0);
-        }
-      `,
-      side: THREE.BackSide,
-      depthWrite: false,
+    const syncSize = () => {
+      const dpr = Math.min(window.devicePixelRatio || 1, 2);
+      const w = Math.max(1, Math.round(host.clientWidth * dpr));
+      const h = Math.max(1, Math.round(host.clientHeight * dpr));
+      if (canvas.width !== w || canvas.height !== h) {
+        canvas.width = w;
+        canvas.height = h;
+      }
+    };
+    syncSize();
+
+    const gl = canvas.getContext("webgl2", {
+      alpha: false,
+      antialias: true,
+      preserveDrawingBuffer: false,
     });
+    if (!gl) {
+      setLoadingErr("WebGL2 unavailable");
+      return;
+    }
+    const program = compileGl2Program(gl, GL2_CUBEMAP_SKY_VS, GL2_CUBEMAP_SKY_FS);
+    const tex = gl.createTexture();
+    if (!program || !tex) {
+      setLoadingErr("WebGL2 cubemap shader compile failed");
+      return;
+    }
 
-    const skyGeo = new THREE.BoxGeometry(10, 10, 10);
-    const skyMesh = new THREE.Mesh(skyGeo, skyMat);
-    scene.add(skyMesh);
+    glStateRef.current = {
+      canvas,
+      gl,
+      exts: queryGl2Exts(gl),
+      program,
+      tex,
+      uCube: gl.getUniformLocation(program, "uCube"),
+      uForward: gl.getUniformLocation(program, "uForward"),
+      uRight: gl.getUniformLocation(program, "uRight"),
+      uUp: gl.getUniformLocation(program, "uUp"),
+      uAspect: gl.getUniformLocation(program, "uAspect"),
+      uTanHalfFov: gl.getUniformLocation(program, "uTanHalfFov"),
+      uFormatMode: gl.getUniformLocation(program, "uFormatMode"),
+      uChannelMode: gl.getUniformLocation(program, "uChannelMode"),
+      uOpaque: gl.getUniformLocation(program, "uOpaque"),
+      uExposure: gl.getUniformLocation(program, "uExposure"),
+      uGamma: gl.getUniformLocation(program, "uGamma"),
+      formatMode: 0,
+      hasTexture: false,
+    };
 
-    let yaw = 0;
-    let pitch = 0;
-    let fov = 60;
     let dragging = false;
     let lastX = 0;
     let lastY = 0;
-    let animId = 0;
-
-    const updateCamera = () => {
-      camera.fov = fov;
-      camera.updateProjectionMatrix();
-      const phi = THREE.MathUtils.degToRad(90 - pitch);
-      const theta = THREE.MathUtils.degToRad(yaw);
-      const target = new THREE.Vector3(
-        Math.sin(phi) * Math.cos(theta),
-        Math.cos(phi),
-        Math.sin(phi) * Math.sin(theta)
-      );
-      camera.lookAt(target);
-    };
-    updateCamera();
 
     const onMouseDown = (e: MouseEvent) => {
       if (e.button === 0) {
@@ -251,65 +338,174 @@ const CubemapSkyViewport: React.FC<CubemapSkyViewportProps> = ({
       const dy = e.clientY - lastY;
       lastX = e.clientX;
       lastY = e.clientY;
-      yaw -= dx * 0.25;
-      pitch = Math.max(-89, Math.min(89, pitch + dy * 0.25));
-      updateCamera();
+      viewStateRef.current.yaw -= dx * 0.25;
+      viewStateRef.current.pitch = Math.max(
+        -89,
+        Math.min(89, viewStateRef.current.pitch + dy * 0.25)
+      );
+      drawSky();
     };
     const onMouseUp = () => {
       dragging = false;
     };
     const onWheel = (e: WheelEvent) => {
       e.preventDefault();
-      fov = Math.max(20, Math.min(100, fov + (e.deltaY > 0 ? 4 : -4)));
-      updateCamera();
+      viewStateRef.current.fov = Math.max(
+        20,
+        Math.min(100, viewStateRef.current.fov + (e.deltaY > 0 ? 4 : -4))
+      );
+      drawSky();
     };
     const onDblClick = () => {
-      yaw = 0;
-      pitch = 0;
-      fov = 60;
-      updateCamera();
+      viewStateRef.current.yaw = 0;
+      viewStateRef.current.pitch = 0;
+      viewStateRef.current.fov = 60;
+      drawSky();
     };
 
-    const dom = renderer.domElement;
-    dom.addEventListener("mousedown", onMouseDown);
+    canvas.addEventListener("mousedown", onMouseDown);
     window.addEventListener("mousemove", onMouseMove);
     window.addEventListener("mouseup", onMouseUp);
-    dom.addEventListener("wheel", onWheel, { passive: false });
-    dom.addEventListener("dblclick", onDblClick);
+    canvas.addEventListener("wheel", onWheel, { passive: false });
+    canvas.addEventListener("dblclick", onDblClick);
 
     const ro = new ResizeObserver(() => {
-      if (!host) return;
-      const w = Math.max(1, host.clientWidth);
-      const h = Math.max(1, host.clientHeight);
-      camera.aspect = w / h;
-      camera.updateProjectionMatrix();
-      renderer.setSize(w, h);
+      syncSize();
+      drawSky();
     });
     ro.observe(host);
 
-    const renderLoop = () => {
-      animId = requestAnimationFrame(renderLoop);
-      renderer.render(scene, camera);
-    };
-    renderLoop();
-
     return () => {
-      cancelAnimationFrame(animId);
       ro.disconnect();
-      dom.removeEventListener("mousedown", onMouseDown);
+      canvas.removeEventListener("mousedown", onMouseDown);
       window.removeEventListener("mousemove", onMouseMove);
       window.removeEventListener("mouseup", onMouseUp);
-      dom.removeEventListener("wheel", onWheel);
-      dom.removeEventListener("dblclick", onDblClick);
-      if (uniformsRef.current.uCube.value) {
-        uniformsRef.current.uCube.value.dispose();
-        uniformsRef.current.uCube.value = null;
+      canvas.removeEventListener("wheel", onWheel);
+      canvas.removeEventListener("dblclick", onDblClick);
+      const st = glStateRef.current;
+      if (st) {
+        st.gl.deleteTexture(st.tex);
+        st.gl.deleteProgram(st.program);
+        glStateRef.current = null;
       }
-      skyGeo.dispose();
-      skyMat.dispose();
-      renderer.dispose();
     };
   }, []);
+
+  useEffect(() => {
+    const effExp = exposure * (autoExposure ? autoScale : 1.0);
+    viewStateRef.current.baseExposure = exposure;
+    viewStateRef.current.autoExposure = autoExposure;
+    viewStateRef.current.exposure = effExp;
+    viewStateRef.current.gamma = Math.max(0.1, gamma);
+    viewStateRef.current.channelMode = channelModeToInt(channelMode);
+    viewStateRef.current.opaque = opaquePreview ? 1 : 0;
+    drawSky();
+  }, [exposure, gamma, autoExposure, autoScale, channelMode, opaquePreview]);
+
+  useEffect(() => {
+    let cancelled = false;
+    setLoadingErr(null);
+    if (glStateRef.current) {
+      glStateRef.current.hasTexture = false;
+      const { gl, canvas } = glStateRef.current;
+      gl.viewport(0, 0, Math.max(1, canvas.width), Math.max(1, canvas.height));
+      gl.clearColor(0.08, 0.08, 0.1, 1.0);
+      gl.clear(gl.COLOR_BUFFER_BIT);
+    }
+
+    const loadHtmlImage = (url: string) =>
+      new Promise<HTMLImageElement>((resolve, reject) => {
+        const img = new Image();
+        img.onload = () => resolve(img);
+        img.onerror = (e) => reject(e);
+        img.src = url;
+      });
+
+    (async () => {
+      try {
+        // Primary path: direct GPU-compressed cubemap upload (matches Asset Browser thumbnails, true HDR for BC6H)
+        let uploadedDirect = false;
+        try {
+          const raw = await invoke<ArrayBuffer>("get_texture_gpu_cubemap", {
+            nodeId,
+            mipIndex,
+          });
+          if (cancelled) return;
+          const surface = decodeWtxBlob(raw);
+          const st = glStateRef.current;
+          if (st && uploadCubemapToGl2(st.gl, st.tex, surface, st.exts)) {
+            st.formatMode = formatModeForGpuFormat(surface.gpuFormat);
+            st.hasTexture = true;
+            uploadedDirect = true;
+            const estScale = estimateAutoExposureFromGl();
+            if (!cancelled) {
+              setAutoScale(estScale);
+              const vs = viewStateRef.current;
+              vs.exposure = vs.baseExposure * (vs.autoExposure ? estScale : 1.0);
+              drawSky();
+            }
+          }
+        } catch {
+          uploadedDirect = false;
+        }
+
+        if (uploadedDirect || cancelled) return;
+
+        // Fallback path: CPU-decoded 6 face PNGs (preserve alpha so uChannelMode/uOpaque work live on GPU)
+        const res = await invoke<CubemapPreviewPayload>("get_cubemap_faces_preview", {
+          nodeId,
+          mipIndex,
+          opaque: false,
+        });
+        if (cancelled) return;
+        const images = await Promise.all(res.face_data_urls.map(loadHtmlImage));
+        if (cancelled) return;
+        const st = glStateRef.current;
+        if (!st || images.length < 6) return;
+        const { gl } = st;
+        gl.bindTexture(gl.TEXTURE_CUBE_MAP, st.tex);
+        gl.pixelStorei(gl.UNPACK_ALIGNMENT, 1);
+        gl.pixelStorei(gl.UNPACK_FLIP_Y_WEBGL, 0);
+        gl.texParameteri(gl.TEXTURE_CUBE_MAP, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
+        gl.texParameteri(gl.TEXTURE_CUBE_MAP, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
+        gl.texParameteri(gl.TEXTURE_CUBE_MAP, gl.TEXTURE_WRAP_R, gl.CLAMP_TO_EDGE);
+        gl.texParameteri(gl.TEXTURE_CUBE_MAP, gl.TEXTURE_MIN_FILTER, gl.LINEAR);
+        gl.texParameteri(gl.TEXTURE_CUBE_MAP, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
+        for (let f = 0; f < 6; f++) {
+          gl.texImage2D(
+            gl.TEXTURE_CUBE_MAP_POSITIVE_X + f,
+            0,
+            gl.RGBA,
+            gl.RGBA,
+            gl.UNSIGNED_BYTE,
+            images[f]
+          );
+        }
+        st.formatMode = 0;
+        st.hasTexture = true;
+        const scale = res.auto_exposure_scale || 1.0;
+        setAutoScale(scale);
+        const vs = viewStateRef.current;
+        vs.exposure = vs.baseExposure * (vs.autoExposure ? scale : 1.0);
+        drawSky();
+      } catch (err) {
+        if (!cancelled) {
+          if (glStateRef.current) {
+            glStateRef.current.hasTexture = false;
+            const { gl, canvas } = glStateRef.current;
+            gl.viewport(0, 0, Math.max(1, canvas.width), Math.max(1, canvas.height));
+            gl.clearColor(0.08, 0.08, 0.1, 1.0);
+            gl.clear(gl.COLOR_BUFFER_BIT);
+          }
+          setLoadingErr(String(err));
+        }
+      }
+    })();
+
+    return () => {
+      cancelled = true;
+    };
+  }, [nodeId, mipIndex, revision]);
 
   const commitGammaExposure = () => {
     const g = Math.max(0.1, Math.min(8.0, parseFloat(gammaDraft) || 1.0));
@@ -391,7 +587,6 @@ const CubemapSkyViewport: React.FC<CubemapSkyViewportProps> = ({
 
 export interface TextureCenterViewProps {
   activeTexture: TextureNodeView;
-  centerTab: string;
   mipIndex: number;
   layerIndex: number;
   channelMode: string;
@@ -413,7 +608,6 @@ export interface TextureCenterViewProps {
 
 export const TextureCenterView: React.FC<TextureCenterViewProps> = ({
   activeTexture,
-  centerTab,
   mipIndex,
   layerIndex,
   channelMode,
@@ -437,9 +631,15 @@ export const TextureCenterView: React.FC<TextureCenterViewProps> = ({
   const [fps, setFps] = useState(15);
   const gpuCanvasRef = useRef<GpuTextureCanvasHandle | null>(null);
 
-  const isAnimated2D =
-    activeTexture.dimension === "Animated 2D" && activeTexture.layer_count > 1;
-  const isCubemap = activeTexture.dimension === "Cube";
+  const isCubemap = activeTexture.dimension === "Cube" && activeTexture.uvd_mode !== "item";
+  const layerCount = Math.max(1, activeTexture.layer_count);
+  const isAnimated2D = !isCubemap && layerCount > 1;
+  const clampedLayer = Math.max(0, Math.min(layerCount - 1, layerIndex));
+
+  const layerIndexRef = useRef(clampedLayer);
+  layerIndexRef.current = clampedLayer;
+  const onChangeLayerRef = useRef(onChangeLayer);
+  onChangeLayerRef.current = onChangeLayer;
 
   useEffect(() => {
     setAnimPlaying(false);
@@ -447,14 +647,14 @@ export const TextureCenterView: React.FC<TextureCenterViewProps> = ({
 
   useEffect(() => {
     if (!animPlaying || !isAnimated2D) return;
-    const count = Math.max(1, activeTexture.layer_count);
     const intervalMs = 1000 / Math.max(1, Math.min(240, fps));
     const timer = window.setInterval(() => {
-      const next = (activeTexture.current_layer + 1) % count;
-      onChangeLayer(next);
+      const next = (layerIndexRef.current + 1) % layerCount;
+      layerIndexRef.current = next;
+      onChangeLayerRef.current(next);
     }, intervalMs);
     return () => window.clearInterval(timer);
-  }, [animPlaying, isAnimated2D, activeTexture.layer_count, activeTexture.current_layer, fps, onChangeLayer]);
+  }, [animPlaying, isAnimated2D, layerCount, fps]);
 
   const commitFps = () => {
     const parsed = parseFloat(fpsDraft.replace(",", "."));
@@ -491,9 +691,11 @@ export const TextureCenterView: React.FC<TextureCenterViewProps> = ({
     }
   };
 
+  const texRevision = `${activeTexture.size_bytes}:${activeTexture.raw_header_hex}:${activeTexture.spec_line}`;
+
   return (
     <>
-      {activeTexture && centerTab === "primary" ? (
+      {activeTexture && !isCubemap ? (
         <div style={{ display: "flex", flexDirection: "column", flex: 1, minHeight: 0 }}>
           <div
             className="checkerboard-canvas"
@@ -557,8 +759,8 @@ export const TextureCenterView: React.FC<TextureCenterViewProps> = ({
                 ref={gpuCanvasRef}
                 nodeId={activeTexture.node_id}
                 mipIndex={mipIndex}
-                layerIndex={layerIndex}
-                revision={`${activeTexture.size_bytes}:${activeTexture.raw_header_hex}:${activeTexture.spec_line}`}
+                layerIndex={clampedLayer}
+                revision={texRevision}
                 channelMode={channelMode}
                 opaquePreview={opaquePreview}
                 alt={activeTexture.title}
@@ -633,12 +835,12 @@ export const TextureCenterView: React.FC<TextureCenterViewProps> = ({
 
               <StudioRange
                 min={0}
-                max={Math.max(1, activeTexture.layer_count - 1)}
+                max={Math.max(1, layerCount - 1)}
                 step={1}
-                value={activeTexture.current_layer}
+                value={clampedLayer}
                 defaultValue={0}
                 compact
-                ticks={activeTexture.layer_count <= 24 ? activeTexture.layer_count : 0}
+                ticks={layerCount <= 24 ? layerCount : 0}
                 style={{ flex: 1 }}
                 onChange={(val) => {
                   setAnimPlaying(false);
@@ -651,27 +853,19 @@ export const TextureCenterView: React.FC<TextureCenterViewProps> = ({
                 className="mono"
                 style={{ color: "var(--brush-muted)", fontSize: 11.5, minWidth: 52, textAlign: "right" }}
               >
-                {activeTexture.current_layer + 1} / {activeTexture.layer_count}
+                {clampedLayer + 1} / {layerCount}
               </span>
             </div>
           )}
         </div>
-      ) : activeTexture && centerTab === "secondary" ? (
-        isCubemap ? (
-          <CubemapSkyViewport
-            nodeId={activeTexture.node_id}
-            mipIndex={mipIndex}
-            opaquePreview={opaquePreview}
-          />
-        ) : (
-          <div className="viewport-empty" style={{ flex: 1 }}>
-            <IconCube size={44} />
-            <div className="viewport-empty-title">No cubemap preview</div>
-            <div className="viewport-empty-note">
-              Select a cubemap texture to orbit it in 3D here.
-            </div>
-          </div>
-        )
+      ) : activeTexture && isCubemap ? (
+        <CubemapSkyViewport
+          nodeId={activeTexture.node_id}
+          mipIndex={mipIndex}
+          channelMode={channelMode}
+          opaquePreview={opaquePreview}
+          revision={texRevision}
+        />
       ) : null}
     </>
   );

@@ -148,6 +148,11 @@ export default function App() {
   const assetSearchInputRef = useRef<HTMLInputElement | null>(null);
 
   const [wmbDocGeneration, setWmbDocGeneration] = useState<number>(0);
+  const [thumbResetGen, setThumbResetGen] = useState<number>(0);
+  const [invalidatedThumbs, setInvalidatedThumbs] = useState<{
+    nodeIds: string[];
+    seq: number;
+  } | null>(null);
   const [settingsModalOpen, setSettingsModalOpen] = useState<boolean>(false);
   const [batchReplaceNodeId, setBatchReplaceNodeId] = useState<string | null>(null);
   const [batchRecompressOpen, setBatchRecompressOpen] = useState<boolean>(false);
@@ -890,6 +895,7 @@ export default function App() {
 
       const { nextExpanded, defaultTargetId } = expandForOpen(opened);
       setWmbDocGeneration((g) => g + 1);
+      setThumbResetGen((g) => g + 1);
       setExpandedNodes(nextExpanded);
       setMipIndex(0);
       setLayerIndex(0);
@@ -1179,6 +1185,7 @@ export default function App() {
       const updated = await invoke<DocumentOutline>("undo_document");
       setOutline(updated);
       setWmbDocGeneration((g) => g + 1);
+      setThumbResetGen((g) => g + 1);
       await selectAndInspectNode(selectedNodeId);
       setStatusLeft(`Undid: ${label}`);
     } catch (err) {
@@ -1193,6 +1200,7 @@ export default function App() {
       const updated = await invoke<DocumentOutline>("redo_document");
       setOutline(updated);
       setWmbDocGeneration((g) => g + 1);
+      setThumbResetGen((g) => g + 1);
       await selectAndInspectNode(selectedNodeId);
       setStatusLeft(`Redid: ${label}`);
     } catch (err) {
@@ -1402,6 +1410,24 @@ export default function App() {
       });
       setOutline(updated);
       setWmbDocGeneration((g) => g + 1);
+      if (action === "replace_file" || action === "dummy_out") {
+        if (nodeId.includes("uvdgrp:")) {
+          setThumbResetGen((g) => g + 1);
+        } else {
+          setInvalidatedThumbs((prev) => ({
+            nodeIds: [nodeId],
+            seq: (prev?.seq ?? 0) + 1,
+          }));
+        }
+      } else if (
+        action !== "set_hash" &&
+        action !== "calc_crc32" &&
+        action !== "toggle_xt1_flag" &&
+        action !== "set_flags" &&
+        action !== "add_texture"
+      ) {
+        setThumbResetGen((g) => g + 1);
+      }
       await selectAndInspectNode(nodeId);
       setStatusLeft(updated.undo_label ?? `Updated texture`);
     } catch (err) {
@@ -1792,6 +1818,7 @@ export default function App() {
       });
       setOutline(updated);
       setWmbDocGeneration((g) => g + 1);
+      setThumbResetGen((g) => g + 1);
       let nextInspectId = nodeId;
       if (action === "delete_groups" || action === "delete_items") {
         nextInspectId = nodeId.includes("/")
@@ -2584,7 +2611,8 @@ export default function App() {
             pointerDrag={pointerDrag}
             assetRatio={assetRatio}
             zoomLevel={assetBrowserZoom}
-            docGeneration={wmbDocGeneration}
+            docGeneration={thumbResetGen}
+            invalidatedThumbs={invalidatedThumbs}
             onChangeZoomLevel={setAssetBrowserZoom}
             onSearchChange={setAssetSearch}
             onToggleExpand={(nodeId) =>
@@ -2909,6 +2937,7 @@ export default function App() {
           onOutlineUpdated={(updated, statusMsg) => {
             setOutline(updated);
             setWmbDocGeneration((g) => g + 1);
+            setThumbResetGen((g) => g + 1);
             void selectAndInspectNode(selectedNodeId);
             setStatusLeft(statusMsg);
           }}

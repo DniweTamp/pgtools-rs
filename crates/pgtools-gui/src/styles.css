@@ -1343,6 +1343,8 @@ body,
 .modal-card {
   width: 480px;
   max-width: 95vw;
+  max-height: 92vh;
+  overflow: hidden;
   background-color: var(--brush-card);
   border: 1px solid var(--brush-border-strong);
   border-radius: 12px;

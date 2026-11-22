@@ -131,6 +131,7 @@ fn main() {
             texture_cmd::get_nvtt_status,
             texture_cmd::get_cubemap_faces_preview,
             texture_cmd::get_texture_gpu_surface,
+            texture_cmd::get_texture_gpu_cubemap,
             texture_cmd::get_texture_gpu_thumbnails_batch,
             texture_cmd::get_texture_thumbnails_batch,
             texture_cmd::create_empty_bank_document,

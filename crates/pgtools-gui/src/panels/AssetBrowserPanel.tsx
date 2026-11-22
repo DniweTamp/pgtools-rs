@@ -15,6 +15,7 @@ export interface AssetBrowserPanelProps {
   assetRatio: number;
   zoomLevel?: number;
   docGeneration?: number;
+  invalidatedThumbs?: { nodeIds: string[]; seq: number } | null;
   onChangeZoomLevel?: (level: number) => void;
   searchInputRef?: React.RefObject<HTMLInputElement | null>;
   onSearchChange: (s: string) => void;
@@ -85,6 +86,7 @@ export function AssetBrowserPanel({
   assetRatio,
   zoomLevel = 0,
   docGeneration = 0,
+  invalidatedThumbs = null,
   onChangeZoomLevel,
   searchInputRef,
   onSearchChange,
@@ -108,6 +110,21 @@ export function AssetBrowserPanel({
   useEffect(() => {
     setThumbMap({});
   }, [outline?.file_name, docGeneration]);
+
+  useEffect(() => {
+    if (!invalidatedThumbs || invalidatedThumbs.nodeIds.length === 0) return;
+    setThumbMap((prev) => {
+      let changed = false;
+      const next = { ...prev };
+      for (const id of invalidatedThumbs.nodeIds) {
+        if (id in next) {
+          delete next[id];
+          changed = true;
+        }
+      }
+      return changed ? next : prev;
+    });
+  }, [invalidatedThumbs]);
 
   useEffect(() => {
     if (tileSize === 0 || gridGroups.length === 0) return;
