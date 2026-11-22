@@ -4803,3 +4803,415 @@ pub fn texture_blob_has_pixel_payload_at(blob: &[u8], index: Option<usize>) -> b
         _ => false,
     }
 }
+
+
+/// Wire pixel format identifier for direct GPU texture upload (`WTX2`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[repr(u32)]
+pub enum GpuPixelFormat {
+    Rgba8 = 0,
+    R8 = 2,
+    Rg8 = 3,
+    Rgba16F = 4,
+    Bc1 = 10,
+    Bc2 = 11,
+    Bc3 = 12,
+    Bc4 = 13,
+    Bc5 = 14,
+    Bc6hUf16 = 15,
+    Bc6hSf16 = 16,
+    Bc7 = 17,
+}
+
+impl GpuPixelFormat {
+    pub const fn as_u32(self) -> u32 {
+        self as u32
+    }
+
+    pub const fn is_compressed(self) -> bool {
+        (self as u32) >= 10
+    }
+
+    pub const fn from_texture_format(fmt: TextureFormat) -> Option<Self> {
+        match fmt {
+            TextureFormat::Rgba8
+            | TextureFormat::Rgba8Srgb
+            | TextureFormat::Bgra8
+            | TextureFormat::Bgra8Srgb => Some(Self::Rgba8),
+            TextureFormat::R8Unorm | TextureFormat::AfL8Unorm => Some(Self::R8),
+            TextureFormat::Rg8Unorm => Some(Self::Rg8),
+            TextureFormat::Rgba16Float => Some(Self::Rgba16F),
+            TextureFormat::Bc1 | TextureFormat::Bc1Srgb => Some(Self::Bc1),
+            TextureFormat::Bc2 | TextureFormat::Bc2Srgb => Some(Self::Bc2),
+            TextureFormat::Bc3 | TextureFormat::Bc3Srgb => Some(Self::Bc3),
+            TextureFormat::Bc4 => Some(Self::Bc4),
+            TextureFormat::Bc5 => Some(Self::Bc5),
+            TextureFormat::Bc6hUf16 => Some(Self::Bc6hUf16),
+            TextureFormat::Bc6hSf16 => Some(Self::Bc6hSf16),
+            TextureFormat::Bc7 | TextureFormat::Bc7Srgb => Some(Self::Bc7),
+            TextureFormat::Astc(_, _, _) | TextureFormat::Unknown(_) => None,
+        }
+    }
+}
+
+/// Returns true when the texture format can be uploaded directly to WebGL2 without CPU BCn/ASTC decode.
+pub const fn is_gpu_direct_format(fmt: TextureFormat) -> bool {
+    GpuPixelFormat::from_texture_format(fmt).is_some()
+}
+
+/// Linear GPU-ready surface (either compressed BCn blocks or uncompressed pixels) for a single mip/layer.
+#[derive(Debug, Clone)]
+pub struct GpuTextureSurface {
+    pub width: u32,
+    pub height: u32,
+    pub layer_count: u32,
+    pub gpu_format: GpuPixelFormat,
+    pub is_srgb: bool,
+    pub data: Vec<u8>,
+}
+
+/// Pick the first mip index in `0..mip_count` whose `max(w, h) <= max_dim` (or the largest/smallest valid mip).
+pub fn pick_mip_for_max_dim(width: u32, height: u32, mip_count: u32, max_dim: u32) -> u32 {
+    if max_dim == 0 || mip_count <= 1 {
+        return 0;
+    }
+    let mut w = width.max(1);
+    let mut h = height.max(1);
+    for m in 0..mip_count {
+        if w <= max_dim && h <= max_dim {
+            return m;
+        }
+        w = (w / 2).max(1);
+        h = (h / 2).max(1);
+    }
+    mip_count.saturating_sub(1)
+}
+
+fn finalize_gpu_surface(
+    mut linear: Vec<u8>,
+    width: u32,
+    height: u32,
+    layer_count: u32,
+    format: TextureFormat,
+) -> Result<GpuTextureSurface> {
+    let w = width.max(1);
+    let h = height.max(1);
+    if let Some(gpu_fmt) = GpuPixelFormat::from_texture_format(format) {
+        let bcn_aligned = !gpu_fmt.is_compressed() || (w >= 4 && h >= 4 && w % 4 == 0 && h % 4 == 0);
+        if bcn_aligned {
+            if matches!(format, TextureFormat::Bgra8 | TextureFormat::Bgra8Srgb) {
+                for px in linear.chunks_exact_mut(4) {
+                    px.swap(0, 2);
+                }
+            }
+            return Ok(GpuTextureSurface {
+                width: w,
+                height: h,
+                layer_count: layer_count.max(1),
+                gpu_format: gpu_fmt,
+                is_srgb: format.is_srgb(),
+                data: linear,
+            });
+        }
+    }
+    let decoded = decode_linear_blocks_to_rgba8(&linear, w, h, format)?;
+    Ok(GpuTextureSurface {
+        width: decoded.width(),
+        height: decoded.height(),
+        layer_count: layer_count.max(1),
+        gpu_format: GpuPixelFormat::Rgba8,
+        is_srgb: format.is_srgb(),
+        data: decoded.into_raw(),
+    })
+}
+
+/// Extract a linear GPU-ready surface (deswizzled BCn blocks or uncompressed pixels) for any
+/// XT1, BNTX, GTX, or DDS blob at `(mip_index, layer_index)` without CPU BCn decompression.
+/// Falls back to CPU RGBA8 only for ASTC, unknown formats, or sub-4x4 BCn mip levels.
+pub fn extract_gpu_texture_surface(
+    blob: &[u8],
+    sub_index: usize,
+    mip_index: u32,
+    layer_index: u32,
+) -> Result<GpuTextureSurface> {
+    if blob.len() < 16 {
+        return Err(PgError::InvalidData("Texture blob too short".into()));
+    }
+
+    if &blob[0..4] == b"XT1\0" {
+        if blob.len() < 0x38 {
+            return Err(PgError::InvalidData("Truncated XT1 header".into()));
+        }
+        let mut r = BinReader::new(blob, Endian::Little);
+        r.seek(0x08)?;
+        let stored_image_size = r.read_u64()?;
+        let header_size = r.read_u32()? as usize;
+        let mip_word = r.read_u32()?;
+        let mip_count = (mip_word & 0xFFFF).max(1);
+        let tex_type = r.read_u32()?;
+        let xt1_fmt = r.read_u32()?;
+        let width = r.read_u32()?;
+        let height = r.read_u32()?;
+        let depth = r.read_u32()?.max(1);
+        let _tex_flag = r.read_u32()?;
+        let layout_word = r.read_u32()?;
+        let format = TextureFormat::from_xt1_code(xt1_fmt);
+
+        let layout = compute_xt1_layout(
+            width,
+            height,
+            depth,
+            mip_count,
+            tex_type,
+            layout_word,
+            format,
+            stored_image_size,
+        );
+        let clamped_mip = (mip_index as usize).min(layout.mips.len().saturating_sub(1));
+        let mip_info = &layout.mips[clamped_mip];
+        let payload = if header_size <= blob.len() {
+            &blob[header_size..]
+        } else {
+            &[]
+        };
+
+        let is_cube = tex_type == 3 || tex_type == 8;
+        let is_3d = tex_type == 2;
+        let layer_count = if is_cube {
+            6
+        } else if is_3d {
+            mip_info.slice_count.max(1) as u32
+        } else {
+            1
+        };
+        let clamped_layer = (layer_index as usize).min((layer_count as usize).saturating_sub(1));
+        let bpb = format.bytes_per_block();
+        let single_slice_bytes = mip_info.width_blocks * mip_info.height_blocks * bpb;
+        let mut linear = vec![0u8; single_slice_bytes];
+
+        if is_3d && mip_info.block_depth > 1 {
+            let total_vol_bytes = single_slice_bytes * mip_info.slice_count;
+            let mut vol_linear = vec![0u8; total_vol_bytes];
+            let total_surf = mip_info.slice_surface_size * mip_info.slice_count;
+            let mut surface = vec![0u8; total_surf];
+            if mip_info.offset < payload.len() {
+                let avail = (payload.len() - mip_info.offset).min(total_surf);
+                surface[..avail].copy_from_slice(&payload[mip_info.offset..mip_info.offset + avail]);
+            }
+            gob_swizzle::deswizzle_volume(
+                &surface,
+                &mut vol_linear,
+                mip_info.width_blocks,
+                mip_info.height_blocks,
+                mip_info.slice_count,
+                bpb,
+                mip_info.block_height,
+                mip_info.block_depth,
+                mip_info.pitch,
+            );
+            let slice_start = clamped_layer * single_slice_bytes;
+            if slice_start + single_slice_bytes <= vol_linear.len() {
+                linear.copy_from_slice(&vol_linear[slice_start..slice_start + single_slice_bytes]);
+            }
+        } else {
+            let sub_offset = if is_cube {
+                clamped_layer * layout.face_stride + mip_info.offset
+            } else if is_3d {
+                mip_info.offset + clamped_layer * mip_info.slice_surface_size
+            } else {
+                mip_info.offset
+            };
+            if sub_offset < payload.len() {
+                let avail = (payload.len() - sub_offset).min(mip_info.slice_surface_size);
+                let mut surface = vec![0u8; mip_info.slice_surface_size];
+                surface[..avail].copy_from_slice(&payload[sub_offset..sub_offset + avail]);
+                gob_swizzle::deswizzle_volume(
+                    &surface,
+                    &mut linear,
+                    mip_info.width_blocks,
+                    mip_info.height_blocks,
+                    1,
+                    bpb,
+                    mip_info.block_height,
+                    1,
+                    mip_info.pitch,
+                );
+            }
+        }
+
+        return finalize_gpu_surface(linear, mip_info.width, mip_info.height, layer_count, format);
+    }
+
+    if (blob.len() >= 4 && &blob[0..4] == b"BNTX")
+        || (blob.len() >= 84 && &blob[80..84] == b"BNTX")
+    {
+        let recs = parse_bntx_textures(blob)?;
+        let tex = recs.get(sub_index).unwrap_or(&recs[0]);
+        let layer_count = if tex.surface_dim == 3 || tex.array_length == 6 {
+            6u32
+        } else {
+            tex.depth.max(tex.array_length).max(1)
+        };
+        let clamped_layer = (layer_index as usize).min((layer_count as usize).saturating_sub(1));
+        let layer_stride = if layer_count > 1 && (tex.image_size as usize) >= (layer_count as usize)
+        {
+            (tex.image_size as usize) / (layer_count as usize)
+        } else {
+            0
+        };
+
+        let clamped_mip = (mip_index as usize).min(tex.mip_offsets.len().saturating_sub(1));
+        let mip_w = (tex.width >> clamped_mip).max(1);
+        let mip_h = (tex.height >> clamped_mip).max(1);
+        let (bw, bh) = tex.format.block_dimensions();
+        let bpb = tex.format.bytes_per_block();
+        let wb = ((mip_w as usize) + bw - 1) / bw;
+        let hb = ((mip_h as usize) + bh - 1) / bh;
+        let bh_mip0 = 1usize << tex.block_height_log2;
+        let mip_bh = gob_swizzle::mip_block_height(hb, bh_mip0);
+        let pitch = align(wb * bpb, 64);
+        let surf_size = pitch * align(hb, mip_bh * 8);
+
+        let mut linear = vec![0u8; wb * hb * bpb];
+        if let Some(&mip_off) = tex.mip_offsets.get(clamped_mip) {
+            let slice_off = mip_off + clamped_layer * layer_stride;
+            if slice_off < blob.len() {
+                let avail = (blob.len() - slice_off).min(surf_size);
+                let mut surface = vec![0u8; surf_size];
+                surface[..avail].copy_from_slice(&blob[slice_off..slice_off + avail]);
+                gob_swizzle::deswizzle_volume(
+                    &surface,
+                    &mut linear,
+                    wb,
+                    hb,
+                    1,
+                    bpb,
+                    mip_bh,
+                    1,
+                    pitch,
+                );
+            }
+        }
+        return finalize_gpu_surface(linear, mip_w, mip_h, layer_count, tex.format);
+    }
+
+    if &blob[0..4] == b"Gfx2" {
+        if blob.len() < 0x40 + 0x9C + 0x20 {
+            return Err(PgError::InvalidData("Truncated GTX container".into()));
+        }
+        let mut r = BinReader::new(&blob[0x40..0x40 + 0x9C], Endian::Big);
+        let _dim = r.read_u32()?;
+        let width = r.read_u32()?;
+        let height = r.read_u32()?;
+        let depth = r.read_u32()?.max(1);
+        let num_mips = r.read_u32()?.max(1);
+        let gx2_fmt = r.read_u32()?;
+        let aa = r.read_u32()?;
+        let use_flags = r.read_u32()?;
+        let data_length = r.read_u32()? as usize;
+        let _data_ptr = r.read_u32()?;
+        let mip_length = r.read_u32()? as usize;
+        let _mip_ptr = r.read_u32()?;
+        let tile_mode = r.read_u32()?;
+        let swizzle_val = r.read_u32()?;
+        let _alignment = r.read_u32()?;
+        let pitch = r.read_u32()?;
+        let mut mip_offsets = [0u32; 13];
+        for slot in &mut mip_offsets {
+            *slot = r.read_u32()?;
+        }
+
+        let format = gx2_addrlib::gx2_format_to_texture_format(gx2_fmt);
+        let clamped_mip = mip_index.min(num_mips.saturating_sub(1));
+        let mip_w = (width >> clamped_mip).max(1);
+        let mip_h = (height >> clamped_mip).max(1);
+
+        let base_start = 0x40 + 0x9C + 0x20;
+        let base_end = (base_start + data_length).min(blob.len());
+        let (swizzled_slice, mip_pitch) = if clamped_mip == 0 || mip_length == 0 {
+            (&blob[base_start..base_end], pitch)
+        } else {
+            let mip_blk_start = base_end + 0x20;
+            if mip_blk_start < blob.len() {
+                let rel_off = if clamped_mip == 1 {
+                    0usize
+                } else {
+                    (mip_offsets[(clamped_mip - 1) as usize] as usize).saturating_sub(data_length)
+                };
+                let start = (mip_blk_start + rel_off).min(blob.len());
+                (&blob[start..], (pitch >> clamped_mip).max(32))
+            } else {
+                (&blob[base_start..base_end], pitch)
+            }
+        };
+
+        let linear = gx2_addrlib::deswizzle_gx2_surface(
+            mip_w,
+            mip_h,
+            depth,
+            gx2_fmt,
+            aa,
+            use_flags,
+            tile_mode,
+            swizzle_val,
+            mip_pitch,
+            0,
+            swizzled_slice,
+        );
+        return finalize_gpu_surface(linear, mip_w, mip_h, depth, format);
+    }
+
+    // Standard DDS
+    let meta = inspect_texture_blob(blob)?;
+    let header_size = if blob.len() >= 148 && &blob[84..88] == b"DX10" {
+        148
+    } else {
+        128
+    };
+    if blob.len() < header_size {
+        return Err(PgError::InvalidData("DDS shorter than header".into()));
+    }
+    let payload = &blob[header_size..];
+    let (bw, bh) = meta.format.block_dimensions();
+    let bpb = meta.format.bytes_per_block();
+    let layer_count = meta.layer_count.max(1);
+    let clamped_layer = (layer_index as usize).min((layer_count as usize).saturating_sub(1));
+
+    let mut face_stride = 0usize;
+    let mut cw = meta.width.max(1);
+    let mut ch = meta.height.max(1);
+    for _ in 0..meta.mip_count.max(1) {
+        let bx = ((cw as usize) + bw - 1) / bw;
+        let by = ((ch as usize) + bh - 1) / bh;
+        face_stride += bx.max(1) * by.max(1) * bpb;
+        cw = (cw / 2).max(1);
+        ch = (ch / 2).max(1);
+    }
+
+    let clamped_mip = mip_index.min(meta.mip_count.saturating_sub(1));
+    let mut mip_offset = clamped_layer.saturating_mul(face_stride);
+    let mut cur_w = meta.width.max(1);
+    let mut cur_h = meta.height.max(1);
+    for _ in 0..clamped_mip {
+        let bx = ((cur_w as usize) + bw - 1) / bw;
+        let by = ((cur_h as usize) + bh - 1) / bh;
+        let mip_bytes = bx.max(1) * by.max(1) * bpb;
+        if mip_offset + mip_bytes <= payload.len() {
+            mip_offset += mip_bytes;
+            cur_w = (cur_w / 2).max(1);
+            cur_h = (cur_h / 2).max(1);
+        } else {
+            break;
+        }
+    }
+
+    let bx = ((cur_w as usize) + bw - 1) / bw;
+    let by = ((cur_h as usize) + bh - 1) / bh;
+    let needed = bx.max(1) * by.max(1) * bpb;
+    let mut linear = vec![0u8; needed];
+    if mip_offset < payload.len() {
+        let avail = (payload.len() - mip_offset).min(needed);
+        linear[..avail].copy_from_slice(&payload[mip_offset..mip_offset + avail]);
+    }
+    finalize_gpu_surface(linear, cur_w, cur_h, layer_count, meta.format)
+}

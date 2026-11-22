@@ -7,15 +7,16 @@ use crate::vfs::{
 use base64::{engine::general_purpose::STANDARD as BASE64, Engine as _};
 use pgtools_core::{
     dat::DatFile,
+    scene::{encode_wtx2_blob, extract_texture_for_wtx2},
     texture_conv::{
         build_dummy_dds, decode_bntx_subtexture_mip_filtered, decode_cubemap_six_faces,
         decode_texture_layer_filtered, decode_texture_mip_filtered,
         encode_rgba_to_dds_with_quality, encode_rgba_to_xt1_with_options,
-        export_texture_to_dds_lossless, get_nvtt_status_description, inspect_texture_blob,
-        parse_bntx_textures, recompress_astc_texture_blob_to_bc,
-        replace_bntx_subtexture_with_options, swizzle_dds_to_xt1,
-        texture_blob_has_pixel_payload_at, AstcRecompressConfig, EncodeQuality, TextureDimension,
-        TextureFormat, ASTC_FOOTPRINTS,
+        export_texture_to_dds_lossless, extract_gpu_texture_surface, get_nvtt_status_description,
+        inspect_texture_blob, is_gpu_direct_format, parse_bntx_textures,
+        recompress_astc_texture_blob_to_bc, replace_bntx_subtexture_with_options,
+        swizzle_dds_to_xt1, texture_blob_has_pixel_payload_at, AstcRecompressConfig,
+        EncodeQuality, TextureDimension, TextureFormat, ASTC_FOOTPRINTS,
     },
     wtb::{
         WtbFile, WtbGameProfile, XT1_FLAG_BASE, XT1_FLAG_CUBEMAP, XT1_FLAG_HAS_CRC32,
@@ -111,6 +112,8 @@ pub struct TextureNodeView {
     pub embedded_name: Option<String>,
     pub nvtt_status: String,
     pub preview_data_url: Option<String>,
+    #[serde(default)]
+    pub gpu_direct: bool,
     pub raw_header_hex: String,
     #[serde(default)]
     pub uvd_mode: Option<String>,
@@ -163,7 +166,7 @@ pub(crate) fn build_texture_node_view(
 ) -> TextureNodeView {
     let is_bntx = is_bntx_blob(blob);
 
-    let (format_name, dimension, width, height, depth, base_layers, mip_count, embedded_name) =
+    let (detected_format, format_name, dimension, width, height, depth, base_layers, mip_count, embedded_name) =
         if is_bntx {
             if let Ok(recs) = parse_bntx_textures(blob) {
                 let rec = recs.get(index).unwrap_or(&recs[0]);
@@ -180,6 +183,7 @@ pub(crate) fn build_texture_node_view(
                     TextureDimension::Tex2D => 1,
                 };
                 (
+                    rec.format,
                     rec.format.display_name(),
                     dim,
                     rec.width,
@@ -191,6 +195,7 @@ pub(crate) fn build_texture_node_view(
                 )
             } else {
                 (
+                    TextureFormat::Unknown(0),
                     "Unknown".to_string(),
                     TextureDimension::Tex2D,
                     0,
@@ -204,6 +209,7 @@ pub(crate) fn build_texture_node_view(
         } else {
             match inspect_texture_blob(blob) {
                 Ok(m) => (
+                    m.format,
                     m.format.display_name(),
                     m.dimension,
                     m.width,
@@ -214,6 +220,7 @@ pub(crate) fn build_texture_node_view(
                     m.name,
                 ),
                 Err(_) => (
+                    TextureFormat::Unknown(0),
                     "Unknown".to_string(),
                     TextureDimension::Tex2D,
                     0,
@@ -241,12 +248,27 @@ pub(crate) fn build_texture_node_view(
     }
 
     let has_payload = texture_blob_has_pixel_payload_at(blob, Some(index));
-    let (preview_data_url, layer_count, validation_ok, validation_msg) = if !has_payload {
+    let allow_gpu_direct = has_payload
+        && is_gpu_direct_format(detected_format)
+        && !node_id.contains("uvdgrp:")
+        && !node_id.contains("uvditem:")
+        && width > 0
+        && height > 0;
+    let (preview_data_url, gpu_direct, layer_count, validation_ok, validation_msg) = if !has_payload {
         (
             None,
+            false,
             base_layers,
             false,
             "Texture payload missing (header-only WTA entry without WTP/DTT pixel data).".to_string(),
+        )
+    } else if allow_gpu_direct {
+        (
+            None,
+            true,
+            base_layers,
+            true,
+            format!("GPU-direct ({}) — zero CPU decode.", game_profile.label()),
         )
     } else {
         let decode_res =
@@ -264,6 +286,7 @@ pub(crate) fn build_texture_node_view(
             };
             (
                 url,
+                false,
                 layers_at_mip.max(base_layers),
                 true,
                 format!("Decoded cleanly ({}) — layout verified.", game_profile.label()),
@@ -271,6 +294,7 @@ pub(crate) fn build_texture_node_view(
         }
         Err(e) => (
             None,
+            false,
             base_layers,
             false,
             format!("Preview decode warning: {e}"),
@@ -345,6 +369,7 @@ pub(crate) fn build_texture_node_view(
         embedded_name,
         nvtt_status,
         preview_data_url,
+        gpu_direct,
         raw_header_hex,
         uvd_mode: None,
     }
@@ -493,6 +518,109 @@ pub fn get_cubemap_faces_preview(
         width: w,
         height: h,
     })
+}
+
+/// Resolve a texture node's raw container blob and sub-index for direct GPU surface extraction.
+fn resolve_texture_blob_for_node(
+    snap: &DocSnapshot,
+    node_id: &str,
+    oodle_opt: Option<&Path>,
+) -> Result<(Vec<u8>, usize, u32), String> {
+    let (container_parts, leaf) = split_container_and_leaf(node_id);
+    let container_id = container_parts.join("/");
+    let (_, sub_bytes, sub_wtp, _) = resolve_subblob(snap, &container_id, oodle_opt)?;
+    let tex_idx: usize = leaf
+        .strip_prefix("tex:")
+        .and_then(|s| s.parse().ok())
+        .unwrap_or(0);
+    if leaf.is_empty()
+        && (sub_bytes.starts_with(b"DDS ")
+            || sub_bytes.starts_with(b"XT1\0")
+            || sub_bytes.starts_with(b"Gfx2")
+            || is_bntx_blob(&sub_bytes))
+    {
+        return Ok((sub_bytes, 0, 0));
+    }
+    if is_bntx_blob(&sub_bytes) {
+        return Ok((sub_bytes, tex_idx, 0));
+    }
+    let wtb = WtbFile::from_bytes(&sub_bytes, sub_wtp.as_deref()).map_err(|e| e.to_string())?;
+    let entry = wtb
+        .entries
+        .get(tex_idx)
+        .ok_or_else(|| format!("Texture index {tex_idx} out of range"))?;
+    Ok((entry.data.clone(), entry.index, entry.flags))
+}
+
+#[tauri::command]
+pub fn get_texture_gpu_surface(
+    node_id: String,
+    mip_index: u32,
+    layer_index: u32,
+    state: State<'_, AppState>,
+) -> Result<tauri::ipc::Response, String> {
+    let (snap, oodle_path) = {
+        let sess = lock_session(&state);
+        let snap = sess.current.clone().ok_or("No active document loaded")?;
+        (snap, sess.settings.oodle_dll_path.clone())
+    };
+    let oodle_opt = if oodle_path.is_empty() {
+        None
+    } else {
+        Some(Path::new(oodle_path.as_str()))
+    };
+    let (blob, sub_idx, _flags) = resolve_texture_blob_for_node(&snap, &node_id, oodle_opt)?;
+    let surf = extract_gpu_texture_surface(&blob, sub_idx, mip_index, layer_index)
+        .map_err(|e| format!("Failed to extract GPU texture surface: {e}"))?;
+    let wtx2 = encode_wtx2_blob(
+        surf.width,
+        surf.height,
+        false,
+        surf.is_srgb,
+        surf.gpu_format,
+        surf.data.len() as u32,
+        &surf.data,
+    );
+    Ok(tauri::ipc::Response::new(wtx2))
+}
+
+/// Binary batch thumbnail response (`WTB2`):
+/// `[0..4] "WTB2"`, `[4..8] count: u32`, repeated: `[id_len: u32][id_utf8][blob_len: u32][wtx2_bytes]`
+#[tauri::command]
+pub fn get_texture_gpu_thumbnails_batch(
+    node_ids: Vec<String>,
+    state: State<'_, AppState>,
+) -> Result<tauri::ipc::Response, String> {
+    let (snap, oodle_path) = {
+        let sess = lock_session(&state);
+        let snap = sess.current.clone().ok_or("No active document loaded")?;
+        (snap, sess.settings.oodle_dll_path.clone())
+    };
+    let oodle_opt = if oodle_path.is_empty() {
+        None
+    } else {
+        Some(Path::new(oodle_path.as_str()))
+    };
+
+    let mut out = Vec::with_capacity(8 + node_ids.len() * 4096);
+    out.extend_from_slice(b"WTB2");
+    out.extend_from_slice(&(node_ids.len() as u32).to_le_bytes());
+
+    for nid in node_ids {
+        let wtx2 = resolve_texture_blob_for_node(&snap, &nid, oodle_opt)
+            .ok()
+            .and_then(|(blob, sub_idx, flags)| {
+                extract_texture_for_wtx2(&blob, sub_idx, flags, 128).ok()
+            })
+            .unwrap_or_default();
+        let id_bytes = nid.as_bytes();
+        out.extend_from_slice(&(id_bytes.len() as u32).to_le_bytes());
+        out.extend_from_slice(id_bytes);
+        out.extend_from_slice(&(wtx2.len() as u32).to_le_bytes());
+        out.extend_from_slice(&wtx2);
+    }
+
+    Ok(tauri::ipc::Response::new(out))
 }
 
 #[tauri::command]

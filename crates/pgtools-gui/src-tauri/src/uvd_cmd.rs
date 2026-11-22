@@ -548,6 +548,7 @@ pub(crate) fn build_uvd_inspect_payload(
                 embedded_name: Some(group.name.clone()),
                 nvtt_status: "Built-in pure-Rust encoder active".to_string(),
                 preview_data_url: render_uvd_group_wireframe_preview(group, gw, gh),
+                gpu_direct: false,
                 raw_header_hex: String::new(),
                 uvd_mode: Some("group".to_string()),
             }
@@ -704,6 +705,7 @@ pub(crate) fn build_uvd_inspect_payload(
         embedded_name: Some(item.name.clone()),
         nvtt_status: String::new(),
         preview_data_url,
+        gpu_direct: false,
         raw_header_hex: String::new(),
         uvd_mode: Some("item".to_string()),
     };

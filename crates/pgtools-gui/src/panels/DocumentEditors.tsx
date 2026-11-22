@@ -300,18 +300,21 @@ export function DocumentEditors({
               centerTab={activeTexture.uvd_mode === "item" ? "primary" : centerTab}
               mipIndex={mipIndex}
               layerIndex={layerIndex}
+              channelMode={drafts.channelMode}
               opaquePreview={opaquePreview}
               onChangeLayer={(newLayer) => {
                 drafts.setLayerIndex(newLayer);
-                void actions.selectAndInspectNode(
-                  activeTexture.node_id,
-                  mipIndex,
-                  drafts.channelMode,
-                  opaquePreview,
-                  wmbB2Override,
-                  undefined,
-                  newLayer
-                );
+                if (!activeTexture.gpu_direct) {
+                  void actions.selectAndInspectNode(
+                    activeTexture.node_id,
+                    mipIndex,
+                    drafts.channelMode,
+                    opaquePreview,
+                    wmbB2Override,
+                    undefined,
+                    newLayer
+                  );
+                }
               }}
               zoom={zoom}
               setZoom={setZoom}

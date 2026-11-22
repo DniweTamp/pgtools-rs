@@ -2,6 +2,7 @@ import React, { useEffect, useRef, useState } from "react";
 import { studioPrompt } from "../components/StudioDialog";
 import { StudioRange } from "../components/StudioRange";
 import { StudioSelect } from "../components/StudioSelect";
+import { GpuTextureCanvas, GpuTextureCanvasHandle } from "../components/GpuTextureCanvas";
 import { invoke } from "@tauri-apps/api/core";
 import * as THREE from "three";
 import {
@@ -393,6 +394,7 @@ export interface TextureCenterViewProps {
   centerTab: string;
   mipIndex: number;
   layerIndex: number;
+  channelMode: string;
   opaquePreview: boolean;
   onChangeLayer: (newLayer: number) => void;
   zoom: number;
@@ -414,6 +416,7 @@ export const TextureCenterView: React.FC<TextureCenterViewProps> = ({
   centerTab,
   mipIndex,
   layerIndex,
+  channelMode,
   opaquePreview,
   onChangeLayer,
   zoom,
@@ -432,6 +435,7 @@ export const TextureCenterView: React.FC<TextureCenterViewProps> = ({
   const [animPlaying, setAnimPlaying] = useState(false);
   const [fpsDraft, setFpsDraft] = useState("15");
   const [fps, setFps] = useState(15);
+  const gpuCanvasRef = useRef<GpuTextureCanvasHandle | null>(null);
 
   const isAnimated2D =
     activeTexture.dimension === "Animated 2D" && activeTexture.layer_count > 1;
@@ -463,17 +467,22 @@ export const TextureCenterView: React.FC<TextureCenterViewProps> = ({
 
   const copyPreviewImageToClipboard = async () => {
     setContextMenu(null);
-    if (!activeTexture.preview_data_url) {
-      onStatus?.("There is no decoded image to copy.");
-      return;
-    }
     try {
-      const resp = await fetch(activeTexture.preview_data_url);
-      const blob = await resp.blob();
+      let blob: Blob | null = null;
+      if (activeTexture.gpu_direct && gpuCanvasRef.current) {
+        blob = await gpuCanvasRef.current.toPngBlob();
+      } else if (activeTexture.preview_data_url) {
+        const resp = await fetch(activeTexture.preview_data_url);
+        blob = await resp.blob();
+      }
+      if (!blob) {
+        onStatus?.("There is no decoded image to copy.");
+        return;
+      }
       if (navigator.clipboard && "write" in navigator.clipboard && typeof ClipboardItem !== "undefined") {
         await navigator.clipboard.write([new ClipboardItem({ "image/png": blob })]);
         onStatus?.(`Copied Texture #${activeTexture.index} image to clipboard.`);
-      } else {
+      } else if (activeTexture.preview_data_url) {
         await navigator.clipboard?.writeText(activeTexture.preview_data_url);
         onStatus?.(`Copied Texture #${activeTexture.index} data URL to clipboard.`);
       }
@@ -543,7 +552,26 @@ export const TextureCenterView: React.FC<TextureCenterViewProps> = ({
               });
             }}
           >
-            {activeTexture.preview_data_url ? (
+            {activeTexture.gpu_direct ? (
+              <GpuTextureCanvas
+                ref={gpuCanvasRef}
+                nodeId={activeTexture.node_id}
+                mipIndex={mipIndex}
+                layerIndex={layerIndex}
+                channelMode={channelMode}
+                opaquePreview={opaquePreview}
+                alt={activeTexture.title}
+                style={{
+                  transform: `translate(${pan.x}px, ${pan.y}px) scale(${zoom})`,
+                  transformOrigin: "center center",
+                  imageRendering: zoom >= 2.0 ? "pixelated" : "auto",
+                  maxWidth: "90%",
+                  maxHeight: "90%",
+                  objectFit: "contain",
+                  pointerEvents: "none",
+                }}
+              />
+            ) : activeTexture.preview_data_url ? (
               <img
                 src={activeTexture.preview_data_url}
                 alt={activeTexture.title}

@@ -11,7 +11,7 @@ use pgtools_core::{
     databases::lookup_wmb_vertex_layout,
     demo::build_demo_dat,
     scene::{
-        build_wmb3_scene, build_wmb_scene, decode_texture_for_wtx1, encode_wtx1_blob,
+        build_wmb3_scene, build_wmb_scene, extract_texture_for_wtx2,
         fnv1a_64_hex, pack_scene_blob, TextureRefDesc, UidMap,
     },
     scene_ops::{
@@ -478,13 +478,10 @@ pub fn get_wmb_texture(
     }
 
     let wtx1 = catch_unwind(AssertUnwindSafe(|| -> Result<Vec<u8>, String> {
-        let (w, h, is_cube, rgba) =
-            decode_texture_for_wtx1(&entry.data, entry.index, entry.flags, max_dim).map_err(|e| {
-                format!("Failed to decode texture 0x{texture_id:08X}: {e}")
-            })?;
-        Ok(encode_wtx1_blob(w, h, is_cube, &rgba))
+        extract_texture_for_wtx2(&entry.data, entry.index, entry.flags, max_dim)
+            .map_err(|e| format!("Failed to extract texture 0x{texture_id:08X}: {e}"))
     }))
-    .map_err(|_| format!("Internal panic decoding texture 0x{texture_id:08X}"))??;
+    .map_err(|_| format!("Internal panic extracting texture 0x{texture_id:08X}"))??;
 
     {
         let mut sess = lock_session(&state);
@@ -620,13 +617,10 @@ pub fn get_pre_texture(
         .ok_or_else(|| format!("pre_texture slot {slot_idx} (0x{index:08X}) out of range"))?;
 
     let wtx1 = catch_unwind(AssertUnwindSafe(|| -> Result<Vec<u8>, String> {
-        let (w, h, is_cube, rgba) =
-            decode_texture_for_wtx1(&entry.data, entry.index, entry.flags, max_dim).map_err(|e| {
-                format!("Failed to decode pre_texture slot {slot_idx}: {e}")
-            })?;
-        Ok(encode_wtx1_blob(w, h, is_cube, &rgba))
+        extract_texture_for_wtx2(&entry.data, entry.index, entry.flags, max_dim)
+            .map_err(|e| format!("Failed to extract pre_texture slot {slot_idx}: {e}"))
     }))
-    .map_err(|_| format!("Internal panic decoding pre_texture slot {slot_idx}"))??;
+    .map_err(|_| format!("Internal panic extracting pre_texture slot {slot_idx}"))??;
 
     {
         let mut sess = lock_session(&state);

@@ -1,4 +1,5 @@
 import { invoke } from "@tauri-apps/api/core";
+import { DecodedGpuSurface, decodeWtxBlob } from "../utils/gpuTexture";
 
 export interface Region {
   offset: number;
@@ -160,12 +161,7 @@ export interface WmbScenePayload {
   binary: ArrayBuffer;
 }
 
-export interface DecodedWtx1Texture {
-  width: number;
-  height: number;
-  cube: boolean;
-  rgba: Uint8Array;
-}
+export type DecodedWtx1Texture = DecodedGpuSurface;
 
 const WTX1_MAGIC = 0x31585457; // "WTX1" LE
 
@@ -200,32 +196,7 @@ export function decodeWmbSceneBlob(raw: ArrayBuffer): WmbScenePayload {
  * into `{ width, height, cube, rgba }`.
  */
 export function decodeWtx1TextureBlob(raw: ArrayBuffer): DecodedWtx1Texture {
-  if (raw.byteLength < 16) {
-    throw new Error("WTX1 texture buffer is shorter than 16-byte header");
-  }
-  const view = new DataView(raw);
-  const magic = view.getUint32(0, true);
-  if (magic !== WTX1_MAGIC) {
-    throw new Error(`Invalid WTX1 magic: 0x${magic.toString(16)}`);
-  }
-  const width = view.getUint32(4, true);
-  const height = view.getUint32(8, true);
-  if (width === 0 || height === 0 || width > 16384 || height > 16384) {
-    throw new Error(`Invalid WTX1 texture dimensions: ${width}x${height}`);
-  }
-  const flags = view.getUint32(12, true);
-  const cube = (flags & 1) !== 0;
-  const faceBytes = width * height * 4;
-  const expectedBytes = cube ? faceBytes * 6 : faceBytes;
-  const rgba = new Uint8Array(raw, 16);
-  if (rgba.byteLength < expectedBytes) {
-    throw new Error(
-      `WTX1 payload truncated: expected ${expectedBytes} bytes for ${width}x${height}${
-        cube ? " cubemap" : ""
-      }, got ${rgba.byteLength}`
-    );
-  }
-  return { width, height, cube, rgba };
+  return decodeWtxBlob(raw);
 }
 
 export async function getWmbScene(

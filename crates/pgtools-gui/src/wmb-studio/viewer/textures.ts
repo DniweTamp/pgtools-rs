@@ -1,4 +1,5 @@
 import * as THREE from "three";
+import { buildThreeTextureFromGpuSurface } from "../../utils/gpuTexture";
 import {
   DecodedWtx1Texture,
   getPreTexture,
@@ -166,67 +167,7 @@ function buildThreeTextureFromWtx1(
   decoded: DecodedWtx1Texture,
   isLut: boolean
 ): THREE.Texture | THREE.CubeTexture {
-  const { width, height, cube, rgba } = decoded;
-  if (cube && width > 0 && height > 0) {
-    const facePixels = width * height * 4;
-    const faces: THREE.DataTexture[] = [];
-    for (let f = 0; f < 6; f++) {
-      const start = f * facePixels;
-      const view =
-        start + facePixels <= rgba.byteLength
-          ? rgba.slice(start, start + facePixels)
-          : new Uint8Array(facePixels);
-      const faceTex = new THREE.DataTexture(
-        view,
-        width,
-        height,
-        THREE.RGBAFormat
-      );
-      faceTex.flipY = false;
-      faceTex.colorSpace = THREE.NoColorSpace;
-      faceTex.needsUpdate = true;
-      faces.push(faceTex);
-    }
-    const cubeTex = new THREE.CubeTexture(
-      faces as unknown as HTMLImageElement[]
-    );
-    cubeTex.flipY = false;
-    cubeTex.colorSpace = THREE.NoColorSpace;
-    cubeTex.magFilter = THREE.LinearFilter;
-    cubeTex.minFilter = THREE.LinearFilter;
-    cubeTex.generateMipmaps = false;
-    cubeTex.needsUpdate = true;
-    return cubeTex;
-  }
-
-  const w = Math.max(1, width);
-  const h = Math.max(1, height);
-  const expectedBytes = w * h * 4;
-  const data =
-    rgba.byteLength >= expectedBytes
-      ? rgba.slice(0, expectedBytes)
-      : new Uint8Array(expectedBytes);
-  const tex = new THREE.DataTexture(data, w, h, THREE.RGBAFormat);
-  tex.flipY = false;
-  tex.colorSpace = THREE.NoColorSpace;
-  if (isLut) {
-    tex.wrapS = THREE.ClampToEdgeWrapping;
-    tex.wrapT = THREE.ClampToEdgeWrapping;
-    tex.magFilter = THREE.LinearFilter;
-    tex.minFilter = THREE.LinearFilter;
-    tex.generateMipmaps = false;
-  } else {
-    tex.wrapS = THREE.RepeatWrapping;
-    tex.wrapT = THREE.RepeatWrapping;
-    tex.magFilter = THREE.LinearFilter;
-    const canMip = w >= 4 && h >= 4 && (w & (w - 1)) === 0 && (h & (h - 1)) === 0;
-    tex.minFilter = canMip
-      ? THREE.LinearMipmapLinearFilter
-      : THREE.LinearFilter;
-    tex.generateMipmaps = canMip;
-  }
-  tex.needsUpdate = true;
-  return tex;
+  return buildThreeTextureFromGpuSurface(decoded, isLut);
 }
 
 export class ViewerTextureCache {

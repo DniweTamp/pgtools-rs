@@ -3,6 +3,7 @@ import { invoke } from "@tauri-apps/api/core";
 import { AssetTreeNode, PointerDragState } from "../types";
 import { isVirtualSubNode } from "../utils/format";
 import { StudioRange } from "../components/StudioRange";
+import { decodeWtb2Batch, renderGpuSurfaceToDataUrl } from "../utils/gpuTexture";
 
 export interface AssetBrowserPanelProps {
   outline: { tree: AssetTreeNode[]; file_name?: string; dirty?: boolean } | null;
@@ -124,20 +125,59 @@ export function AssetBrowserPanel({
     const batch = missingIds.slice(0, 32);
     (async () => {
       try {
-        const pairs = await invoke<[string, string | null][]>(
-          "get_texture_thumbnails_batch",
+        const rawBatch = await invoke<ArrayBuffer>(
+          "get_texture_gpu_thumbnails_batch",
           { nodeIds: batch }
         );
         if (cancelled) return;
-        setThumbMap((prev) => {
-          const next = { ...prev };
-          for (const [id, url] of pairs) {
-            next[id] = url;
+        const decoded = decodeWtb2Batch(rawBatch);
+        const gpuUrls: Record<string, string | null> = {};
+        const fallbackIds: string[] = [];
+        for (const item of decoded) {
+          if (item.surface) {
+            const url = renderGpuSurfaceToDataUrl(item.surface, 128);
+            if (url) {
+              gpuUrls[item.id] = url;
+              continue;
+            }
           }
-          return next;
-        });
+          fallbackIds.push(item.id);
+        }
+        if (fallbackIds.length > 0 && !cancelled) {
+          try {
+            const pairs = await invoke<[string, string | null][]>(
+              "get_texture_thumbnails_batch",
+              { nodeIds: fallbackIds }
+            );
+            for (const [id, url] of pairs) {
+              gpuUrls[id] = url;
+            }
+          } catch {
+            for (const id of fallbackIds) {
+              gpuUrls[id] = null;
+            }
+          }
+        }
+        if (cancelled) return;
+        setThumbMap((prev) => ({ ...prev, ...gpuUrls }));
       } catch {
-        // ignore thumbnail errors
+        // Fallback to legacy CPU PNG thumbnails if binary batch fails
+        try {
+          const pairs = await invoke<[string, string | null][]>(
+            "get_texture_thumbnails_batch",
+            { nodeIds: batch }
+          );
+          if (cancelled) return;
+          setThumbMap((prev) => {
+            const next = { ...prev };
+            for (const [id, url] of pairs) {
+              next[id] = url;
+            }
+            return next;
+          });
+        } catch {
+          // ignore thumbnail errors
+        }
       }
     })();
 

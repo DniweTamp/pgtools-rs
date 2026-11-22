@@ -1007,7 +1007,7 @@ export default function App() {
     setMipIndex(newMip);
     setChannelMode(newChannel);
     setOpaquePreview(newOpaque);
-    if (nodePayload?.view_type === "TEXTURE" && nodePayload.texture) {
+    if (nodePayload?.view_type === "TEXTURE" && nodePayload.texture && !nodePayload.texture.gpu_direct) {
       await selectAndInspectNode(nodePayload.texture.node_id, newMip, newChannel, newOpaque);
     }
   }

@@ -208,6 +208,7 @@ export interface TextureNodeView {
   embedded_name: string | null;
   nvtt_status: string;
   preview_data_url: string | null;
+  gpu_direct?: boolean;
   raw_header_hex: string;
   uvd_mode?: "group" | "item" | null;
 }

@@ -8,7 +8,8 @@ use crate::io::{align, BinReader, Endian, MAX_ARCHIVE_ALLOC_BYTES};
 use crate::shader_db::{decode_wmb_material_rich, list_core_pretextures};
 use crate::texture_conv::{
     compute_xt1_layout, decode_bntx_subtexture_mip_filtered, decode_linear_blocks_to_rgba8,
-    decode_texture_mip_filtered, gob_swizzle, inspect_texture_blob, TextureFormat,
+    decode_texture_mip_filtered, extract_gpu_texture_surface, gob_swizzle, inspect_texture_blob,
+    parse_bntx_textures, pick_mip_for_max_dim, GpuPixelFormat, TextureFormat,
 };
 use crate::wmb::{PackedNormal, WmbFile};
 use crate::wmb3::Wmb3File;
@@ -18,6 +19,7 @@ use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, BTreeSet};
 
 pub const WTX1_MAGIC: u32 = 0x3158_5457; // "WTX1" in little-endian
+pub const WTX2_MAGIC: u32 = 0x3258_5457; // "WTX2" in little-endian (GPU-direct BCn / uncompressed)
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -1625,4 +1627,103 @@ pub fn encode_wtx1_blob(width: u32, height: u32, is_cube: bool, rgba: &[u8]) -> 
     out.extend_from_slice(&flags.to_le_bytes());
     out.extend_from_slice(rgba);
     out
+}
+
+
+/// Encode a GPU-ready surface (compressed BCn blocks or uncompressed pixels) into the `WTX2`
+/// 24-byte binary response format (`magic, width, height, flags, gpu_format, face_byte_len, data`).
+pub fn encode_wtx2_blob(
+    width: u32,
+    height: u32,
+    is_cube: bool,
+    is_srgb: bool,
+    gpu_format: GpuPixelFormat,
+    face_byte_len: u32,
+    data: &[u8],
+) -> Vec<u8> {
+    let mut flags: u32 = 0;
+    if is_cube {
+        flags |= 1;
+    }
+    if is_srgb {
+        flags |= 2;
+    }
+    let mut out = Vec::with_capacity(24 + data.len());
+    out.extend_from_slice(&WTX2_MAGIC.to_le_bytes());
+    out.extend_from_slice(&width.to_le_bytes());
+    out.extend_from_slice(&height.to_le_bytes());
+    out.extend_from_slice(&flags.to_le_bytes());
+    out.extend_from_slice(&gpu_format.as_u32().to_le_bytes());
+    out.extend_from_slice(&face_byte_len.to_le_bytes());
+    out.extend_from_slice(data);
+    out
+}
+
+/// Extract a texture for 3D viewport / GPU display as a `WTX2` payload without CPU BCn decoding.
+/// Picks the first mip level within `max_dim` directly; falls back to CPU RGBA8 only for ASTC,
+/// unknown formats, or mip levels smaller than 4x4 on BCn formats.
+pub fn extract_texture_for_wtx2(
+    blob: &[u8],
+    bntx_sub_index: usize,
+    flags_hint: u32,
+    max_dim: u32,
+) -> Result<Vec<u8>> {
+    if blob.len() < 16 {
+        return Err(PgError::InvalidData("Texture blob too short".into()));
+    }
+
+    let is_bntx = (blob.len() >= 4 && &blob[0..4] == b"BNTX")
+        || (blob.len() >= 84 && &blob[80..84] == b"BNTX");
+
+    let (base_w, base_h, mip_count, is_cube) = if is_bntx {
+        let recs = parse_bntx_textures(blob)?;
+        let tex = recs.get(bntx_sub_index).unwrap_or(&recs[0]);
+        let cube = tex.surface_dim == 3 || tex.array_length == 6 || (flags_hint & 0x0000_0200) != 0;
+        (tex.width, tex.height, tex.mip_offsets.len().max(1) as u32, cube)
+    } else {
+        let meta = inspect_texture_blob(blob)?;
+        let cube = meta.dimension == crate::texture_conv::TextureDimension::TexCube
+            || (flags_hint & 0x0000_0200) != 0;
+        (meta.width, meta.height, meta.mip_count.max(1), cube)
+    };
+
+    let target_mip = pick_mip_for_max_dim(base_w, base_h, mip_count, max_dim);
+
+    if is_cube {
+        let face0 = extract_gpu_texture_surface(blob, bntx_sub_index, target_mip, 0)?;
+        let face_len = face0.data.len();
+        let mut all_faces = Vec::with_capacity(face_len * 6);
+        all_faces.extend_from_slice(&face0.data);
+        for f in 1..6u32 {
+            let face = extract_gpu_texture_surface(blob, bntx_sub_index, target_mip, f)?;
+            if face.data.len() == face_len {
+                all_faces.extend_from_slice(&face.data);
+            } else {
+                let mut padded = vec![0u8; face_len];
+                let copy_n = face.data.len().min(face_len);
+                padded[..copy_n].copy_from_slice(&face.data[..copy_n]);
+                all_faces.extend_from_slice(&padded);
+            }
+        }
+        return Ok(encode_wtx2_blob(
+            face0.width,
+            face0.height,
+            true,
+            face0.is_srgb,
+            face0.gpu_format,
+            face_len as u32,
+            &all_faces,
+        ));
+    }
+
+    let surf = extract_gpu_texture_surface(blob, bntx_sub_index, target_mip, 0)?;
+    Ok(encode_wtx2_blob(
+        surf.width,
+        surf.height,
+        false,
+        surf.is_srgb,
+        surf.gpu_format,
+        surf.data.len() as u32,
+        &surf.data,
+    ))
 }
