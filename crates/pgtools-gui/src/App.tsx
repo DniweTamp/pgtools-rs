@@ -3118,6 +3118,7 @@ export default function App() {
                   max={pkzCompModal.compression === "OodleKraken" ? 9 : 22}
                   step={1}
                   value={pkzCompModal.level}
+                  ticks={pkzCompModal.compression === "OodleKraken" ? 9 : 8}
                   ariaLabel="Compression level"
                   onChange={(next) => {
                     setPkzCompModal((prev) =>

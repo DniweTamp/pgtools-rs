@@ -18,6 +18,8 @@
   --brush-muted: #9AA0AA;
   --brush-heading: #F2F4F8;
   --brush-accent: #4F8DF7;
+  --brush-accent-soft: rgba(79, 141, 247, 0.24);
+  --brush-accent-mid: rgba(79, 141, 247, 0.36);
   --brush-on-accent: #FFFFFF;
   --brush-viewer: #141519;
   --brush-success: #1E3326;
@@ -44,6 +46,8 @@
   --brush-muted: #6B7280;
   --brush-heading: #111827;
   --brush-accent: #3B82F6;
+  --brush-accent-soft: rgba(59, 130, 246, 0.16);
+  --brush-accent-mid: rgba(59, 130, 246, 0.26);
   --brush-on-accent: #FFFFFF;
   --brush-viewer: #E9EAED;
   --brush-success: #EAF6EE;
@@ -1261,11 +1265,8 @@ body,
 
 .param-range {
   flex: 1;
-  min-width: 54px;
-  max-width: 84px;
-  height: 4px;
-  accent-color: var(--brush-accent);
-  cursor: pointer;
+  min-width: 56px;
+  max-width: 96px;
 }
 
 /* Interactive Meshes -> Batches -> LODs Tree in Center Structured Editor */
@@ -3456,61 +3457,81 @@ input[type="number"] {
   box-shadow: 0 0 0 2px rgba(79, 141, 247, 0.25);
 }
 
-/* StudioRange (Custom Slider Track & Thumb) */
+/* StudioRange (DCC Fill-Bar Slider) */
 .studio-range {
   position: relative;
   display: flex;
   align-items: center;
-  height: 18px;
+  width: 100%;
+  height: 22px;
   min-width: 48px;
+  border-radius: 6px;
+  background-color: var(--brush-input);
+  border: 1px solid var(--brush-border);
+  overflow: hidden;
   cursor: pointer;
   touch-action: none;
   user-select: none;
+  outline: none;
+  transition: border-color 90ms ease, background-color 90ms ease;
+}
+
+.studio-range.compact {
+  height: 18px;
+  border-radius: 5px;
+}
+
+.studio-range:hover:not(.disabled) {
+  border-color: var(--brush-border-strong);
+}
+
+.studio-range:focus-visible,
+.studio-range.dragging {
+  border-color: var(--brush-accent);
 }
 
 .studio-range.disabled {
-  opacity: 0.45;
+  opacity: 0.42;
   cursor: default;
 }
 
-.studio-range:focus-visible {
-  outline: none;
-}
-
-.studio-range:focus-visible .studio-range-thumb {
-  box-shadow: 0 0 0 3px rgba(79, 141, 247, 0.32);
-}
-
-.studio-range-track {
-  position: relative;
-  width: 100%;
-  height: 4px;
-  border-radius: 999px;
-  background-color: var(--brush-border-strong);
-  overflow: hidden;
-}
-
 .studio-range-fill {
-  height: 100%;
-  border-radius: 999px;
-  background-color: var(--brush-accent);
-}
-
-.studio-range-thumb {
   position: absolute;
-  top: 50%;
-  width: 12px;
-  height: 12px;
-  border-radius: 50%;
-  background-color: var(--brush-heading);
-  border: 2px solid var(--brush-accent);
-  transform: translate(-50%, -50%);
-  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.45);
-  transition: transform 80ms ease, box-shadow 80ms ease;
+  inset: 0 auto 0 0;
+  background-color: var(--brush-accent-soft);
+  transition: background-color 90ms ease;
+  pointer-events: none;
 }
 
-.studio-range:hover:not(.disabled) .studio-range-thumb {
-  transform: translate(-50%, -50%) scale(1.12);
+.studio-range:hover:not(.disabled) .studio-range-fill,
+.studio-range.dragging .studio-range-fill {
+  background-color: var(--brush-accent-mid);
+}
+
+.studio-range-edge {
+  position: absolute;
+  top: 2px;
+  bottom: 2px;
+  width: 2px;
+  border-radius: 2px;
+  background-color: var(--brush-accent);
+  transform: translateX(-1px);
+  pointer-events: none;
+}
+
+.studio-range-ticks {
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+}
+
+.studio-range-tick {
+  position: absolute;
+  bottom: 0;
+  width: 1px;
+  height: 4px;
+  background-color: var(--brush-border-strong);
+  opacity: 0.7;
 }
 
 /* StudioColorPicker (Custom Swatch & HSV Popover) */

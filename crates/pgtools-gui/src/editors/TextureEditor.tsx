@@ -607,6 +607,9 @@ export const TextureCenterView: React.FC<TextureCenterViewProps> = ({
                 max={Math.max(1, activeTexture.layer_count - 1)}
                 step={1}
                 value={activeTexture.current_layer}
+                defaultValue={0}
+                compact
+                ticks={activeTexture.layer_count <= 24 ? activeTexture.layer_count : 0}
                 style={{ flex: 1 }}
                 onChange={(val) => {
                   setAnimPlaying(false);

@@ -310,7 +310,10 @@ export function AssetBrowserPanel({
                 max={4}
                 step={1}
                 value={zoomLevel}
-                style={{ width: 64 }}
+                defaultValue={2}
+                compact
+                ticks={5}
+                style={{ width: 72 }}
                 ariaLabel="Thumbnail tile zoom"
                 onChange={(v) => onChangeZoomLevel(v)}
               />
