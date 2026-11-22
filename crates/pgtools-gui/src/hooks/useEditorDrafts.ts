@@ -150,7 +150,6 @@ export function useEditorDrafts(): EditorDraftsApi {
     wmb_params: true,
     bxm_node: true,
     cloth_header: true,
-    dll_config: true,
   });
 
   const updateBxmDraftTree = useCallback((nextRoot: BxmXmlNode) => {

@@ -4893,25 +4893,62 @@ fn finalize_gpu_surface(
     height: u32,
     layer_count: u32,
     format: TextureFormat,
+    rgba_compatible_3d: bool,
 ) -> Result<GpuTextureSurface> {
     let w = width.max(1);
     let h = height.max(1);
-    if let Some(gpu_fmt) = GpuPixelFormat::from_texture_format(format) {
-        let bcn_aligned = !gpu_fmt.is_compressed() || (w >= 4 && h >= 4 && w % 4 == 0 && h % 4 == 0);
-        if bcn_aligned {
-            if matches!(format, TextureFormat::Bgra8 | TextureFormat::Bgra8Srgb) {
-                for px in linear.chunks_exact_mut(4) {
-                    px.swap(0, 2);
+    let allow_direct = if rgba_compatible_3d {
+        matches!(
+            format,
+            TextureFormat::Rgba8
+                | TextureFormat::Rgba8Srgb
+                | TextureFormat::Bgra8
+                | TextureFormat::Bgra8Srgb
+                | TextureFormat::Bc1
+                | TextureFormat::Bc1Srgb
+                | TextureFormat::Bc2
+                | TextureFormat::Bc2Srgb
+                | TextureFormat::Bc3
+                | TextureFormat::Bc3Srgb
+                | TextureFormat::Bc7
+                | TextureFormat::Bc7Srgb
+        )
+    } else {
+        true
+    };
+    if allow_direct {
+        if let Some(gpu_fmt) = GpuPixelFormat::from_texture_format(format) {
+            let bcn_aligned =
+                !gpu_fmt.is_compressed() || (w >= 4 && h >= 4 && w % 4 == 0 && h % 4 == 0);
+            if bcn_aligned {
+                let (bw, bh) = format.block_dimensions();
+                let bpb = format.bytes_per_block();
+                let expected = ((w as usize + bw - 1) / bw)
+                    .checked_mul((h as usize + bh - 1) / bh)
+                    .and_then(|n| n.checked_mul(bpb))
+                    .ok_or_else(|| PgError::InvalidData("GPU surface size overflow".into()))?;
+                if expected > crate::io::MAX_ARCHIVE_ALLOC_BYTES {
+                    return Err(PgError::InvalidData(
+                        "GPU surface exceeds safety allocation limit".into(),
+                    ));
                 }
+                if linear.len() != expected {
+                    linear.resize(expected, 0);
+                }
+                if matches!(format, TextureFormat::Bgra8 | TextureFormat::Bgra8Srgb) {
+                    for px in linear.chunks_exact_mut(4) {
+                        px.swap(0, 2);
+                    }
+                }
+                return Ok(GpuTextureSurface {
+                    width: w,
+                    height: h,
+                    layer_count: layer_count.max(1),
+                    gpu_format: gpu_fmt,
+                    is_srgb: format.is_srgb(),
+                    data: linear,
+                });
             }
-            return Ok(GpuTextureSurface {
-                width: w,
-                height: h,
-                layer_count: layer_count.max(1),
-                gpu_format: gpu_fmt,
-                is_srgb: format.is_srgb(),
-                data: linear,
-            });
         }
     }
     let decoded = decode_linear_blocks_to_rgba8(&linear, w, h, format)?;
@@ -4925,6 +4962,17 @@ fn finalize_gpu_surface(
     })
 }
 
+/// Extract a GPU surface with optional 3D shader RGBA-channel compatibility.
+pub fn extract_gpu_texture_surface_ex(
+    blob: &[u8],
+    sub_index: usize,
+    mip_index: u32,
+    layer_index: u32,
+    rgba_compatible_3d: bool,
+) -> Result<GpuTextureSurface> {
+    extract_gpu_texture_surface_inner(blob, sub_index, mip_index, layer_index, rgba_compatible_3d)
+}
+
 /// Extract a linear GPU-ready surface (deswizzled BCn blocks or uncompressed pixels) for any
 /// XT1, BNTX, GTX, or DDS blob at `(mip_index, layer_index)` without CPU BCn decompression.
 /// Falls back to CPU RGBA8 only for ASTC, unknown formats, or sub-4x4 BCn mip levels.
@@ -4933,6 +4981,16 @@ pub fn extract_gpu_texture_surface(
     sub_index: usize,
     mip_index: u32,
     layer_index: u32,
+) -> Result<GpuTextureSurface> {
+    extract_gpu_texture_surface_inner(blob, sub_index, mip_index, layer_index, false)
+}
+
+fn extract_gpu_texture_surface_inner(
+    blob: &[u8],
+    sub_index: usize,
+    mip_index: u32,
+    layer_index: u32,
+    rgba_compatible_3d: bool,
 ) -> Result<GpuTextureSurface> {
     if blob.len() < 16 {
         return Err(PgError::InvalidData("Texture blob too short".into()));
@@ -4953,6 +5011,11 @@ pub fn extract_gpu_texture_surface(
         let width = r.read_u32()?;
         let height = r.read_u32()?;
         let depth = r.read_u32()?.max(1);
+        if width == 0 || height == 0 || width > 16384 || height > 16384 {
+            return Err(PgError::InvalidData(format!(
+                "Invalid XT1 texture dimensions: {width}x{height}"
+            )));
+        }
         let _tex_flag = r.read_u32()?;
         let layout_word = r.read_u32()?;
         let format = TextureFormat::from_xt1_code(xt1_fmt);
@@ -4967,6 +5030,9 @@ pub fn extract_gpu_texture_surface(
             format,
             stored_image_size,
         );
+        if layout.mips.is_empty() {
+            return Err(PgError::InvalidData("XT1 layout produced no mips".into()));
+        }
         let clamped_mip = (mip_index as usize).min(layout.mips.len().saturating_sub(1));
         let mip_info = &layout.mips[clamped_mip];
         let payload = if header_size <= blob.len() {
@@ -4986,13 +5052,36 @@ pub fn extract_gpu_texture_surface(
         };
         let clamped_layer = (layer_index as usize).min((layer_count as usize).saturating_sub(1));
         let bpb = format.bytes_per_block();
-        let single_slice_bytes = mip_info.width_blocks * mip_info.height_blocks * bpb;
+        let single_slice_bytes = mip_info
+            .width_blocks
+            .checked_mul(mip_info.height_blocks)
+            .and_then(|n| n.checked_mul(bpb))
+            .ok_or_else(|| PgError::InvalidData("XT1 slice size overflow".into()))?;
+        if single_slice_bytes > crate::io::MAX_ARCHIVE_ALLOC_BYTES
+            || mip_info.slice_surface_size > crate::io::MAX_ARCHIVE_ALLOC_BYTES
+        {
+            return Err(PgError::InvalidData(
+                "XT1 surface size exceeds safety allocation limit".into(),
+            ));
+        }
         let mut linear = vec![0u8; single_slice_bytes];
 
         if is_3d && mip_info.block_depth > 1 {
-            let total_vol_bytes = single_slice_bytes * mip_info.slice_count;
+            let total_vol_bytes = single_slice_bytes
+                .checked_mul(mip_info.slice_count)
+                .ok_or_else(|| PgError::InvalidData("XT1 volume size overflow".into()))?;
+            let total_surf = mip_info
+                .slice_surface_size
+                .checked_mul(mip_info.slice_count)
+                .ok_or_else(|| PgError::InvalidData("XT1 volume surface overflow".into()))?;
+            if total_vol_bytes > crate::io::MAX_ARCHIVE_ALLOC_BYTES
+                || total_surf > crate::io::MAX_ARCHIVE_ALLOC_BYTES
+            {
+                return Err(PgError::InvalidData(
+                    "XT1 volume size exceeds safety allocation limit".into(),
+                ));
+            }
             let mut vol_linear = vec![0u8; total_vol_bytes];
-            let total_surf = mip_info.slice_surface_size * mip_info.slice_count;
             let mut surface = vec![0u8; total_surf];
             if mip_info.offset < payload.len() {
                 let avail = (payload.len() - mip_info.offset).min(total_surf);
@@ -5039,7 +5128,7 @@ pub fn extract_gpu_texture_surface(
             }
         }
 
-        return finalize_gpu_surface(linear, mip_info.width, mip_info.height, layer_count, format);
+        return finalize_gpu_surface(linear, mip_info.width, mip_info.height, layer_count, format, rgba_compatible_3d);
     }
 
     if (blob.len() >= 4 && &blob[0..4] == b"BNTX")
@@ -5060,6 +5149,12 @@ pub fn extract_gpu_texture_surface(
             0
         };
 
+        if tex.width == 0 || tex.height == 0 || tex.width > 16384 || tex.height > 16384 {
+            return Err(PgError::InvalidData(format!(
+                "Invalid BNTX texture dimensions: {}x{}",
+                tex.width, tex.height
+            )));
+        }
         let clamped_mip = (mip_index as usize).min(tex.mip_offsets.len().saturating_sub(1));
         let mip_w = (tex.width >> clamped_mip).max(1);
         let mip_h = (tex.height >> clamped_mip).max(1);
@@ -5067,12 +5162,25 @@ pub fn extract_gpu_texture_surface(
         let bpb = tex.format.bytes_per_block();
         let wb = ((mip_w as usize) + bw - 1) / bw;
         let hb = ((mip_h as usize) + bh - 1) / bh;
-        let bh_mip0 = 1usize << tex.block_height_log2;
+        let bh_mip0 = 1usize << tex.block_height_log2.min(5);
         let mip_bh = gob_swizzle::mip_block_height(hb, bh_mip0);
-        let pitch = align(wb * bpb, 64);
-        let surf_size = pitch * align(hb, mip_bh * 8);
+        let pitch = align(wb.saturating_mul(bpb), 64);
+        let surf_size = pitch
+            .checked_mul(align(hb, mip_bh * 8))
+            .ok_or_else(|| PgError::InvalidData("BNTX surface size overflow".into()))?;
+        let linear_len = wb
+            .checked_mul(hb)
+            .and_then(|n| n.checked_mul(bpb))
+            .ok_or_else(|| PgError::InvalidData("BNTX linear size overflow".into()))?;
+        if surf_size > crate::io::MAX_ARCHIVE_ALLOC_BYTES
+            || linear_len > crate::io::MAX_ARCHIVE_ALLOC_BYTES
+        {
+            return Err(PgError::InvalidData(
+                "BNTX surface exceeds safety allocation limit".into(),
+            ));
+        }
 
-        let mut linear = vec![0u8; wb * hb * bpb];
+        let mut linear = vec![0u8; linear_len];
         if let Some(&mip_off) = tex.mip_offsets.get(clamped_mip) {
             let slice_off = mip_off + clamped_layer * layer_stride;
             if slice_off < blob.len() {
@@ -5092,7 +5200,7 @@ pub fn extract_gpu_texture_surface(
                 );
             }
         }
-        return finalize_gpu_surface(linear, mip_w, mip_h, layer_count, tex.format);
+        return finalize_gpu_surface(linear, mip_w, mip_h, layer_count, tex.format, rgba_compatible_3d);
     }
 
     if &blob[0..4] == b"Gfx2" {
@@ -5121,6 +5229,11 @@ pub fn extract_gpu_texture_surface(
             *slot = r.read_u32()?;
         }
 
+        if width == 0 || height == 0 || width > 16384 || height > 16384 {
+            return Err(PgError::InvalidData(format!(
+                "Invalid GTX texture dimensions: {width}x{height}"
+            )));
+        }
         let format = gx2_addrlib::gx2_format_to_texture_format(gx2_fmt);
         let clamped_mip = mip_index.min(num_mips.saturating_sub(1));
         let mip_w = (width >> clamped_mip).max(1);
@@ -5158,7 +5271,7 @@ pub fn extract_gpu_texture_surface(
             0,
             swizzled_slice,
         );
-        return finalize_gpu_surface(linear, mip_w, mip_h, depth, format);
+        return finalize_gpu_surface(linear, mip_w, mip_h, depth, format, rgba_compatible_3d);
     }
 
     // Standard DDS
@@ -5205,13 +5318,27 @@ pub fn extract_gpu_texture_surface(
         }
     }
 
+    if cur_w == 0 || cur_h == 0 || cur_w > 16384 || cur_h > 16384 {
+        return Err(PgError::InvalidData(format!(
+            "Invalid DDS texture dimensions: {cur_w}x{cur_h}"
+        )));
+    }
     let bx = ((cur_w as usize) + bw - 1) / bw;
     let by = ((cur_h as usize) + bh - 1) / bh;
-    let needed = bx.max(1) * by.max(1) * bpb;
+    let needed = bx
+        .max(1)
+        .checked_mul(by.max(1))
+        .and_then(|n| n.checked_mul(bpb))
+        .ok_or_else(|| PgError::InvalidData("DDS surface size overflow".into()))?;
+    if needed > crate::io::MAX_ARCHIVE_ALLOC_BYTES {
+        return Err(PgError::InvalidData(
+            "DDS surface exceeds safety allocation limit".into(),
+        ));
+    }
     let mut linear = vec![0u8; needed];
     if mip_offset < payload.len() {
         let avail = (payload.len() - mip_offset).min(needed);
         linear[..avail].copy_from_slice(&payload[mip_offset..mip_offset + avail]);
     }
-    finalize_gpu_surface(linear, cur_w, cur_h, layer_count, meta.format)
+    finalize_gpu_surface(linear, cur_w, cur_h, layer_count, meta.format, rgba_compatible_3d)
 }

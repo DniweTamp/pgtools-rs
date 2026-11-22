@@ -8,7 +8,7 @@ use crate::io::{align, BinReader, Endian, MAX_ARCHIVE_ALLOC_BYTES};
 use crate::shader_db::{decode_wmb_material_rich, list_core_pretextures};
 use crate::texture_conv::{
     compute_xt1_layout, decode_bntx_subtexture_mip_filtered, decode_linear_blocks_to_rgba8,
-    decode_texture_mip_filtered, extract_gpu_texture_surface, gob_swizzle, inspect_texture_blob,
+    decode_texture_mip_filtered, extract_gpu_texture_surface_ex, gob_swizzle, inspect_texture_blob,
     parse_bntx_textures, pick_mip_for_max_dim, GpuPixelFormat, TextureFormat,
 };
 use crate::wmb::{PackedNormal, WmbFile};
@@ -1690,12 +1690,12 @@ pub fn extract_texture_for_wtx2(
     let target_mip = pick_mip_for_max_dim(base_w, base_h, mip_count, max_dim);
 
     if is_cube {
-        let face0 = extract_gpu_texture_surface(blob, bntx_sub_index, target_mip, 0)?;
+        let face0 = extract_gpu_texture_surface_ex(blob, bntx_sub_index, target_mip, 0, true)?;
         let face_len = face0.data.len();
         let mut all_faces = Vec::with_capacity(face_len * 6);
         all_faces.extend_from_slice(&face0.data);
         for f in 1..6u32 {
-            let face = extract_gpu_texture_surface(blob, bntx_sub_index, target_mip, f)?;
+            let face = extract_gpu_texture_surface_ex(blob, bntx_sub_index, target_mip, f, true)?;
             if face.data.len() == face_len {
                 all_faces.extend_from_slice(&face.data);
             } else {
@@ -1716,7 +1716,7 @@ pub fn extract_texture_for_wtx2(
         ));
     }
 
-    let surf = extract_gpu_texture_surface(blob, bntx_sub_index, target_mip, 0)?;
+    let surf = extract_gpu_texture_surface_ex(blob, bntx_sub_index, target_mip, 0, true)?;
     Ok(encode_wtx2_blob(
         surf.width,
         surf.height,

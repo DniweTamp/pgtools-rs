@@ -168,6 +168,8 @@ pub(crate) struct StudioSession {
     pub(crate) wtx1_order: VecDeque<(String, u32, u32)>,
     pub(crate) wtx1_cache_bytes: usize,
     pub(crate) pre_wtb_cache: HashMap<String, (u64, Arc<WtbFile>)>,
+    pub(crate) paired_wtb_cache: HashMap<String, Arc<Vec<(String, Arc<WtbFile>)>>>,
+    pub(crate) container_wtb_cache: HashMap<String, Arc<WtbFile>>,
 }
 
 impl StudioSession {
@@ -177,6 +179,8 @@ impl StudioSession {
         self.wtx1_cache.clear();
         self.wtx1_order.clear();
         self.wtx1_cache_bytes = 0;
+        self.paired_wtb_cache.clear();
+        self.container_wtb_cache.clear();
     }
 
     pub(crate) fn insert_thumb_cached(&mut self, key: String, val: (String, Option<String>)) {
@@ -243,6 +247,8 @@ impl Default for StudioSession {
             wtx1_order: VecDeque::new(),
             wtx1_cache_bytes: 0,
             pre_wtb_cache: HashMap::new(),
+            paired_wtb_cache: HashMap::new(),
+            container_wtb_cache: HashMap::new(),
         }
     }
 }

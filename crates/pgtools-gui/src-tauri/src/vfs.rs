@@ -906,13 +906,17 @@ pub(crate) fn resolve_subblob(
     node_id: &str,
     oodle_dll: Option<&Path>,
 ) -> Result<(String, Vec<u8>, Option<Vec<u8>>, String), String> {
-    let (mut cur_bytes, mut cur_wtp, mut cur_dtt_peer) = match snap {
+    let (mut cur_bytes, mut cur_wtp, mut cur_dtt_peer): (Vec<u8>, Option<Vec<u8>>, Option<std::sync::Arc<Vec<u8>>>) = match snap {
         DocSnapshot::SingleFile(b) => (b.as_ref().clone(), None, None),
         DocSnapshot::SplitWtaWtp { wta, wtp } => {
             (wta.as_ref().clone(), Some(wtp.as_ref().clone()), None)
         }
         DocSnapshot::PairedDatDtt { dat, dtt } => {
-            (dat.as_ref().clone(), None, Some(dtt.as_ref().clone()))
+            if node_id.starts_with("root:dtt") {
+                (Vec::new(), None, None)
+            } else {
+                (dat.as_ref().clone(), None, Some(dtt.clone()))
+            }
         }
     };
     let mut cur_name = String::from("root");
@@ -933,7 +937,7 @@ pub(crate) fn resolve_subblob(
         if part == "root:dat" {
             if let DocSnapshot::PairedDatDtt { dat, dtt } = snap {
                 cur_bytes = dat.as_ref().clone();
-                cur_dtt_peer = Some(dtt.as_ref().clone());
+                cur_dtt_peer = Some(dtt.clone());
                 cur_name = "dat".to_string();
             }
             idx += 1;
@@ -998,7 +1002,7 @@ pub(crate) fn resolve_subblob(
                 .extract_entry_with_lib(&cur_bytes, entry_idx, oodle_lib.as_ref())
                 .map_err(|e| e.to_string())?;
             cur_wtp = None;
-            cur_dtt_peer = peer_dtt;
+            cur_dtt_peer = peer_dtt.map(std::sync::Arc::new);
             idx += 1;
             continue;
         }

@@ -515,6 +515,15 @@ export default function App() {
       try {
         const s = await invoke<StudioSettings>("get_studio_settings");
         applyLoadedSettings(s);
+        if (typeof s.default_import_format === "string" && s.default_import_format.trim()) {
+          setTexEncodeFormat(s.default_import_format);
+        }
+        if (typeof s.default_encode_quality === "string" && s.default_encode_quality.trim()) {
+          setTexQuality(s.default_encode_quality);
+        }
+        if (typeof s.sync_xt1_flags_on_import === "boolean") {
+          setTexSyncFlags(s.sync_xt1_flags_on_import);
+        }
         markLoaded();
         await loadDirectory(s.last_dir || undefined);
       } catch {
@@ -2958,40 +2967,69 @@ export default function App() {
             setWmbHierarchyRatio(0.48);
             setStatusLeft("Restored default pane layout");
           }}
-          onSave={(next) => {
-            const coreDatChanged =
-              next.coreDatB1 !== coreDatB1 ||
-              next.coreDatB2 !== coreDatB2 ||
-              next.coreDatB3 !== coreDatB3;
-            const oodleChanged = next.oodleDllPath !== oodleDllPath;
-            setTheme(next.theme);
-            setHideUnsupported(next.hideUnsupported);
-            setAssetBrowserZoom(next.assetBrowserZoom);
-            setOodleDllPath(next.oodleDllPath);
-            setNvttDllPath(next.nvttDllPath);
-            setCoreDatB1(next.coreDatB1);
-            setCoreDatB2(next.coreDatB2);
-            setCoreDatB3(next.coreDatB3);
-            setPkzDefaultCompression(next.pkzDefaultCompression);
-            setPkzDefaultLevel(next.pkzDefaultLevel);
-            setForceCustomDatAlignment(next.forceCustomDatAlignment);
-            setCustomDatAlignment(next.customDatAlignment);
-            setDefaultImportFormat(next.defaultImportFormat);
-            setDefaultEncodeQuality(next.defaultEncodeQuality);
-            setSyncXt1FlagsOnImport(next.syncXt1FlagsOnImport);
-            setTexEncodeFormat(next.defaultImportFormat);
-            setTexQuality(next.defaultEncodeQuality);
-            setTexSyncFlags(next.syncXt1FlagsOnImport);
-            setUvdPadding(next.uvdPadding);
-            setUvdMaxSize(next.uvdMaxSize);
-            if (coreDatChanged) {
-              setWmbDocGeneration((g) => g + 1);
+          onSave={async (next) => {
+            const payload = buildStudioSettingsPayload(currentDir, {
+              theme: next.theme === "light" ? "Light" : "Dark",
+              hide_unsupported: next.hideUnsupported,
+              asset_browser_zoom: next.assetBrowserZoom,
+              oodle_dll_path: next.oodleDllPath,
+              nvtt_dll_path: next.nvttDllPath,
+              core_dat_b1: next.coreDatB1,
+              core_dat_b2: next.coreDatB2,
+              core_dat_b3: next.coreDatB3,
+              pkz_default_compression: next.pkzDefaultCompression,
+              pkz_default_level: next.pkzDefaultLevel,
+              force_custom_dat_alignment: next.forceCustomDatAlignment,
+              custom_dat_alignment: next.customDatAlignment,
+              default_import_format: next.defaultImportFormat,
+              default_encode_quality: next.defaultEncodeQuality,
+              sync_xt1_flags_on_import: next.syncXt1FlagsOnImport,
+              uvd_padding: next.uvdPadding,
+              uvd_max_size: next.uvdMaxSize,
+            });
+            try {
+              const saved = await invoke<StudioSettings>("save_studio_settings", {
+                settings: payload,
+              });
+              const coreDatChanged =
+                next.coreDatB1 !== coreDatB1 ||
+                next.coreDatB2 !== coreDatB2 ||
+                next.coreDatB3 !== coreDatB3;
+              const oodleChanged = (saved.oodle_dll_path ?? "") !== oodleDllPath;
+              setTheme(next.theme);
+              setHideUnsupported(next.hideUnsupported);
+              setAssetBrowserZoom(next.assetBrowserZoom);
+              setOodleDllPath(saved.oodle_dll_path ?? "");
+              setNvttDllPath(saved.nvtt_dll_path ?? "");
+              setOodleConfigured(Boolean(saved.oodle_configured));
+              setNvttConfigured(Boolean(saved.nvtt_configured));
+              setCoreDatB1(next.coreDatB1);
+              setCoreDatB2(next.coreDatB2);
+              setCoreDatB3(next.coreDatB3);
+              setPkzDefaultCompression(next.pkzDefaultCompression);
+              setPkzDefaultLevel(next.pkzDefaultLevel);
+              setForceCustomDatAlignment(next.forceCustomDatAlignment);
+              setCustomDatAlignment(next.customDatAlignment);
+              setDefaultImportFormat(next.defaultImportFormat);
+              setDefaultEncodeQuality(next.defaultEncodeQuality);
+              setSyncXt1FlagsOnImport(next.syncXt1FlagsOnImport);
+              setTexEncodeFormat(next.defaultImportFormat);
+              setTexQuality(next.defaultEncodeQuality);
+              setTexSyncFlags(next.syncXt1FlagsOnImport);
+              setUvdPadding(next.uvdPadding);
+              setUvdMaxSize(next.uvdMaxSize);
+              if (coreDatChanged) {
+                setWmbDocGeneration((g) => g + 1);
+              }
+              if (oodleChanged) {
+                void refreshOodleValidation(saved.oodle_dll_path ?? "");
+              }
+              setSettingsModalOpen(false);
+              setStatusLeft("Saved studio settings");
+              return null;
+            } catch (err) {
+              return String(err);
             }
-            if (oodleChanged) {
-              void refreshOodleValidation(next.oodleDllPath);
-            }
-            setSettingsModalOpen(false);
-            setStatusLeft("Saved studio settings");
           }}
           onClose={() => setSettingsModalOpen(false)}
         />

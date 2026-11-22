@@ -7,13 +7,13 @@ use crate::vfs::{
 use base64::{engine::general_purpose::STANDARD as BASE64, Engine as _};
 use pgtools_core::{
     dat::DatFile,
-    scene::{encode_wtx2_blob, extract_texture_for_wtx2},
+    scene::encode_wtx2_blob,
     texture_conv::{
         build_dummy_dds, decode_bntx_subtexture_mip_filtered, decode_cubemap_six_faces,
         decode_texture_layer_filtered, decode_texture_mip_filtered,
         encode_rgba_to_dds_with_quality, encode_rgba_to_xt1_with_options,
         export_texture_to_dds_lossless, extract_gpu_texture_surface, get_nvtt_status_description,
-        inspect_texture_blob, is_gpu_direct_format, parse_bntx_textures,
+        inspect_texture_blob, is_gpu_direct_format, parse_bntx_textures, pick_mip_for_max_dim,
         recompress_astc_texture_blob_to_bc, replace_bntx_subtexture_with_options,
         swizzle_dds_to_xt1, texture_blob_has_pixel_payload_at, AstcRecompressConfig,
         EncodeQuality, TextureDimension, TextureFormat, ASTC_FOOTPRINTS,
@@ -26,7 +26,9 @@ use pgtools_core::{
 use serde::{Deserialize, Serialize};
 use std::fs;
 use std::io::Cursor;
+use std::collections::HashMap;
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 use tauri::State;
 
 pub(crate) fn is_raster_image_path(low_path: &str) -> bool {
@@ -553,71 +555,184 @@ fn resolve_texture_blob_for_node(
 }
 
 #[tauri::command]
-pub fn get_texture_gpu_surface(
+pub async fn get_texture_gpu_surface(
     node_id: String,
     mip_index: u32,
     layer_index: u32,
     state: State<'_, AppState>,
 ) -> Result<tauri::ipc::Response, String> {
-    let (snap, oodle_path) = {
+    let (container_id, leaf) = {
+        let (container_parts, leaf_ref) = split_container_and_leaf(&node_id);
+        (container_parts.join("/"), leaf_ref.to_string())
+    };
+    let (snap, oodle_path, cached_wtb) = {
         let sess = lock_session(&state);
         let snap = sess.current.clone().ok_or("No active document loaded")?;
-        (snap, sess.settings.oodle_dll_path.clone())
+        let cached_wtb = if leaf.starts_with("tex:") {
+            sess.container_wtb_cache.get(&container_id).cloned()
+        } else {
+            None
+        };
+        (snap, sess.settings.oodle_dll_path.clone(), cached_wtb)
     };
-    let oodle_opt = if oodle_path.is_empty() {
-        None
-    } else {
-        Some(Path::new(oodle_path.as_str()))
-    };
-    let (blob, sub_idx, _flags) = resolve_texture_blob_for_node(&snap, &node_id, oodle_opt)?;
-    let surf = extract_gpu_texture_surface(&blob, sub_idx, mip_index, layer_index)
-        .map_err(|e| format!("Failed to extract GPU texture surface: {e}"))?;
-    let wtx2 = encode_wtx2_blob(
-        surf.width,
-        surf.height,
-        false,
-        surf.is_srgb,
-        surf.gpu_format,
-        surf.data.len() as u32,
-        &surf.data,
-    );
+
+    let container_id_bg = container_id.clone();
+    let (wtx2, new_wtb) = tauri::async_runtime::spawn_blocking(move || -> Result<(Vec<u8>, Option<Arc<WtbFile>>), String> {
+        let oodle_opt = if oodle_path.is_empty() {
+            None
+        } else {
+            Some(Path::new(oodle_path.as_str()))
+        };
+        if let Some(wtb) = cached_wtb {
+            let tex_idx: usize = leaf.strip_prefix("tex:").and_then(|s| s.parse().ok()).unwrap_or(0);
+            let entry = wtb.entries.get(tex_idx).ok_or_else(|| format!("Texture index {tex_idx} out of range"))?;
+            let surf = extract_gpu_texture_surface(&entry.data, entry.index, mip_index, layer_index)
+                .map_err(|e| format!("Failed to extract GPU texture surface: {e}"))?;
+            let bytes = encode_wtx2_blob(surf.width, surf.height, false, surf.is_srgb, surf.gpu_format, surf.data.len() as u32, &surf.data);
+            return Ok((bytes, None));
+        }
+
+        if leaf.starts_with("tex:") {
+            let (_, sub_bytes, sub_wtp, _) = resolve_subblob(&snap, &container_id_bg, oodle_opt)?;
+            if !is_bntx_blob(&sub_bytes) {
+                let wtb = Arc::new(WtbFile::from_bytes(&sub_bytes, sub_wtp.as_deref()).map_err(|e| e.to_string())?);
+                let tex_idx: usize = leaf.strip_prefix("tex:").and_then(|s| s.parse().ok()).unwrap_or(0);
+                let entry = wtb.entries.get(tex_idx).ok_or_else(|| format!("Texture index {tex_idx} out of range"))?;
+                let surf = extract_gpu_texture_surface(&entry.data, entry.index, mip_index, layer_index)
+                    .map_err(|e| format!("Failed to extract GPU texture surface: {e}"))?;
+                let bytes = encode_wtx2_blob(surf.width, surf.height, false, surf.is_srgb, surf.gpu_format, surf.data.len() as u32, &surf.data);
+                return Ok((bytes, Some(wtb)));
+            }
+        }
+
+        let (blob, sub_idx, _flags) = resolve_texture_blob_for_node(&snap, &node_id, oodle_opt)?;
+        let surf = extract_gpu_texture_surface(&blob, sub_idx, mip_index, layer_index)
+            .map_err(|e| format!("Failed to extract GPU texture surface: {e}"))?;
+        let bytes = encode_wtx2_blob(
+            surf.width,
+            surf.height,
+            false,
+            surf.is_srgb,
+            surf.gpu_format,
+            surf.data.len() as u32,
+            &surf.data,
+        );
+        Ok((bytes, None))
+    })
+    .await
+    .map_err(|e| format!("GPU surface worker failed: {e}"))??;
+
+    if let Some(wtb) = new_wtb {
+        let mut sess = lock_session(&state);
+        sess.container_wtb_cache.insert(container_id, wtb);
+    }
+
     Ok(tauri::ipc::Response::new(wtx2))
 }
 
 /// Binary batch thumbnail response (`WTB2`):
 /// `[0..4] "WTB2"`, `[4..8] count: u32`, repeated: `[id_len: u32][id_utf8][blob_len: u32][wtx2_bytes]`
 #[tauri::command]
-pub fn get_texture_gpu_thumbnails_batch(
+pub async fn get_texture_gpu_thumbnails_batch(
     node_ids: Vec<String>,
     state: State<'_, AppState>,
 ) -> Result<tauri::ipc::Response, String> {
-    let (snap, oodle_path) = {
+    let (snap, oodle_path, mut cached_wtbs) = {
         let sess = lock_session(&state);
         let snap = sess.current.clone().ok_or("No active document loaded")?;
-        (snap, sess.settings.oodle_dll_path.clone())
-    };
-    let oodle_opt = if oodle_path.is_empty() {
-        None
-    } else {
-        Some(Path::new(oodle_path.as_str()))
+        let cached_wtbs = sess.container_wtb_cache.clone();
+        (snap, sess.settings.oodle_dll_path.clone(), cached_wtbs)
     };
 
-    let mut out = Vec::with_capacity(8 + node_ids.len() * 4096);
-    out.extend_from_slice(b"WTB2");
-    out.extend_from_slice(&(node_ids.len() as u32).to_le_bytes());
+    let (out, newly_cached) = tauri::async_runtime::spawn_blocking(move || {
+        let oodle_opt = if oodle_path.is_empty() {
+            None
+        } else {
+            Some(Path::new(oodle_path.as_str()))
+        };
+        let mut newly_cached: HashMap<String, Arc<WtbFile>> = HashMap::new();
+        let mut out = Vec::with_capacity(8 + node_ids.len() * 4096);
+        out.extend_from_slice(b"WTB2");
+        out.extend_from_slice(&(node_ids.len() as u32).to_le_bytes());
 
-    for nid in node_ids {
-        let wtx2 = resolve_texture_blob_for_node(&snap, &nid, oodle_opt)
-            .ok()
-            .and_then(|(blob, sub_idx, flags)| {
-                extract_texture_for_wtx2(&blob, sub_idx, flags, 128).ok()
-            })
-            .unwrap_or_default();
-        let id_bytes = nid.as_bytes();
-        out.extend_from_slice(&(id_bytes.len() as u32).to_le_bytes());
-        out.extend_from_slice(id_bytes);
-        out.extend_from_slice(&(wtx2.len() as u32).to_le_bytes());
-        out.extend_from_slice(&wtx2);
+        let extract_thumb_wtx2 = |blob: &[u8], sub_idx: usize| -> Option<Vec<u8>> {
+            let target_mip = if is_bntx_blob(blob) {
+                parse_bntx_textures(blob)
+                    .ok()
+                    .and_then(|recs| recs.get(sub_idx).or_else(|| recs.first()).cloned())
+                    .map(|t| pick_mip_for_max_dim(t.width, t.height, t.mip_offsets.len().max(1) as u32, 128))
+                    .unwrap_or(0)
+            } else {
+                inspect_texture_blob(blob)
+                    .ok()
+                    .map(|m| pick_mip_for_max_dim(m.width, m.height, m.mip_count.max(1), 128))
+                    .unwrap_or(0)
+            };
+            let surf = extract_gpu_texture_surface(blob, sub_idx, target_mip, 0).ok()?;
+            Some(encode_wtx2_blob(
+                surf.width,
+                surf.height,
+                false,
+                surf.is_srgb,
+                surf.gpu_format,
+                surf.data.len() as u32,
+                &surf.data,
+            ))
+        };
+
+        for nid in node_ids {
+            let (container_parts, leaf) = split_container_and_leaf(&nid);
+            let container_id = container_parts.join("/");
+            let wtx2 = if leaf.starts_with("tex:") {
+                let tex_idx: usize = leaf.strip_prefix("tex:").and_then(|s| s.parse().ok()).unwrap_or(0);
+                if let Some(wtb) = cached_wtbs.get(&container_id) {
+                    wtb.entries
+                        .get(tex_idx)
+                        .and_then(|e| extract_thumb_wtx2(&e.data, e.index))
+                        .unwrap_or_default()
+                } else if let Ok((_, sub_bytes, sub_wtp, _)) = resolve_subblob(&snap, &container_id, oodle_opt) {
+                    if is_bntx_blob(&sub_bytes) {
+                        extract_thumb_wtx2(&sub_bytes, tex_idx).unwrap_or_default()
+                    } else if let Ok(wtb) = WtbFile::from_bytes(&sub_bytes, sub_wtp.as_deref()) {
+                        let wtb_arc = Arc::new(wtb);
+                        let res = wtb_arc
+                            .entries
+                            .get(tex_idx)
+                            .and_then(|e| extract_thumb_wtx2(&e.data, e.index))
+                            .unwrap_or_default();
+                        cached_wtbs.insert(container_id.clone(), wtb_arc.clone());
+                        newly_cached.insert(container_id, wtb_arc);
+                        res
+                    } else {
+                        Vec::new()
+                    }
+                } else {
+                    Vec::new()
+                }
+            } else {
+                resolve_texture_blob_for_node(&snap, &nid, oodle_opt)
+                    .ok()
+                    .and_then(|(blob, sub_idx, _flags)| extract_thumb_wtx2(&blob, sub_idx))
+                    .unwrap_or_default()
+            };
+
+            let id_bytes = nid.as_bytes();
+            out.extend_from_slice(&(id_bytes.len() as u32).to_le_bytes());
+            out.extend_from_slice(id_bytes);
+            out.extend_from_slice(&(wtx2.len() as u32).to_le_bytes());
+            out.extend_from_slice(&wtx2);
+        }
+
+        (out, newly_cached)
+    })
+    .await
+    .map_err(|e| format!("Thumbnail batch worker failed: {e}"))?;
+
+    if !newly_cached.is_empty() {
+        let mut sess = lock_session(&state);
+        for (k, v) in newly_cached {
+            sess.container_wtb_cache.insert(k, v);
+        }
     }
 
     Ok(tauri::ipc::Response::new(out))

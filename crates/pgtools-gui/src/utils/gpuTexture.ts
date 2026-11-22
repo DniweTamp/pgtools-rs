@@ -242,7 +242,6 @@ export function buildThreeTextureFromGpuSurface(
     const compFmt = gpuFormatToThreeCompressed(gpuFormat);
     if (compFmt !== null) {
       cubeTex.format = compFmt as unknown as THREE.PixelFormat;
-      (cubeTex as unknown as { isCompressedTexture?: boolean }).isCompressedTexture = true;
     }
     cubeTex.flipY = false;
     cubeTex.colorSpace = THREE.NoColorSpace;
@@ -394,7 +393,7 @@ void main() {
 }
 `;
 
-// uFormatMode: 0=RGBA, 1=R-only grayscale (R8/BC4), 2=RG (RG8/BC5), 3=HDR Reinhard (RGBA16F/BC6H)
+// uFormatMode: 0=RGBA, 1=R-only grayscale (R8/BC4), 2=RG8, 3=HDR Reinhard (RGBA16F/BC6H), 4=BC5 normal Z reconstruct
 // uChannelMode: 0=RGBA, 1=RGB, 2=R, 3=G, 4=B, 5=A
 export const GL2_QUAD_FS = `#version 300 es
 precision highp float;
@@ -418,6 +417,11 @@ void main() {
     s = vec4(s.r, s.g, 0.0, 1.0);
   } else if (uFormatMode == 3) {
     s = vec4(reinhard(s.rgb), clamp(s.a, 0.0, 1.0));
+  } else if (uFormatMode == 4) {
+    float nx = s.r * 2.0 - 1.0;
+    float ny = s.g * 2.0 - 1.0;
+    float nz = sqrt(max(1.0 - (nx * nx + ny * ny), 0.0));
+    s = vec4(s.r, s.g, nz * 0.5 + 0.5, 1.0);
   }
 
   vec4 c = s;
@@ -441,7 +445,8 @@ void main() {
 
 export function formatModeForGpuFormat(gpuFormat: number): number {
   if (gpuFormat === GPU_FMT.R8 || gpuFormat === GPU_FMT.BC4) return 1;
-  if (gpuFormat === GPU_FMT.RG8 || gpuFormat === GPU_FMT.BC5) return 2;
+  if (gpuFormat === GPU_FMT.RG8) return 2;
+  if (gpuFormat === GPU_FMT.BC5) return 4;
   if (
     gpuFormat === GPU_FMT.RGBA16F ||
     gpuFormat === GPU_FMT.BC6H_UF16 ||

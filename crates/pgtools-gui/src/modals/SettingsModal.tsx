@@ -1,4 +1,4 @@
-import React, { useEffect, useMemo, useState } from "react";
+import React, { useEffect, useMemo, useRef, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { IconCheck } from "../components/Icons";
 import { StudioRadio } from "../components/StudioRadio";
@@ -38,7 +38,7 @@ export interface SettingsModalProps {
   oodleConfigured: boolean;
   nvttConfigured: boolean;
   recentFilesCount: number;
-  onSave: (next: SettingsDraftValues) => void;
+  onSave: (next: SettingsDraftValues) => Promise<string | null>;
   onClose: () => void;
   onClearRecentFiles: () => void;
   onResetPaneLayout: () => void;
@@ -145,15 +145,20 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
   );
   const [oodleReport, setOodleReport] = useState<OodleValidationReport | null>(null);
   const [testingOodle, setTestingOodle] = useState(false);
+  const [saving, setSaving] = useState(false);
+  const [saveError, setSaveError] = useState<string | null>(null);
+  const savedRef = useRef(false);
 
-  // Live theme preview while dialog is open; revert on unmount if canceled
+  // Live theme preview while dialog is open; revert on unmount only if canceled
   useEffect(() => {
     document.documentElement.setAttribute("data-theme", draft.theme);
   }, [draft.theme]);
 
   useEffect(() => {
     return () => {
-      document.documentElement.setAttribute("data-theme", initialValues.theme);
+      if (!savedRef.current) {
+        document.documentElement.setAttribute("data-theme", initialValues.theme);
+      }
     };
   }, [initialValues.theme]);
 
@@ -222,15 +227,23 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
     );
   }, [draft, initialValues, parsedAlign]);
 
-  const handleSave = () => {
-    if (alignInvalid) return;
+  const handleSave = async () => {
+    if (alignInvalid || saving) return;
+    setSaving(true);
+    setSaveError(null);
     const finalAlign = sanitizeCustomDatAlignment(parsedAlign ?? draft.customDatAlignment);
     const finalLevel = clampPkzLevel(draft.pkzDefaultCompression, draft.pkzDefaultLevel);
-    onSave({
+    const err = await onSave({
       ...draft,
       customDatAlignment: finalAlign,
       pkzDefaultLevel: finalLevel,
     });
+    if (err) {
+      setSaveError(err);
+      setSaving(false);
+    } else {
+      savedRef.current = true;
+    }
   };
 
   const handleResetTab = () => {
@@ -992,7 +1005,9 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
             >
               Reset Tab Defaults
             </button>
-            {alignInvalid ? (
+            {saveError ? (
+              <span className="settings-dirty-badge error">{saveError}</span>
+            ) : alignInvalid ? (
               <span className="settings-dirty-badge error">Invalid DAT alignment value</span>
             ) : isDirty ? (
               <span className="settings-dirty-badge">Unsaved changes</span>
@@ -1007,10 +1022,10 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
             <button
               type="button"
               className="pill-button accent"
-              disabled={!isDirty || alignInvalid}
-              onClick={handleSave}
+              disabled={!isDirty || alignInvalid || saving}
+              onClick={() => void handleSave()}
             >
-              Save Settings
+              {saving ? "Saving…" : "Save Settings"}
             </button>
           </div>
         </footer>

@@ -163,7 +163,6 @@ export interface WmbScenePayload {
 
 export type DecodedWtx1Texture = DecodedGpuSurface;
 
-const WTX1_MAGIC = 0x31585457; // "WTX1" LE
 
 function align4(n: number): number {
   const rem = n % 4;

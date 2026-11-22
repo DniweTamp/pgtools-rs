@@ -12,7 +12,7 @@ use pgtools_core::{
     demo::build_demo_dat,
     scene::{
         build_wmb3_scene, build_wmb_scene, extract_texture_for_wtx2,
-        fnv1a_64_hex, pack_scene_blob, TextureRefDesc, UidMap,
+        pack_scene_blob, TextureRefDesc, UidMap,
     },
     scene_ops::{
         apply_wmb3_scene_op, apply_wmb_scene_op, copy_wmb3_to_clipboard, copy_wmb_to_clipboard,
@@ -30,7 +30,6 @@ use pgtools_core::{
     wtb::WtbFile,
 };
 use serde::{Deserialize, Serialize};
-use std::collections::HashMap;
 use std::fs;
 use std::io::Cursor;
 use std::panic::{catch_unwind, AssertUnwindSafe};
@@ -172,26 +171,22 @@ pub(crate) fn collect_paired_wtb_banks(
         }
     }
 
-    // 2. Model inside DAT / Paired DAT+DTT / PKZ
-    let mut candidate_roots: Vec<(String, Vec<u8>, Option<Vec<u8>>)> = Vec::new();
+    // 2. Model inside DAT / Paired DAT+DTT / PKZ (zero-copy Arc borrows for PairedDatDtt)
+    let mut candidate_roots: Vec<(String, Arc<Vec<u8>>, Option<Arc<Vec<u8>>>)> = Vec::new();
     if let DocSnapshot::PairedDatDtt { dat, dtt } = snap {
-        candidate_roots.push((
-            "root:dat".to_string(),
-            dat.as_ref().clone(),
-            Some(dtt.as_ref().clone()),
-        ));
-        candidate_roots.push(("root:dtt".to_string(), dtt.as_ref().clone(), None));
+        candidate_roots.push(("root:dat".to_string(), dat.clone(), Some(dtt.clone())));
+        candidate_roots.push(("root:dtt".to_string(), dtt.clone(), None));
     } else if !container_parts.is_empty() {
         let parent_parts = &container_parts[..container_parts.len() - 1];
         let parent_id = parent_parts.join("/");
         if let Ok((_, parent_bytes, _, _)) = resolve_subblob(snap, &parent_id, oodle_dll) {
-            candidate_roots.push((parent_id, parent_bytes, None));
+            candidate_roots.push((parent_id, Arc::new(parent_bytes), None));
         }
     }
 
     for (prefix, dat_bytes, peer_dtt) in candidate_roots {
-        if let Ok(dat) = DatFile::from_bytes(&dat_bytes) {
-            let parsed_dtt = peer_dtt.as_ref().and_then(|b| DatFile::from_bytes(b).ok());
+        if let Ok(dat) = DatFile::from_bytes(dat_bytes.as_slice()) {
+            let parsed_dtt = peer_dtt.as_ref().and_then(|b| DatFile::from_bytes(b.as_slice()).ok());
             let dtt_slice = parsed_dtt.as_ref().map(|d| d.entries.as_slice());
             let total_wtas = dat
                 .entries
@@ -232,18 +227,9 @@ pub(crate) fn collect_paired_wtb_banks(
     banks
 }
 
-/// Build `TextureRefDesc` entries for EVERY texture in the paired bank(s) outside the session lock,
-/// returning `(texture_refs, newly_decoded_thumbnails)`.
-fn build_bank_texture_refs_unlocked(
-    existing_thumb_cache: &HashMap<String, (String, Option<String>)>,
-    snap: &DocSnapshot,
-    model_node_id: &str,
-    oodle_dll: Option<&Path>,
-) -> (Vec<TextureRefDesc>, Vec<(String, (String, Option<String>))>) {
-    let banks = collect_paired_wtb_banks(snap, model_node_id, oodle_dll);
+/// Build `TextureRefDesc` metadata entries from already-parsed paired WTB banks with ZERO CPU pixel decoding.
+fn build_bank_texture_refs_from_banks(banks: &[(String, Arc<WtbFile>)]) -> Vec<TextureRefDesc> {
     let mut out = Vec::new();
-    let mut new_thumbs = Vec::new();
-
     for (_bank_node_id, wtb) in banks {
         for e in &wtb.entries {
             let tid = e.texture_id.unwrap_or(e.index as u32);
@@ -253,52 +239,11 @@ fn build_bank_texture_refs_unlocked(
                 .map(|m| (m.format.display_name(), m.width, m.height, m.name.clone()))
                 .unwrap_or_else(|| ("TEX".to_string(), 0, 0, None));
             let name = meta_name.unwrap_or_else(|| format!("tex{}", e.index));
-
-            let blob_key = if !e.content_hash.is_empty() {
+            let content_hash = if !e.content_hash.is_empty() {
                 e.content_hash.clone()
             } else {
-                let mut key_hasher = pgtools_core::scene::Fnv1a64::new();
-                key_hasher.update(&(e.index as u32).to_le_bytes());
-                key_hasher.update(&e.data);
-                key_hasher.finish_hex()
+                format!("{:08x}:{:x}", tid, e.data.len())
             };
-
-            let (content_hash, thumb_url) =
-                if let Some(cached) = existing_thumb_cache.get(&blob_key) {
-                    cached.clone()
-                } else {
-                    let is_bntx = is_bntx_blob(&e.data);
-                    let decoded_res = if is_bntx {
-                        decode_bntx_subtexture_mip_filtered(&e.data, e.index, 0, "RGBA", false)
-                    } else {
-                        decode_texture_mip_filtered(&e.data, 0, "RGBA", false)
-                    };
-                    let pair = match decoded_res {
-                        Ok((img, _, _)) => {
-                            let c_hash = fnv1a_64_hex(img.as_raw());
-                            let small = if img.width() > 96 || img.height() > 96 {
-                                image::imageops::thumbnail(&img, 96, 96)
-                            } else {
-                                img
-                            };
-                            let mut png_buf = Cursor::new(Vec::new());
-                            let url = if small.write_to(&mut png_buf, image::ImageFormat::Png).is_ok()
-                            {
-                                Some(format!(
-                                    "data:image/png;base64,{}",
-                                    BASE64.encode(png_buf.into_inner())
-                                ))
-                            } else {
-                                None
-                            };
-                            (c_hash, url)
-                        }
-                        Err(_) => (blob_key.clone(), None),
-                    };
-                    new_thumbs.push((blob_key, pair.clone()));
-                    pair
-                };
-
             out.push(TextureRefDesc {
                 texture_id: tid,
                 id_hex: format!("0x{tid:08X}"),
@@ -308,21 +253,20 @@ fn build_bank_texture_refs_unlocked(
                 format_name: fmt_name,
                 content_hash,
                 used_by_material_ids: Vec::new(),
-                thumbnail_data_url: thumb_url,
+                thumbnail_data_url: None,
             });
         }
     }
-
-    (out, new_thumbs)
+    out
 }
 
 #[tauri::command]
-pub fn get_wmb_scene(
+pub async fn get_wmb_scene(
     node_id: String,
     known_geometry_hashes: Option<Vec<String>>,
     state: State<'_, AppState>,
 ) -> Result<tauri::ipc::Response, String> {
-    let (snap, doc_name, oodle_path, structure_version, mut uid_map, thumb_snapshot, model_key) = {
+    let (snap, doc_name, oodle_path, structure_version, mut uid_map, model_key, cached_banks) = {
         let sess = lock_session(&state);
         let snap = sess.current.clone().ok_or("No active document loaded")?;
         let doc_name = sess
@@ -336,76 +280,86 @@ pub fn get_wmb_scene(
         let structure_version = sess.structure_version.max(1);
         let model_key = canonical_model_key(&node_id);
         let uid_map = sess.uid_maps.get(&model_key).cloned().unwrap_or_else(UidMap::new);
-        let thumb_snapshot = sess.tex_thumb_cache.clone();
+        let cached_banks = sess.paired_wtb_cache.get(&model_key).cloned();
         (
             snap,
             doc_name,
             oodle_path,
             structure_version,
             uid_map,
-            thumb_snapshot,
             model_key,
+            cached_banks,
         )
     };
 
-    let work_res = catch_unwind(AssertUnwindSafe(|| -> Result<_, String> {
-        let oodle_opt = if oodle_path.is_empty() {
-            None
-        } else {
-            Some(Path::new(oodle_path.as_str()))
-        };
-        let (sub_name, sub_bytes, _, _) = resolve_subblob(&snap, &model_key, oodle_opt)?;
-        let file_name = if sub_name == "root" || sub_name.is_empty() {
-            doc_name
-        } else {
-            sub_name
-        };
+    let model_key_bg = model_key.clone();
+    let node_id_bg = node_id.clone();
+    let (wire_bytes, updated_uid_map, parsed_banks) = tauri::async_runtime::spawn_blocking(move || {
+        catch_unwind(AssertUnwindSafe(|| -> Result<_, String> {
+            let oodle_opt = if oodle_path.is_empty() {
+                None
+            } else {
+                Some(Path::new(oodle_path.as_str()))
+            };
+            let (sub_name, sub_bytes, _, _) = resolve_subblob(&snap, &model_key_bg, oodle_opt)?;
+            let file_name = if sub_name == "root" || sub_name.is_empty() {
+                doc_name
+            } else {
+                sub_name
+            };
 
-        let (bank_textures, new_thumbs) =
-            build_bank_texture_refs_unlocked(&thumb_snapshot, &snap, &node_id, oodle_opt);
-        let known = known_geometry_hashes.unwrap_or_default();
-        let tag = detect_file_format_tag(&file_name, &sub_bytes);
+            let banks_arc: Arc<Vec<(String, Arc<WtbFile>)>> = match cached_banks {
+                Some(b) => b,
+                None => Arc::new(
+                    collect_paired_wtb_banks(&snap, &node_id_bg, oodle_opt)
+                        .into_iter()
+                        .map(|(k, w)| (k, Arc::new(w)))
+                        .collect(),
+                ),
+            };
+            let bank_textures = build_bank_texture_refs_from_banks(&banks_arc);
+            let known = known_geometry_hashes.unwrap_or_default();
+            let tag = detect_file_format_tag(&file_name, &sub_bytes);
 
-        let (manifest, binary) = if tag == "WMB3" {
-            let wmb3 = Wmb3File::from_bytes(&sub_bytes).map_err(|e| e.to_string())?;
-            build_wmb3_scene(
-                &wmb3,
-                &mut uid_map,
-                &node_id,
-                &file_name,
-                structure_version,
-                bank_textures,
-                &known,
-            )
-        } else if tag == "WMB" {
-            let wmb = WmbFile::from_bytes(&sub_bytes).map_err(|e| e.to_string())?;
-            build_wmb_scene(
-                &wmb,
-                &mut uid_map,
-                &node_id,
-                &file_name,
-                structure_version,
-                bank_textures,
-                &known,
-            )
-        } else {
-            return Err(format!(
-                "Node '{node_id}' is not a WMB or WMB3 model (detected {tag})"
-            ));
-        };
+            let (manifest, binary) = if tag == "WMB3" {
+                let wmb3 = Wmb3File::from_bytes(&sub_bytes).map_err(|e| e.to_string())?;
+                build_wmb3_scene(
+                    &wmb3,
+                    &mut uid_map,
+                    &node_id_bg,
+                    &file_name,
+                    structure_version,
+                    bank_textures,
+                    &known,
+                )
+            } else if tag == "WMB" {
+                let wmb = WmbFile::from_bytes(&sub_bytes).map_err(|e| e.to_string())?;
+                build_wmb_scene(
+                    &wmb,
+                    &mut uid_map,
+                    &node_id_bg,
+                    &file_name,
+                    structure_version,
+                    bank_textures,
+                    &known,
+                )
+            } else {
+                return Err(format!(
+                    "Node '{node_id_bg}' is not a WMB or WMB3 model (detected {tag})"
+                ));
+            };
 
-        let wire_bytes = pack_scene_blob(&manifest, &binary).map_err(|e| e.to_string())?;
-        Ok((wire_bytes, uid_map, new_thumbs))
-    }))
-    .map_err(|_| "Internal panic while building WMB scene".to_string())?;
-
-    let (wire_bytes, updated_uid_map, new_thumbs) = work_res?;
+            let wire_bytes = pack_scene_blob(&manifest, &binary).map_err(|e| e.to_string())?;
+            Ok((wire_bytes, uid_map, banks_arc))
+        }))
+        .map_err(|_| "Internal panic while building WMB scene".to_string())?
+    })
+    .await
+    .map_err(|e| format!("WMB scene worker failed: {e}"))??;
 
     {
         let mut sess = lock_session(&state);
-        for (k, v) in new_thumbs {
-            sess.insert_thumb_cached(k, v);
-        }
+        sess.paired_wtb_cache.insert(model_key.clone(), parsed_banks);
         sess.uid_maps.insert(model_key.clone(), updated_uid_map.clone());
         sess.committed_uid_maps
             .entry(model_key)
@@ -416,59 +370,84 @@ pub fn get_wmb_scene(
 }
 
 #[tauri::command]
-pub fn get_wmb_texture(
+pub async fn get_wmb_texture(
     node_id: String,
     texture_id: u32,
     max_dim: u32,
     state: State<'_, AppState>,
 ) -> Result<tauri::ipc::Response, String> {
-    let (snap, oodle_path) = {
+    let model_key = canonical_model_key(&node_id);
+    let (snap, oodle_path, cached_banks) = {
         let sess = lock_session(&state);
         let snap = sess.current.clone().ok_or("No active document loaded")?;
         let oodle_path = sess.settings.oodle_dll_path.clone();
-        (snap, oodle_path)
+        let cached_banks = sess.paired_wtb_cache.get(&model_key).cloned();
+        (snap, oodle_path, cached_banks)
     };
-    let oodle_opt = if oodle_path.is_empty() {
-        None
+
+    let (banks_arc, newly_parsed) = if let Some(b) = cached_banks {
+        (b, false)
     } else {
-        Some(Path::new(oodle_path.as_str()))
+        let snap_c = snap.clone();
+        let nid_c = node_id.clone();
+        let oodle_c = oodle_path.clone();
+        let parsed = tauri::async_runtime::spawn_blocking(move || {
+            let oodle_opt = if oodle_c.is_empty() {
+                None
+            } else {
+                Some(Path::new(oodle_c.as_str()))
+            };
+            Arc::new(
+                collect_paired_wtb_banks(&snap_c, &nid_c, oodle_opt)
+                    .into_iter()
+                    .map(|(k, w)| (k, Arc::new(w)))
+                    .collect::<Vec<_>>(),
+            )
+        })
+        .await
+        .map_err(|e| format!("Bank parse worker failed: {e}"))?;
+        (parsed, true)
     };
 
-    let model_key = canonical_model_key(&node_id);
-    let banks = collect_paired_wtb_banks(&snap, &node_id, oodle_opt);
-    let mut matched_entry = None;
+    if newly_parsed {
+        let mut sess = lock_session(&state);
+        sess.paired_wtb_cache.insert(model_key.clone(), banks_arc.clone());
+    }
 
-    for (_bank_id, wtb) in &banks {
-        for e in &wtb.entries {
-            let tid = e.texture_id.unwrap_or(e.index as u32);
-            if tid == texture_id {
-                matched_entry = Some(e.clone());
-                break;
-            }
-        }
-        if matched_entry.is_some() {
+    // Locate entry in O(1) without cloning the entire WtbFile
+    let mut matched: Option<(Arc<WtbFile>, usize)> = None;
+    for (_bank_id, wtb) in banks_arc.iter() {
+        if let Some(pos) = wtb
+            .entries
+            .iter()
+            .position(|e| e.texture_id.unwrap_or(e.index as u32) == texture_id)
+        {
+            matched = Some((wtb.clone(), pos));
             break;
         }
     }
-    if matched_entry.is_none() {
-        for (_bank_id, wtb) in &banks {
-            if let Some(e) = wtb.entries.get(texture_id as usize) {
-                matched_entry = Some(e.clone());
+    if matched.is_none() {
+        for (_bank_id, wtb) in banks_arc.iter() {
+            if (texture_id as usize) < wtb.entries.len() {
+                matched = Some((wtb.clone(), texture_id as usize));
                 break;
             }
         }
     }
 
-    let entry = matched_entry.ok_or_else(|| {
+    let (wtb_arc, entry_pos) = matched.ok_or_else(|| {
         format!("Texture 0x{texture_id:08X} not found in paired bank for '{node_id}'")
     })?;
 
-    let blob_hash = if !entry.content_hash.is_empty() {
-        entry.content_hash.clone()
-    } else {
-        fnv1a_64_hex(&entry.data)
+    let cache_key = {
+        let e = &wtb_arc.entries[entry_pos];
+        let tag = if !e.content_hash.is_empty() {
+            e.content_hash.clone()
+        } else {
+            format!("{:x}", e.data.len())
+        };
+        (format!("{model_key}:{tag}"), texture_id, max_dim)
     };
-    let cache_key = (format!("{model_key}:{blob_hash}"), texture_id, max_dim);
 
     {
         let sess = lock_session(&state);
@@ -477,17 +456,22 @@ pub fn get_wmb_texture(
         }
     }
 
-    let wtx1 = catch_unwind(AssertUnwindSafe(|| -> Result<Vec<u8>, String> {
-        extract_texture_for_wtx2(&entry.data, entry.index, entry.flags, max_dim)
-            .map_err(|e| format!("Failed to extract texture 0x{texture_id:08X}: {e}"))
-    }))
-    .map_err(|_| format!("Internal panic extracting texture 0x{texture_id:08X}"))??;
+    let wtx2 = tauri::async_runtime::spawn_blocking(move || {
+        catch_unwind(AssertUnwindSafe(|| -> Result<Vec<u8>, String> {
+            let entry = &wtb_arc.entries[entry_pos];
+            extract_texture_for_wtx2(&entry.data, entry.index, entry.flags, max_dim)
+                .map_err(|e| format!("Failed to extract texture 0x{texture_id:08X}: {e}"))
+        }))
+        .map_err(|_| format!("Internal panic extracting texture 0x{texture_id:08X}"))?
+    })
+    .await
+    .map_err(|e| format!("Texture worker failed: {e}"))??;
 
     {
         let mut sess = lock_session(&state);
-        sess.insert_wtx1_cached(cache_key, wtx1.clone());
+        sess.insert_wtx1_cached(cache_key, wtx2.clone());
     }
-    Ok(tauri::ipc::Response::new(wtx1))
+    Ok(tauri::ipc::Response::new(wtx2))
 }
 
 #[tauri::command]

@@ -20,6 +20,7 @@ export interface GpuTextureCanvasProps {
   nodeId: string;
   mipIndex: number;
   layerIndex: number;
+  revision?: string;
   channelMode: string;
   opaquePreview: boolean;
   style?: React.CSSProperties;
@@ -27,7 +28,7 @@ export interface GpuTextureCanvasProps {
 }
 
 export const GpuTextureCanvas = forwardRef<GpuTextureCanvasHandle, GpuTextureCanvasProps>(
-  ({ nodeId, mipIndex, layerIndex, channelMode, opaquePreview, style, alt }, ref) => {
+  ({ nodeId, mipIndex, layerIndex, revision, channelMode, opaquePreview, style, alt }, ref) => {
     const canvasRef = useRef<HTMLCanvasElement | null>(null);
     const glStateRef = useRef<{
       gl: WebGL2RenderingContext;
@@ -42,6 +43,7 @@ export const GpuTextureCanvas = forwardRef<GpuTextureCanvasHandle, GpuTextureCan
       hasTexture: boolean;
     } | null>(null);
     const [dims, setDims] = useState<{ w: number; h: number }>({ w: 1, h: 1 });
+    const [uploadSeq, setUploadSeq] = useState<number>(0);
     const [errorMsg, setErrorMsg] = useState<string | null>(null);
 
     const draw = () => {
@@ -143,7 +145,7 @@ export const GpuTextureCanvas = forwardRef<GpuTextureCanvasHandle, GpuTextureCan
           }
           st.formatMode = formatModeForGpuFormat(surface.gpuFormat);
           st.hasTexture = true;
-          draw();
+          setUploadSeq((n) => n + 1);
         } catch (err) {
           if (!cancelled) {
             setErrorMsg(String(err));
@@ -153,12 +155,12 @@ export const GpuTextureCanvas = forwardRef<GpuTextureCanvasHandle, GpuTextureCan
       return () => {
         cancelled = true;
       };
-    }, [nodeId, mipIndex, layerIndex]);
+    }, [nodeId, mipIndex, layerIndex, revision]);
 
-    // Instant GPU-only redraw when channelMode or opaquePreview changes (zero Rust IPC)
+    // Instant GPU-only redraw when channelMode, opaquePreview, or uploaded texture changes
     useEffect(() => {
       draw();
-    }, [channelMode, opaquePreview, dims.w, dims.h]);
+    }, [channelMode, opaquePreview, dims.w, dims.h, uploadSeq]);
 
     if (errorMsg) {
       return (

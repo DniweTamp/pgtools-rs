@@ -558,6 +558,7 @@ export const TextureCenterView: React.FC<TextureCenterViewProps> = ({
                 nodeId={activeTexture.node_id}
                 mipIndex={mipIndex}
                 layerIndex={layerIndex}
+                revision={`${activeTexture.size_bytes}:${activeTexture.raw_header_hex}:${activeTexture.spec_line}`}
                 channelMode={channelMode}
                 opaquePreview={opaquePreview}
                 alt={activeTexture.title}
