@@ -667,9 +667,9 @@ export default function App() {
     if (!draggingSplit) return;
     const onMove = (e: MouseEvent) => {
       if (draggingSplit === "left") {
-        setLeftWidth(Math.max(220, Math.min(620, e.clientX - 10)));
+        setLeftWidth(Math.max(220, Math.min(620, e.clientX - 4)));
       } else if (draggingSplit === "right") {
-        setRightWidth(Math.max(290, Math.min(680, window.innerWidth - e.clientX - 10)));
+        setRightWidth(Math.max(290, Math.min(680, window.innerWidth - e.clientX - 4)));
       } else if (draggingSplit === "left-row" && leftColRef.current) {
         const rect = leftColRef.current.getBoundingClientRect();
         const rel = (e.clientY - rect.top) / Math.max(1, rect.height);
@@ -2308,26 +2308,29 @@ export default function App() {
               className={`context-menu top-menu-dropdown ${isTopMenuClosing ? "closing" : ""}`}
               style={{ top: 28, left: 0, minWidth: 280 }}
             >
-              <button
-                className="context-menu-item"
-                disabled={!activeTexture}
-                onClick={() => {
-                  setActiveTopMenu(null);
-                  if (activeTexture) handleTextureExport(activeTexture.node_id, "bank", "png");
-                }}
-              >
-                <span>Export all textures in bank to PNG...</span>
-              </button>
-              <button
-                className="context-menu-item"
-                disabled={!activeTexture}
-                onClick={() => {
-                  setActiveTopMenu(null);
-                  if (activeTexture) handleTextureExport(activeTexture.node_id, "bank", "dds");
-                }}
-              >
-                <span>Export all textures in bank to DDS...</span>
-              </button>
+              {activeTexture && (
+                <>
+                  <button
+                    className="context-menu-item"
+                    onClick={() => {
+                      setActiveTopMenu(null);
+                      handleTextureExport(activeTexture.node_id, "bank", "png");
+                    }}
+                  >
+                    <span>Export all textures in bank to PNG...</span>
+                  </button>
+                  <button
+                    className="context-menu-item"
+                    onClick={() => {
+                      setActiveTopMenu(null);
+                      handleTextureExport(activeTexture.node_id, "bank", "dds");
+                    }}
+                  >
+                    <span>Export all textures in bank to DDS...</span>
+                  </button>
+                  <div className="context-menu-sep" />
+                </>
+              )}
               <button
                 className="context-menu-item"
                 onClick={() => {
@@ -2355,27 +2358,29 @@ export default function App() {
               >
                 <span>Batch DAT custom align...</span>
               </button>
-              <div className="context-menu-sep" />
-              <button
-                className="context-menu-item"
-                disabled={!activeWmb}
-                onClick={() => {
-                  setActiveTopMenu(null);
-                  if (activeWmb) runWmbMutation(activeWmb.node_id, "cleanup_vertexes");
-                }}
-              >
-                <span>WMB: Cleanup unreferenced vertexes</span>
-              </button>
-              <button
-                className="context-menu-item"
-                disabled={!activeWmb}
-                onClick={() => {
-                  setActiveTopMenu(null);
-                  if (activeWmb) runWmbMutation(activeWmb.node_id, "cleanup_materials");
-                }}
-              >
-                <span>WMB: Cleanup unused materials</span>
-              </button>
+              {activeWmb && (
+                <>
+                  <div className="context-menu-sep" />
+                  <button
+                    className="context-menu-item"
+                    onClick={() => {
+                      setActiveTopMenu(null);
+                      runWmbMutation(activeWmb.node_id, "cleanup_vertexes");
+                    }}
+                  >
+                    <span>WMB: Cleanup unreferenced vertexes</span>
+                  </button>
+                  <button
+                    className="context-menu-item"
+                    onClick={() => {
+                      setActiveTopMenu(null);
+                      runWmbMutation(activeWmb.node_id, "cleanup_materials");
+                    }}
+                  >
+                    <span>WMB: Cleanup unused materials</span>
+                  </button>
+                </>
+              )}
 
               <div className="context-menu-sep" />
               <div style={{ padding: "4px 10px", fontSize: 11, color: "var(--brush-muted)", fontWeight: 600 }}>
