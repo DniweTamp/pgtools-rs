@@ -982,15 +982,22 @@ function populateB2AndB3UniformValues(
     );
   }
   if (u.g_IridescenceCoefficient) {
-    u.g_IridescenceCoefficient.value = findPositiveScalarParam(
+    u.g_IridescenceCoefficient.value = findScalarParam(
       mat,
       ["g_IridescenceCoefficient"],
-      1.2
+      0.5
     );
   }
-  const iridCol = findVec3Param(mat, "g_Iridescence", [0.8, 0.55, 1.0], true);
-  if (u.g_IridescenceColor) {
-    u.g_IridescenceColor.value.set(iridCol[0], iridCol[1], iridCol[2]);
+  if (u.g_IridescenceCoefficient3) {
+    u.g_IridescenceCoefficient3.value = findScalarParam(
+      mat,
+      ["g_IridescenceCoefficient3"],
+      0.145
+    );
+  }
+  const iridPhase = findVec3Param(mat, "g_Iridescence", [0.5, 1.0, 1.5], false);
+  if (u.g_IridescencePhase) {
+    u.g_IridescencePhase.value.set(iridPhase[0], iridPhase[1], iridPhase[2]);
   }
   if (u.g_TilingMap1UV) {
     const t1u = findPositiveScalarParam(mat, ["g_TilingMap1U"], 1.0);
@@ -1547,8 +1554,9 @@ export function createInitialUniforms(
     g_SpecularMaskMinMax: { value: new THREE.Vector2(0.15, 1.0) },
     g_OcclusionMaskMinMax: { value: new THREE.Vector2(0.15, 1.0) },
     g_IridescenceStrength: { value: 0.0 },
-    g_IridescenceCoefficient: { value: 1.2 },
-    g_IridescenceColor: { value: new THREE.Vector3(0.8, 0.55, 1.0) },
+    g_IridescenceCoefficient: { value: 0.5 },
+    g_IridescenceCoefficient3: { value: 0.145 },
+    g_IridescencePhase: { value: new THREE.Vector3(0.5, 1.0, 1.5) },
     g_TilingMap1UV: { value: new THREE.Vector2(1.0, 1.0) },
     g_TilingMap2UV: { value: new THREE.Vector2(1.0, 1.0) },
     g_IridescenceStr: { value: new THREE.Vector3(0.35, 0.65, 0.55) },

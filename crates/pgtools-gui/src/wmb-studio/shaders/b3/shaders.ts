@@ -764,7 +764,8 @@ uniform float g_NormalIntensity;
 uniform float g_BinormalIntensity; // Hair20: ~1.0 on most materials (0.5-3.0); scales the pink strand map
 uniform float g_IridescenceStrength;
 uniform float g_IridescenceCoefficient;
-uniform vec3 g_IridescenceColor;
+uniform float g_IridescenceCoefficient3;
+uniform vec3 g_IridescencePhase; // Hair20: vec3(g_IridescenceR, g_IridescenceG, g_IridescenceB) in radians
 
 // Hair21 & Hair22 dedicated tiling & iridescence uniforms (SHADER_ALGORITHMS_DEEP.md §3.1 & §4.4)
 uniform vec2 g_TilingMap1UV;
@@ -844,7 +845,8 @@ vec3 EvaluateB3HairStrandLobes(
   vec3 W, vec3 Ns, vec3 NgW, vec3 V, vec3 L,
   vec3 priF0, float priEff, float priAlpha,
   vec3 secF0, float secEff, float secAlpha,
-  float hairOffset, float shapeMix, float shadowSpecInt
+  float hairOffset, float shapeMix, float shadowSpecInt,
+  float transMask, bool enableIrid
 ) {
   vec3 Lb = normalize(mix(L, Ns, B3H_LIGHT_TO_NORMAL));
   float sR = dot(V, W);
@@ -868,9 +870,37 @@ vec3 EvaluateB3HairStrandLobes(
   float cosI4 = cI * cos(a4) + sI * sin(a4);
   float gS = B3HairGauss(sR + sinI4, secEff * secEff) * B3HairShape(cosI4, shapeMix);
 
+  // Hair20 vR iridescence: dedicated 2 * g_HairOffset lobe (width = 1.4 * secEff)
+  // multiplied by (1 - 2 * burleyF) -> cosine phase in radians, modulating specular only.
+  vec3 irid = vec3(1.0);
+  if (enableIrid && g_IridescenceStrength > 1e-4) {
+    float a2 = 2.0 * hairOffset;
+    float sinI2 = sI * cos(a2) - cI * sin(a2);
+    float cosI2 = cI * cos(a2) + sI * sin(a2);
+    float iridLobe = B3HairGauss(sR + sinI2, secEff * 1.4) * B3HairShape(cosI2, shapeMix);
+
+    vec3 H = normalize(V + L);
+    float ldh = saturate(dot(L, H));
+    float fv = 1.0 - saturate(dot(Ns, V));
+    float fl = 1.0 - saturate(dot(Ns, L));
+    float fv2 = fv * fv;
+    float fl2 = fl * fl;
+    float r2 = secEff * secEff;
+    float fd90 = 0.5 * r2 + 2.0 * r2 * ldh * ldh;
+    float burleyF = (1.0 + (fd90 - 1.0) * (fv2 * fv2 * fv))
+                  * (1.0 + (fd90 - 1.0) * (fl2 * fl2 * fl));
+    float fresnelSign = 1.0 - 2.0 * burleyF;
+
+    vec3 phase = (g_IridescencePhase + iridLobe * fresnelSign) * g_IridescenceCoefficient
+               + g_IridescenceCoefficient3;
+    vec3 wave = 0.5 * cos(phase) + 0.5;
+    float iridWeight = g_IridescenceStrength * g_IridescenceStrength * (1.0 - saturate(transMask));
+    irid = mix(vec3(1.0), wave, iridWeight);
+  }
+
   float wrapNL = saturate(1.0 + B3H_LIGHT_WRAP * (dot(NgW, L) - 1.0));
   float vis = mix(wrapNL, 1.0, saturate(shadowSpecInt));
-  return (priF0 * priAlpha * gP + secF0 * secAlpha * gS) * vis;
+  return (priF0 * priAlpha * gP + secF0 * secAlpha * gS) * irid * vis;
 }
 
 void main() {
@@ -1060,11 +1090,6 @@ void main() {
     priSpecTint = mix(priSpecTint, ramp, saturate(f * g_IridescenceStr.y));
     secSpecTint = mix(secSpecTint, ramp, saturate(f * g_IridescenceStr.z));
     base += ramp * (f * g_IridescenceStr.x);
-  } else if (g_IridescenceStrength > 0.01) {
-    float ndotv = saturate(dot(Nw, V));
-    float filmCoord = saturate(pow(1.0 - ndotv, max(g_IridescenceCoefficient, 0.5)));
-    vec3 iridSample = (0.5 + 0.5 * cos(6.28318 * (filmCoord + vec3(0.0, 0.33, 0.67)))) * g_IridescenceColor;
-    base = mix(base, base * iridSample * 1.6, clamp(g_IridescenceStrength, 0.0, 1.0));
   }
 
   // NormalMap1.b is AO (sampled at lightmap UV attrUv1 on Hair20); NormalMap2.b is the strand specular mask (at UV0 on Hair20).
@@ -1123,6 +1148,16 @@ void main() {
   float rPri = clamp(g_PriRoughness, 0.05, 1.0);
   float rSec = clamp(g_SecRoughness, 0.05, 1.0);
 
+  // Back-lit strand transmission rim (also attenuates Hair20 vR iridescence)
+  float backLit = pow(saturate(1.0 - saturate(dot(Nw, V))), 3.0) * clamp(g_TransStrength, 0.0, 2.0);
+  if (uB3HairVariant < 30 && g_FresnelMax > g_FresnelMin + 1e-4) {
+    // game: smoothstep(sat((lerp(Fraction, 1, (1 - N.V)^Exp) - Min) / (Max - Min))) * g_TransStrength
+    float fr = pow(max(1.0 - saturate(dot(Nw, V)), 1e-4), g_FresnelExp);
+    fr = mix(g_FresnelFraction, 1.0, fr);
+    float tr = saturate((fr - g_FresnelMin) / (g_FresnelMax - g_FresnelMin));
+    backLit = tr * tr * (3.0 - 2.0 * tr) * clamp(g_TransStrength, 0.0, 2.0);
+  }
+
   vec3 dualSpec;
   if (useStrandModel) {
     float rawMask = mix(g_SpecularMaskMinMax.x, g_SpecularMaskMinMax.y, pinkB);
@@ -1140,12 +1175,19 @@ void main() {
     vec3 priF0s = mix(vec3(0.03), layerBlend * priSpecTint, met);
     vec3 secF0s = mix(vec3(0.03), layerBlend * secSpecTint, met);
 
+    // Gate Hair20 vR iridescence: untuned brows/lashes keep stock Coeff3=0.145 & Phase=(0.5, 1.0, 1.5)
+    bool enableHair20Irid = (uB3HairVariant == 20)
+      && (g_IridescenceStrength > 0.01)
+      && (abs(g_IridescenceCoefficient3 - 0.145) > 0.01 || abs(g_IridescencePhase.z - 1.5) > 0.01);
+
     float specGain = g_SpecularPower * 0.0795775 * B3H_LIGHT_RADIANCE;
     dualSpec = specGain * (
       EvaluateB3HairStrandLobes(hairW, Nw, NgW, V, STUDIO_KEY_TO_LIGHT,
-        priF0s, priEff, g_PriAlpha, secF0s, secEff, g_SecAlpha, g_HairOffset, shapeMix, g_ShadowSpecularIntensity) +
+        priF0s, priEff, g_PriAlpha, secF0s, secEff, g_SecAlpha, g_HairOffset, shapeMix, g_ShadowSpecularIntensity,
+        backLit, enableHair20Irid) +
       B3H_FILL_WEIGHT * EvaluateB3HairStrandLobes(hairW, Nw, NgW, V, STUDIO_FILL_TO_LIGHT,
-        priF0s, priEff, g_PriAlpha, secF0s, secEff, g_SecAlpha, g_HairOffset, shapeMix, g_ShadowSpecularIntensity));
+        priF0s, priEff, g_PriAlpha, secF0s, secEff, g_SecAlpha, g_HairOffset, shapeMix, g_ShadowSpecularIntensity,
+        backLit, enableHair20Irid));
   } else {
     dualSpec =
       EvaluateB3HairDualLobes(Nw, Tstrand, V, STUDIO_KEY_TO_LIGHT, priF0, rPri, g_PriAlpha, secF0, rSec, g_SecAlpha, g_SpecularPower) +
@@ -1154,16 +1196,6 @@ void main() {
 
   vec3 F0 = mix(vec3(0.03), base, clamp(g_Metallic, 0.0, 1.0));
   vec3 ibl = EvaluateB3Ibl(Nw, V, base * (1.0 - g_Metallic * 0.5), rPri * rSec, F0, 1.0, specMask, uTexEnv, uTexIrradiance);
-
-  // Back-lit strand transmission rim
-  float backLit = pow(saturate(1.0 - saturate(dot(Nw, V))), 3.0) * clamp(g_TransStrength, 0.0, 2.0);
-  if (uB3HairVariant < 30 && g_FresnelMax > g_FresnelMin + 1e-4) {
-    // game: smoothstep(sat((lerp(Fraction, 1, (1 - N.V)^Exp) - Min) / (Max - Min))) * g_TransStrength
-    float fr = pow(max(1.0 - saturate(dot(Nw, V)), 1e-4), g_FresnelExp);
-    fr = mix(g_FresnelFraction, 1.0, fr);
-    float tr = saturate((fr - g_FresnelMin) / (g_FresnelMax - g_FresnelMin));
-    backLit = tr * tr * (3.0 - 2.0 * tr) * clamp(g_TransStrength, 0.0, 2.0);
-  }
   vec3 transTerm = base * backLit * 0.35;
 
   // baked AO darkens the ambient/IBL term (the game doesn't apply it to direct light); B3H_AO_ON_DIRECT blends it back in
