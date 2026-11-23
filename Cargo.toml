@@ -8,9 +8,9 @@ members = [
 
 [workspace.package]
 version = "0.1.0"
-edition = "2021"
-authors = ["PlatinumGames Modding Community"]
-license = "MIT OR Apache-2.0"
+edition = "2026"
+authors = ["DniweTamp"]
+license = "BSD-2-Clause"
 description = "High-performance Rust & Tauri v2 toolkit for PlatinumGames file formats (Bayonetta 1/2/3, Vanquish, MGR:R, TW101, NieR: Automata, Astral Chain)"
 
 [workspace.dependencies]
