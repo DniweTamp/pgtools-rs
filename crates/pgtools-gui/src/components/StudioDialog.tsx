@@ -1,14 +1,14 @@
 import React, { useEffect, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 
-export interface ConfirmOptions {
+interface ConfirmOptions {
   title?: string;
   confirmLabel?: string;
   cancelLabel?: string;
   danger?: boolean;
 }
 
-export interface PromptOptions {
+interface PromptOptions {
   title?: string;
   confirmLabel?: string;
   cancelLabel?: string;

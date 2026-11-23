@@ -21,7 +21,7 @@
 
 import { RenderQueueBucket, STUDIO_FRAGMENT_HEADER, STUDIO_VERTEX_SHADER } from "../common";
 
-export interface B1ShaderSpec {
+interface B1ShaderSpec {
   id: string;
   materialTypes: number[];
   shaderNames: string[];

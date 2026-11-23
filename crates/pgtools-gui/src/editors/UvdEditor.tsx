@@ -11,7 +11,7 @@ import {
 import {
   ALL_TEXTURE_ENCODE_FORMATS,
   ENCODE_QUALITY_OPTIONS,
-} from "./TextureEditor";
+} from "../constants/textureFormats";
 import {
   IconCheck,
   IconChevronDown,
@@ -19,7 +19,7 @@ import {
 } from "../components/Icons";
 
 export interface UvdActions {
-  runUvdMutation: (nodeId: string, action: string, payload?: any) => Promise<void>;
+  runUvdMutation: (nodeId: string, action: string, payload?: Record<string, unknown>) => Promise<void>;
   handleUvdExtract: (nodeIds: string[], writeJson: boolean) => Promise<void>;
   promptAddUvdGroup: (uvdNodeId: string) => Promise<void>;
   promptAddUvdSprite: (groupNodeId: string, groupIndex?: number) => Promise<void>;
@@ -47,7 +47,7 @@ export interface UvdActions {
   setUvdMaxSize: (val: number) => void;
 }
 
-export interface UvdCenterViewProps {
+interface UvdCenterViewProps {
   uvd: UvdContextView;
   specLine?: string;
   uvdActions: UvdActions;
@@ -270,7 +270,7 @@ export const UvdCenterView: React.FC<UvdCenterViewProps> = ({
   );
 };
 
-export interface UvdInspectorSectionProps {
+interface UvdInspectorSectionProps {
   uvd: UvdContextView;
   openCards: Record<string, boolean>;
   toggleCard: (key: string) => void;
@@ -667,7 +667,7 @@ export const UvdInspectorSection: React.FC<UvdInspectorSectionProps> = ({
   );
 };
 
-export interface UvdSaveEncodeModalProps {
+interface UvdSaveEncodeModalProps {
   pendingSheets: PendingUvdSheetInfo[];
   onCancel: () => void;
   onConfirm: (opts: SaveEncodeOptions) => Promise<void> | void;

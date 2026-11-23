@@ -1,6 +1,6 @@
 export type RenderQueueBucket = "opaque" | "alphatest" | "blend";
 
-export const NEUTRAL_LIGHTMAP_IDS = [0x4e9c16f4, 0x5864a24f] as const;
+const NEUTRAL_LIGHTMAP_IDS = [0x4e9c16f4, 0x5864a24f] as const;
 
 export function isNeutralLightmapId(texId: number): boolean {
   const u = texId >>> 0;

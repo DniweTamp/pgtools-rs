@@ -1,4 +1,5 @@
-use crate::session::{atomic_write_file, lock_session, record_mutation, AppState, DocSnapshot};
+use crate::common::{BatchOperationReport, DocSnapshot};
+use crate::session::{atomic_write_file, build_outline_from_session, lock_session, record_mutation, AppState};
 use crate::settings::save_settings_to_disk;
 use crate::vfs::{is_supported_extension, resolve_subblob, split_container_and_leaf};
 use pgtools_core::{
@@ -710,7 +711,7 @@ pub(crate) fn ensure_not_subpath(src: &Path, dst: &Path) -> Result<(), String> {
     Ok(())
 }
 
-pub(crate) fn copy_dir_recursive(src: &Path, dst: &Path) -> std::io::Result<()> {
+fn copy_dir_recursive(src: &Path, dst: &Path) -> std::io::Result<()> {
     let src_canon = fs::canonicalize(src)?;
     fs::create_dir_all(dst)?;
     let dst_canon = fs::canonicalize(dst)?;
@@ -1013,7 +1014,7 @@ pub fn run_batch_dat_align_action(
     align_nested: bool,
     output_folder: Option<String>,
     state: State<'_, AppState>,
-) -> Result<crate::texture_cmd::BatchOperationReport, String> {
+) -> Result<BatchOperationReport, String> {
     let target_align: Option<usize> = if per_type_default {
         None
     } else {
@@ -1146,11 +1147,11 @@ pub fn run_batch_dat_align_action(
             format!("Batch DAT align ({align_label})"),
             next_snap,
         );
-        let updated_outline = Some( crate::vfs::build_outline_from_session(&sess)? );
+        let updated_outline = Some( build_outline_from_session(&sess)? );
         log_lines.push(format!(
             "Done: re-aligned {converted} archive(s) in current document to {align_label}."
         ));
-        return Ok(crate::texture_cmd::BatchOperationReport {
+        return Ok(BatchOperationReport {
             files_processed: converted + skipped,
             converted,
             skipped,
@@ -1277,7 +1278,7 @@ pub fn run_batch_dat_align_action(
         targets.len()
     ));
 
-    Ok(crate::texture_cmd::BatchOperationReport {
+    Ok(BatchOperationReport {
         files_processed: targets.len(),
         converted,
         skipped,

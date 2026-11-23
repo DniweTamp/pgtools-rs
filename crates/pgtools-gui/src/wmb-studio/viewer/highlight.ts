@@ -6,7 +6,7 @@ import {
   SceneSelectionItem,
 } from "../store";
 
-export interface SelectionHighlightSets {
+interface SelectionHighlightSets {
   batchIds: Set<string>;
   boneIds: Set<number>;
 }

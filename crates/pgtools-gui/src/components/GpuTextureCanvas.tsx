@@ -1,5 +1,5 @@
 import React, { forwardRef, useEffect, useImperativeHandle, useRef, useState } from "react";
-import { invoke } from "@tauri-apps/api/core";
+import { getTextureGpuSurface } from "../api/tauri";
 import {
   channelModeToInt,
   compileGl2Program,
@@ -16,7 +16,7 @@ export interface GpuTextureCanvasHandle {
   toPngBlob: () => Promise<Blob | null>;
 }
 
-export interface GpuTextureCanvasProps {
+interface GpuTextureCanvasProps {
   nodeId: string;
   mipIndex: number;
   layerIndex: number;
@@ -125,7 +125,7 @@ export const GpuTextureCanvas = forwardRef<GpuTextureCanvasHandle, GpuTextureCan
       setErrorMsg(null);
       (async () => {
         try {
-          const raw = await invoke<ArrayBuffer>("get_texture_gpu_surface", {
+          const raw = await getTextureGpuSurface({
             nodeId,
             mipIndex,
             layerIndex,

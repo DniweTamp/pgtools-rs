@@ -1,5 +1,4 @@
 import React, { useCallback, useEffect, useRef, useState } from "react";
-import { invoke } from "@tauri-apps/api/core";
 import { StudioDialogHost, studioAlert, studioConfirm, studioPrompt } from "./components/StudioDialog";
 import { StudioRadio } from "./components/StudioRadio";
 import { StudioRange } from "./components/StudioRange";
@@ -37,7 +36,8 @@ import {
   bxmTreeToXmlDocument,
   getBxmNodeByPath,
 } from "./bxm/xml";
-import { TextureImportModal } from "./editors/TextureEditor";
+import { PkzModals } from "./modals/PkzModals";
+import { TextureImportModal } from "./modals/TextureImportModal";
 import {
   BatchDatAlignModal,
   BatchRecompressModal,
@@ -68,6 +68,34 @@ import { useResizableTableColumns } from "./hooks/useResizableTableColumns";
 import { useFileBrowser } from "./hooks/useFileBrowser";
 import { useDocumentSession } from "./hooks/useDocumentSession";
 import { useEditorDrafts } from "./hooks/useEditorDrafts";
+import {
+  dragOutAssetNode,
+  exportTextureAction,
+  getRecentFiles,
+  getStudioSettings,
+  inspectAssetNode,
+  mutateBxmNode,
+  mutateClothNode,
+  mutateContainerNode,
+  mutateStructNode,
+  mutateTextureNode,
+  mutateWmbNode,
+  openDocument,
+  packFolderToPkz,
+  pickFileDialog,
+  pickFolderDialog,
+  redoDocument,
+  saveDocument,
+  saveFileDialog,
+  saveStudioSettings,
+  undoDocument,
+  validateOodleDll,
+} from "./api/tauri";
+import { useB2LayoutOverride } from "./hooks/useB2LayoutOverride";
+import { StudioContextMenu } from "./components/StudioContextMenu";
+import { useClosingTransition } from "./hooks/useClosingTransition";
+import { useLayoutSplitters } from "./hooks/useLayoutSplitters";
+import { useUvdActions } from "./hooks/useUvdActions";
 import { useMeshUi } from "./hooks/useMeshUi";
 import { FileBrowserPanel } from "./panels/FileBrowserPanel";
 import { AssetBrowserPanel } from "./panels/AssetBrowserPanel";
@@ -321,83 +349,24 @@ export default function App() {
     if (err) setStatusLeft(err);
   }
 
-  // Menus & Status (with appearing & disappearing animation transitions)
   const [activeTopMenu, setActiveTopMenu] = useState<"file" | "tools" | "help" | null>(null);
-  const [prevTopMenu, setPrevTopMenu] = useState<"file" | "tools" | "help" | null>(null);
-  const [closingTopMenu, setClosingTopMenu] = useState<"file" | "tools" | "help" | null>(null);
-
   const [contextMenu, setContextMenu] = useState<ContextMenuState | null>(null);
-  const [prevContextMenu, setPrevContextMenu] = useState<ContextMenuState | null>(null);
-  const [closingContextMenu, setClosingContextMenu] = useState<ContextMenuState | null>(null);
-
   const [hoverSubmenuIdx, setHoverSubmenuIdx] = useState<number | null>(null);
-  const [prevSubmenuIdx, setPrevSubmenuIdx] = useState<number | null>(null);
-  const [closingSubmenuIdx, setClosingSubmenuIdx] = useState<number | null>(null);
-
-  if (hoverSubmenuIdx !== prevSubmenuIdx) {
-    if (hoverSubmenuIdx !== null) {
-      setClosingSubmenuIdx(null);
-    } else if (prevSubmenuIdx !== null) {
-      setClosingSubmenuIdx(prevSubmenuIdx);
-    }
-    setPrevSubmenuIdx(hoverSubmenuIdx);
-  }
-
-  if (activeTopMenu !== prevTopMenu) {
+  const [prevActiveTopMenu, setPrevActiveTopMenu] = useState<"file" | "tools" | "help" | null>(null);
+  if (activeTopMenu !== prevActiveTopMenu) {
     if (activeTopMenu !== null) {
-      setClosingTopMenu(null);
       setHoverSubmenuIdx(null);
-    } else if (prevTopMenu !== null) {
-      setClosingTopMenu(prevTopMenu);
     }
-    setPrevTopMenu(activeTopMenu);
+    setPrevActiveTopMenu(activeTopMenu);
   }
 
-  if (contextMenu !== prevContextMenu) {
-    if (contextMenu !== null) {
-      setClosingContextMenu(null);
-    } else if (prevContextMenu !== null) {
-      setClosingContextMenu(prevContextMenu);
-    }
-    setPrevContextMenu(contextMenu);
-  }
+  const { displayed: displayedSubmenuIdx, isClosing: isSubmenuClosing } =
+    useClosingTransition(hoverSubmenuIdx);
+  const { displayed: displayedTopMenu, isClosing: isTopMenuClosing } =
+    useClosingTransition(activeTopMenu);
+  const { displayed: displayedContextMenu, isClosing: isContextMenuClosing } =
+    useClosingTransition(contextMenu);
 
-  useEffect(() => {
-    if (closingSubmenuIdx === null) return;
-    const prev = closingSubmenuIdx;
-    const timer = window.setTimeout(() => {
-      setClosingSubmenuIdx((cur) => (cur === prev ? null : cur));
-    }, 115);
-    return () => window.clearTimeout(timer);
-  }, [closingSubmenuIdx]);
-
-  useEffect(() => {
-    if (closingTopMenu === null) return;
-    const prev = closingTopMenu;
-    const timer = window.setTimeout(() => {
-      setClosingTopMenu((cur) => (cur === prev ? null : cur));
-    }, 115);
-    return () => window.clearTimeout(timer);
-  }, [closingTopMenu]);
-
-  useEffect(() => {
-    if (closingContextMenu === null) return;
-    const prev = closingContextMenu;
-    const timer = window.setTimeout(() => {
-      setClosingContextMenu((cur) => (cur === prev ? null : cur));
-    }, 115);
-    return () => window.clearTimeout(timer);
-  }, [closingContextMenu]);
-
-  const displayedSubmenuIdx = hoverSubmenuIdx ?? closingSubmenuIdx;
-  const isSubmenuClosing = hoverSubmenuIdx === null && closingSubmenuIdx !== null;
-
-  const displayedTopMenu = activeTopMenu ?? closingTopMenu;
-  const isTopMenuClosing = activeTopMenu === null && closingTopMenu !== null;
-  const displayedContextMenu = contextMenu ?? closingContextMenu;
-  const isContextMenuClosing = contextMenu === null && closingContextMenu !== null;
-
-  // Suppress generic browser right-click context menu globally
   useEffect(() => {
     const suppressNativeContextMenu = (e: MouseEvent) => {
       e.preventDefault();
@@ -417,9 +386,8 @@ export default function App() {
 
   const refreshOodleValidation = useCallback(async (customPath?: string) => {
     try {
-      const report = await invoke<OodleValidationReport>("validate_oodle_dll", {
-        path: customPath ?? null,
-      });
+      const report = await validateOodleDll(customPath ?? null,
+      );
       setOodleValidation(report);
       return report;
     } catch {
@@ -525,7 +493,7 @@ export default function App() {
   useEffect(() => {
     (async () => {
       try {
-        const s = await invoke<StudioSettings>("get_studio_settings");
+        const s = await getStudioSettings();
         applyLoadedSettings(s);
         if (typeof s.default_import_format === "string" && s.default_import_format.trim()) {
           setTexEncodeFormat(s.default_import_format);
@@ -552,7 +520,7 @@ export default function App() {
     if (!settingsLoaded) return;
     const payload = buildStudioSettingsPayload(currentDir);
     const timer = window.setTimeout(() => {
-      invoke<StudioSettings>("save_studio_settings", { settings: payload })
+      saveStudioSettings(payload )
         .then((saved) => {
           setOodleConfigured(Boolean(saved.oodle_configured));
           setNvttConfigured(Boolean(saved.nvtt_configured));
@@ -683,28 +651,14 @@ export default function App() {
     return () => window.removeEventListener("keydown", onKeyDown);
   }, []);
 
-  // Splitter drag handler
-  useEffect(() => {
-    if (!draggingSplit) return;
-    const onMove = (e: MouseEvent) => {
-      if (draggingSplit === "left") {
-        setLeftWidth(Math.max(220, Math.min(620, e.clientX - 4)));
-      } else if (draggingSplit === "right") {
-        setRightWidth(Math.max(290, Math.min(680, window.innerWidth - e.clientX - 4)));
-      } else if (draggingSplit === "left-row" && leftColRef.current) {
-        const rect = leftColRef.current.getBoundingClientRect();
-        const rel = (e.clientY - rect.top) / Math.max(1, rect.height);
-        setAssetRatio(Math.max(0.18, Math.min(0.82, rel)));
-      }
-    };
-    const onUp = () => setDraggingSplit(null);
-    window.addEventListener("mousemove", onMove);
-    window.addEventListener("mouseup", onUp);
-    return () => {
-      window.removeEventListener("mousemove", onMove);
-      window.removeEventListener("mouseup", onUp);
-    };
-  }, [draggingSplit, setAssetRatio, setLeftWidth, setRightWidth]);
+  useLayoutSplitters(
+    draggingSplit,
+    setDraggingSplit,
+    leftColRef,
+    setLeftWidth,
+    setRightWidth,
+    setAssetRatio
+  );
 
   useEffect(() => {
     if (!pointerDrag) return;
@@ -732,7 +686,7 @@ export default function App() {
         if (outsideCard) {
           setPointerDrag(null);
           setStatusLeft(`Dragging ${pointerDrag.label} out to Windows Explorer...`);
-          invoke<string>("drag_out_asset_node", { nodeId: pointerDrag.sourceId })
+          dragOutAssetNode(pointerDrag.sourceId)
             .then((msg) => setStatusLeft(msg))
             .catch((err) => setStatusLeft(`Drag-out note: ${String(err)}`));
           return;
@@ -879,7 +833,7 @@ export default function App() {
 
   async function refreshRecents() {
     try {
-      const rec = await invoke<string[]>("get_recent_files");
+      const rec = await getRecentFiles();
       setRecentFiles(rec);
     } catch {
       // ignore
@@ -893,7 +847,7 @@ export default function App() {
     try {
       setBusyLabel(`Loading ${path.split(/[\\/]/).pop() || path}...`);
       setStatusLeft(`Loading ${path}...`);
-      const opened = await invoke<DocumentOutline>("open_document", { path });
+      const opened = await openDocument(path);
       setOutline(opened);
       setSelectedFilePath(path);
       setPkzSelectedIndices([]);
@@ -983,7 +937,7 @@ export default function App() {
     setSelectedNodeId(nodeId);
     setSelectedNodeIds((prev) => (prev.includes(nodeId) && prev.length > 1 ? prev : [nodeId]));
     try {
-      const res = await invoke<NodeInspectPayload>("inspect_asset_node", {
+      const res = await inspectAssetNode({
         nodeId,
         mipIndex: mip,
         layerIndex: layer,
@@ -1012,7 +966,7 @@ export default function App() {
         (bxmViewMode === "xml" || !bxmTreeDraft
           ? bxmXmlDraft
           : bxmTreeToXmlDocument(bxmTreeDraft));
-      const updated = await invoke<DocumentOutline>("mutate_bxm_node", {
+      const updated = await mutateBxmNode({
         nodeId: nodePayload.node_id,
         xmlContent: xmlToSave,
         tag: nodePayload.tag || "BXM",
@@ -1036,7 +990,7 @@ export default function App() {
 
   async function handleMenuOpenFile() {
     setActiveTopMenu(null);
-    const picked = await invoke<string | null>("pick_file_dialog", {
+    const picked = await pickFileDialog({
       title: "Open PlatinumGames Archive or Asset",
       extensions: [
         "dat", "dtt", "evn", "pkz", "eff", "idd", "scr",
@@ -1057,7 +1011,7 @@ export default function App() {
 
   async function handleMenuOpenFolder() {
     setActiveTopMenu(null);
-    const folder = await invoke<string | null>("pick_folder_dialog", {
+    const folder = await pickFolderDialog({
       title: "Select Workspace Folder",
     });
     if (folder) {
@@ -1070,7 +1024,7 @@ export default function App() {
     setActiveTopMenu(null);
     const srcFolder =
       sourceFolder ??
-      (await invoke<string | null>("pick_folder_dialog", {
+      (await pickFolderDialog({
         title: "Choose the folder to pack into a .PKZ archive",
       }));
     if (!srcFolder) return;
@@ -1083,7 +1037,7 @@ export default function App() {
       `Source folder: ${srcFolder}`,
       pkzDefaultCompression,
       async (compression, level, forceCompression) => {
-        const dest = await invoke<string | null>("save_file_dialog", {
+        const dest = await saveFileDialog({
           title: "Save the new .PKZ archive",
           defaultName: `${folderStem}.pkz`,
         });
@@ -1096,7 +1050,7 @@ export default function App() {
           try {
             setBusyLabel(`Packing ${folderStem}.pkz...`);
             setStatusLeft(`Packing folder ${srcFolder} into ${dest}...`);
-            const msg = await invoke<string>("pack_folder_to_pkz", {
+            const msg = await packFolderToPkz({
               sourceDir: srcFolder,
               destPath: dest,
               compression: codecToUse,
@@ -1144,10 +1098,7 @@ export default function App() {
         ? outputPath.split(/[\\/]/).pop() || outputPath
         : outline.file_name;
       setBusyLabel(`Saving ${targetLabel}...`);
-      const updated = await invoke<DocumentOutline>("save_document", {
-        outputPath,
-        encodeOptions,
-      });
+      const updated = await saveDocument(outputPath, encodeOptions);
       setOutline(updated);
       setWmbDocGeneration((g) => g + 1);
       await selectAndInspectNode(selectedNodeId);
@@ -1173,7 +1124,7 @@ export default function App() {
   async function handleMenuSaveAs() {
     setActiveTopMenu(null);
     if (!outline) return;
-    const dest = await invoke<string | null>("save_file_dialog", {
+    const dest = await saveFileDialog({
       title: "Save Document As...",
       defaultName: outline.file_name.split(" + ")[0],
     });
@@ -1189,7 +1140,7 @@ export default function App() {
     if (!outline?.can_undo) return;
     try {
       const label = outline.undo_label ?? "edit";
-      const updated = await invoke<DocumentOutline>("undo_document");
+      const updated = await undoDocument();
       setOutline(updated);
       setWmbDocGeneration((g) => g + 1);
       setThumbResetGen((g) => g + 1);
@@ -1204,7 +1155,7 @@ export default function App() {
     if (!outline?.can_redo) return;
     try {
       const label = outline.redo_label ?? "edit";
-      const updated = await invoke<DocumentOutline>("redo_document");
+      const updated = await redoDocument();
       setOutline(updated);
       setWmbDocGeneration((g) => g + 1);
       setThumbResetGen((g) => g + 1);
@@ -1358,16 +1309,14 @@ export default function App() {
   }
 
   async function handlePickOodleDll() {
-    const picked = await invoke<string | null>("pick_file_dialog", {
+    const picked = await pickFileDialog({
       title: "Locate Oodle Kraken Library (oo2core_*_win64.dll)",
       extensions: ["dll", "so", "dylib"],
     });
     if (picked) {
       setOodleDllPath(picked);
       try {
-        const saved = await invoke<StudioSettings>("save_studio_settings", {
-          settings: buildStudioSettingsPayload(currentDir, { oodle_dll_path: picked }),
-        });
+        const saved = await saveStudioSettings(buildStudioSettingsPayload(currentDir, { oodle_dll_path: picked }));
         setOodleConfigured(Boolean(saved.oodle_configured ?? true));
       } catch {
         setOodleConfigured(true);
@@ -1381,16 +1330,14 @@ export default function App() {
   }
 
   async function handlePickNvttDll() {
-    const picked = await invoke<string | null>("pick_file_dialog", {
+    const picked = await pickFileDialog({
       title: "Locate NVIDIA Texture Tools Library (nvtt30205.dll / nvtt.dll)",
       extensions: ["dll", "so", "dylib"],
     });
     if (picked) {
       setNvttDllPath(picked);
       try {
-        const saved = await invoke<StudioSettings>("save_studio_settings", {
-          settings: buildStudioSettingsPayload(currentDir, { nvtt_dll_path: picked }),
-        });
+        const saved = await saveStudioSettings(buildStudioSettingsPayload(currentDir, { nvtt_dll_path: picked }));
         setNvttConfigured(Boolean(saved.nvtt_configured ?? true));
       } catch {
         setNvttConfigured(true);
@@ -1399,7 +1346,7 @@ export default function App() {
     }
   }
 
-  async function runTextureMutation(nodeId: string, action: string, payload: any = {}) {
+  async function runTextureMutation(nodeId: string, action: string, payload: Record<string, unknown> = {}) {
     try {
       const fullPayload = {
         encode_format: texEncodeFormat,
@@ -1410,11 +1357,7 @@ export default function App() {
         sync_flags: texSyncFlags,
         ...payload,
       };
-      const updated = await invoke<DocumentOutline>("mutate_texture_node", {
-        nodeId,
-        action,
-        payload: fullPayload,
-      });
+      const updated = await mutateTextureNode(nodeId, action, fullPayload);
       setOutline(updated);
       setWmbDocGeneration((g) => g + 1);
       if (action === "replace_file" || action === "dummy_out") {
@@ -1447,7 +1390,7 @@ export default function App() {
     action: "replace_file" | "add_texture"
   ) {
     setContextMenu(null);
-    const path = await invoke<string | null>("pick_file_dialog", {
+    const path = await pickFileDialog({
       title:
         action === "replace_file"
           ? "Select Replacement Texture (PNG / TGA / BMP / JPG or Raw DDS / GTX / XT1 / BNTX)"
@@ -1498,12 +1441,12 @@ export default function App() {
         const defName = activeTexture
           ? `tex${activeTexture.index}${hashSuffix}.${ext}`
           : `texture.${ext}`;
-        const dest = await invoke<string | null>("save_file_dialog", {
+        const dest = await saveFileDialog({
           title: `Export Texture (.${ext})`,
           defaultName: defName,
         });
         if (!dest) return;
-        const msg = await invoke<string>("export_texture_action", {
+        const msg = await exportTextureAction({
           nodeId,
           scope,
           format,
@@ -1511,11 +1454,11 @@ export default function App() {
         });
         setStatusLeft(msg);
       } else {
-        const folder = await invoke<string | null>("pick_folder_dialog", {
+        const folder = await pickFolderDialog({
           title: `Export All Textures as ${format.toUpperCase()} Folder`,
         });
         if (!folder) return;
-        const msg = await invoke<string>("export_texture_action", {
+        const msg = await exportTextureAction({
           nodeId,
           scope,
           format,
@@ -1529,26 +1472,16 @@ export default function App() {
     }
   }
 
-  async function runWmbMutation(nodeId: string, operation: string, payload: any = {}) {
+  async function runWmbMutation(nodeId: string, operation: string, payload: unknown = {}) {
     setContextMenu(null);
     try {
-      const prevUndoLabel = outline?.undo_label ?? null;
-      const updated = await invoke<DocumentOutline>("mutate_wmb_node", {
-        nodeId,
-        operation,
-        payload,
-      });
+      const updated = await mutateWmbNode(nodeId, operation, payload);
       setOutline(updated);
       setWmbDocGeneration((g) => g + 1);
       await selectAndInspectNode(nodeId);
-      if (
-        operation === "remap_texture_hashes" &&
-        updated.undo_label === prevUndoLabel
-      ) {
-        setStatusLeft("All texture hashes are valid crc32 & 7f");
-      } else {
-        setStatusLeft(updated.undo_label ?? `Completed WMB ${operation}`);
-      }
+      setStatusLeft(
+        updated.status_message ?? updated.undo_label ?? `Completed WMB ${operation}`
+      );
     } catch (err) {
       setStatusLeft(`WMB error: ${String(err)}`);
     }
@@ -1570,13 +1503,11 @@ export default function App() {
 
       const res = await convertMaterialBetweenGames(srcGame, dstGame, srcPayload, null);
 
-      // Always store in clipboard so user can paste into another open model
       setMaterialClipboard({
         game: dstGame,
         payload: res.converted,
       });
 
-      // If destination matches current model format (WMB0 for b1/b2, WMB3 for b3), apply in-place!
       if (!wmb.is_wmb3 && (dstGame === "b1" || dstGame === "b2") && res.converted?.fields) {
         const nextMat: DecodedWmbMaterial = {
           ...res.converted,
@@ -1606,13 +1537,9 @@ export default function App() {
     }
   }
 
-  async function runStructMutation(nodeId: string, structKind: string, updatedData: any) {
+  async function runStructMutation(nodeId: string, structKind: string, updatedData: unknown) {
     try {
-      const updated = await invoke<DocumentOutline>("mutate_struct_node", {
-        nodeId,
-        structKind,
-        updatedData,
-      });
+      const updated = await mutateStructNode(nodeId, structKind, updatedData);
       setOutline(updated);
       await selectAndInspectNode(nodeId);
       setStatusLeft(updated.undo_label ?? `Updated ${structKind}`);
@@ -1625,16 +1552,11 @@ export default function App() {
     nodeId: string,
     operation: string,
     preset?: string,
-    updatedJson?: any
+    updatedJson?: unknown
   ) {
     setContextMenu(null);
     try {
-      const updated = await invoke<DocumentOutline>("mutate_cloth_node", {
-        nodeId,
-        operation,
-        preset: preset ?? null,
-        updatedJson: updatedJson ?? null,
-      });
+      const updated = await mutateClothNode(nodeId, operation, preset ?? null, updatedJson ?? null);
       setOutline(updated);
       await selectAndInspectNode(nodeId);
       setStatusLeft(updated.undo_label ?? `Completed Cloth ${operation}`);
@@ -1647,17 +1569,12 @@ export default function App() {
     nodeId: string,
     action: string,
     targetPath = "",
-    payload: any = null
+    payload: unknown = null
   ) {
     setContextMenu(null);
     try {
       setBusyLabel(`Working (${action})...`);
-      const updated = await invoke<DocumentOutline>("mutate_container_node", {
-        nodeId,
-        action,
-        targetPath,
-        payload,
-      });
+      const updated = await mutateContainerNode(nodeId, action, targetPath, payload);
       setOutline(updated);
       if (
         action === "remove_entry" ||
@@ -1814,301 +1731,36 @@ export default function App() {
     void selectAndInspectNode(nodeId);
   }
 
-  async function runUvdMutation(nodeId: string, action: string, payload: any = {}) {
-    setContextMenu(null);
-    try {
-      setBusyLabel(`Updating UVD (${action})...`);
-      const updated = await invoke<DocumentOutline>("mutate_uvd_node", {
-        nodeId,
-        action,
-        payload,
-      });
-      setOutline(updated);
-      setWmbDocGeneration((g) => g + 1);
-      setThumbResetGen((g) => g + 1);
-      let nextInspectId = nodeId;
-      if (action === "delete_groups" || action === "delete_items") {
-        nextInspectId = nodeId.includes("/")
-          ? nodeId.slice(0, nodeId.lastIndexOf("/"))
-          : "root";
-        setSelectedNodeIds([nextInspectId]);
-      } else if (action === "reorder_groups") {
-        const m = nodeId.match(/^(.*?)uvdgrp:(\d+)$/);
-        if (m) {
-          const curIdx = parseInt(m[2], 10);
-          const nextIdx =
-            typeof payload?.to_index === "number"
-              ? payload.to_index
-              : payload?.direction === "up"
-              ? Math.max(0, curIdx - 1)
-              : payload?.direction === "down"
-              ? curIdx + 1
-              : curIdx;
-          nextInspectId = `${m[1]}uvdgrp:${nextIdx}`;
-          setSelectedNodeIds([nextInspectId]);
-        }
-      } else if (action === "reorder_items") {
-        const m = nodeId.match(/^(.*?)uvditem:(\d+)$/);
-        if (m) {
-          const curIdx = parseInt(m[2], 10);
-          const nextIdx =
-            typeof payload?.to_index === "number"
-              ? payload.to_index
-              : payload?.direction === "up"
-              ? Math.max(0, curIdx - 1)
-              : payload?.direction === "down"
-              ? curIdx + 1
-              : curIdx;
-          nextInspectId = `${m[1]}uvditem:${nextIdx}`;
-          setSelectedNodeIds([nextInspectId]);
-        }
-      }
-      await selectAndInspectNode(nextInspectId);
-      setStatusLeft(updated.undo_label ?? `Completed UVD ${action}`);
-    } catch (err) {
-      const msg = String(err);
-      if (
-        (action === "add_group" || action === "add_item") &&
-        msg.includes("CRC32 collision") &&
-        !payload?.auto_suffix
-      ) {
-        const useSuffix = await studioConfirm(
-          `${msg}\n\nClick OK to automatically append a numeric suffix (_1, _2, ...) for a unique CRC32 ID, or Cancel to abort.`,
-          { title: "CRC32 Collision", confirmLabel: "Append Suffix" }
-        );
-        if (useSuffix) {
-          await runUvdMutation(nodeId, action, { ...payload, auto_suffix: true });
-          return;
-        }
-      }
-      setStatusLeft(`UVD error: ${msg}`);
-    } finally {
-      setBusyLabel(null);
-    }
-  }
-
-  async function handleUvdExtract(nodeIds: string[], writeJson: boolean) {
-    setContextMenu(null);
-    if (nodeIds.length === 0) return;
-    try {
-      const firstId = nodeIds[0];
-      const isSingleItem =
-        nodeIds.length === 1 &&
-        (firstId.includes("/uvditem:") || firstId.startsWith("uvditem:")) &&
-        !writeJson;
-      if (isSingleItem) {
-        const defName = `${
-          nodePayload?.uvd?.item?.name ||
-          activeTexture?.embedded_name ||
-          "sprite"
-        }.png`;
-        const destFile = await invoke<string | null>("save_file_dialog", {
-          title: "Extract Single UVD Sprite (.PNG)",
-          defaultName: defName,
-        });
-        if (!destFile) return;
-        setBusyLabel("Extracting sprite PNG...");
-        const msg = await invoke<string>("extract_uvd_action", {
-          nodeIds,
-          destPath: destFile,
-          writeJson: false,
-        });
-        setStatusLeft(msg);
-        loadDirectory(currentDirRef.current);
-      } else {
-        const folder = await invoke<string | null>("pick_folder_dialog", {
-          title: writeJson
-            ? "Select Output Folder for UVD Group Subfolders + .uvd.json"
-            : "Select Output Folder for UVD Group Subfolders",
-        });
-        if (!folder) return;
-        setBusyLabel("Extracting UVD sprites...");
-        const msg = await invoke<string>("extract_uvd_action", {
-          nodeIds,
-          destPath: folder,
-          writeJson,
-        });
-        setStatusLeft(msg);
-        loadDirectory(currentDirRef.current);
-      }
-    } catch (err) {
-      const errMsg = String(err);
-      setStatusLeft(`UVD extract error: ${errMsg}`);
-      await studioAlert(errMsg, "UVD Extract Error");
-    } finally {
-      setBusyLabel(null);
-    }
-  }
-
-  function resolveUvdNodeName(targetId: string, fallback: string): string {
-    const tree = outlineRef.current?.tree;
-    if (tree) {
-      const walk = (nodes: AssetTreeNode[]): AssetTreeNode | null => {
-        for (const n of nodes) {
-          if (n.id === targetId) return n;
-          if (n.children && n.children.length > 0) {
-            const found = walk(n.children);
-            if (found) return found;
-          }
-        }
-        return null;
-      };
-      const found = walk(tree);
-      if (found && found.label) {
-        const idx = found.label.lastIndexOf(" (");
-        return idx > 0 ? found.label.slice(0, idx) : found.label;
-      }
-    }
-    return fallback;
-  }
-
-  async function promptAddUvdGroup(uvdNodeId: string) {
-    setContextMenu(null);
-    const rawName = await studioPrompt(
-      "Enter new UVD Group name (max 31 ASCII characters):",
-      "new_group",
-      { title: "New UVD Group" }
-    );
-    if (!rawName || !rawName.trim()) return;
-    const trimmed = rawName.trim();
-    if (trimmed.length > 31) {
-      const msg = `Group name '${trimmed}' is ${trimmed.length} bytes; maximum allowed is 31 characters.`;
-      setStatusLeft(msg);
-      await studioAlert(msg, "Invalid Group Name");
-      return;
-    }
-    const paths = await invoke<string[]>("pick_multiple_files_dialog", {
-      title: `Select Initial Sprite PNG(s) for Group '${trimmed}' (or Cancel for empty 256×256 sheet)`,
-      extensions: ["png", "tga", "bmp", "jpg", "jpeg"],
-    });
-    await runUvdMutation(uvdNodeId, "add_group", {
-      name: trimmed,
-      paths: paths ?? [],
-    });
-  }
-
-  async function promptAddUvdSprite(groupNodeId: string, groupIndex?: number) {
-    setContextMenu(null);
-    const rawName = await studioPrompt(
-      "Enter new Sprite Item name (max 63 ASCII characters):",
-      "new_sprite_00",
-      { title: "New Sprite Item" }
-    );
-    if (!rawName || !rawName.trim()) return;
-    const trimmed = rawName.trim();
-    if (trimmed.length > 63) {
-      const msg = `Item name '${trimmed}' is ${trimmed.length} bytes; maximum allowed is 63 characters.`;
-      setStatusLeft(msg);
-      await studioAlert(msg, "Invalid Sprite Name");
-      return;
-    }
-    const path = await invoke<string | null>("pick_file_dialog", {
-      title: `Select Sprite Image (.PNG) for '${trimmed}'`,
-      extensions: ["png", "tga", "bmp", "jpg", "jpeg"],
-    });
-    if (!path) return;
-    await runUvdMutation(groupNodeId, "add_item", {
-      group_index: groupIndex,
-      name: trimmed,
-      path,
-    });
-  }
-
-  async function promptReplaceUvdSprite(
-    itemNodeId: string,
-    groupIndex?: number,
-    itemIndex?: number
-  ) {
-    setContextMenu(null);
-    const path = await invoke<string | null>("pick_file_dialog", {
-      title: "Select Replacement Sprite Image (.PNG)",
-      extensions: ["png", "tga", "bmp", "jpg", "jpeg"],
-    });
-    if (!path) return;
-    await runUvdMutation(itemNodeId, "replace_item", {
-      group_index: groupIndex,
-      item_index: itemIndex,
-      path,
-    });
-  }
-
-  async function promptRenameUvdGroup(
-    groupNodeId: string,
-    currentName: string,
-    groupIndex?: number
-  ) {
-    setContextMenu(null);
-    const rawName = await studioPrompt(
-      "Rename UVD Group (max 31 ASCII characters):\n\nWarning: Renaming recomputes the Group ID (crc32 & 0x7FFFFFFF). Any .uid file referencing the old Group ID may break.",
-      currentName,
-      { title: "Rename UVD Group" }
-    );
-    if (!rawName || !rawName.trim() || rawName.trim() === currentName) return;
-    const trimmed = rawName.trim();
-    if (trimmed.length > 31) {
-      const msg = `Group name '${trimmed}' is ${trimmed.length} bytes; maximum allowed is 31 characters.`;
-      setStatusLeft(msg);
-      await studioAlert(msg, "Invalid Group Name");
-      return;
-    }
-    const ok = await studioConfirm(
-      `Rename group '${currentName}' to '${trimmed}'?\n\nNote: The Group ID will be recomputed from the new name, and any .uid layout referencing the old ID may break.`,
-      { title: "Confirm Group Rename", confirmLabel: "Rename" }
-    );
-    if (!ok) return;
-    await runUvdMutation(groupNodeId, "rename_group", {
-      group_index: groupIndex,
-      new_name: trimmed,
-    });
-  }
-
-  async function promptRenameUvdSprite(
-    itemNodeId: string,
-    currentName: string,
-    groupIndex?: number,
-    itemIndex?: number
-  ) {
-    setContextMenu(null);
-    const rawName = await studioPrompt(
-      "Rename UVD Sprite Item (max 63 ASCII characters):\n\nWarning: Renaming recomputes the Item ID (CRC32). Any .uid file referencing the old Item ID may break.",
-      currentName,
-      { title: "Rename Sprite Item" }
-    );
-    if (!rawName || !rawName.trim() || rawName.trim() === currentName) return;
-    const trimmed = rawName.trim();
-    if (trimmed.length > 63) {
-      const msg = `Item name '${trimmed}' is ${trimmed.length} bytes; maximum allowed is 63 characters.`;
-      setStatusLeft(msg);
-      await studioAlert(msg, "Invalid Sprite Name");
-      return;
-    }
-    const ok = await studioConfirm(
-      `Rename sprite '${currentName}' to '${trimmed}'?\n\nNote: The Item ID (CRC32) will be recomputed from the new name, and any .uid layout referencing the old ID may break.`,
-      { title: "Confirm Sprite Rename", confirmLabel: "Rename" }
-    );
-    if (!ok) return;
-    await runUvdMutation(itemNodeId, "rename_item", {
-      group_index: groupIndex,
-      item_index: itemIndex,
-      new_name: trimmed,
-    });
-  }
-
-  const uvdActions: UvdActions = {
+  const {
     runUvdMutation,
     handleUvdExtract,
+    resolveUvdNodeName,
     promptAddUvdGroup,
     promptAddUvdSprite,
     promptReplaceUvdSprite,
     promptRenameUvdGroup,
     promptRenameUvdSprite,
-    selectAndInspectNode: (nid: string) => selectAndInspectNode(nid),
-    resolveNodeName: resolveUvdNodeName,
+    uvdActions,
+  } = useUvdActions({
+    outline,
+    outlineRef,
+    nodePayload,
+    activeTexture: nodePayload?.view_type === "TEXTURE" ? (nodePayload.texture ?? null) : null,
+    currentDirRef,
     uvdPadding,
     setUvdPadding,
     uvdMaxSize,
     setUvdMaxSize,
-  };
+    setContextMenu,
+    setBusyLabel,
+    setOutline,
+    setWmbDocGeneration,
+    setThumbResetGen,
+    setSelectedNodeIds,
+    setStatusLeft,
+    selectAndInspectNode,
+    loadDirectory,
+  });
 
   const activeTexture: TextureNodeView | null =
     nodePayload?.view_type === "TEXTURE" ? (nodePayload.texture ?? null) : null;
@@ -2732,7 +2384,7 @@ export default function App() {
             onStatusError={(msg) => setStatusLeft(msg)}
             onTriggerLegacyAction={async (legacyNodeId: string, action: LegacyActionKind) => {
               if (action === "export_obj") {
-                const dest = await invoke<string | null>("save_file_dialog", {
+                const dest = await saveFileDialog({
                   title: "Export WMB Model to Wavefront .OBJ",
                   defaultName: "model.obj",
                 });
@@ -2829,67 +2481,14 @@ export default function App() {
         </div>
       </footer>
 
-      {displayedContextMenu && (
-        <div
-          className="context-menu-backdrop"
-          style={isContextMenuClosing ? { pointerEvents: "none" } : undefined}
-          onClick={() => setContextMenu(null)}
-          onContextMenu={(e) => {
-            e.preventDefault();
-            setContextMenu(null);
-          }}
-        >
-          <div
-            key={`${displayedContextMenu.x}-${displayedContextMenu.y}`}
-            className={`context-menu ${isContextMenuClosing ? "closing" : ""}`}
-            style={{ left: displayedContextMenu.x, top: displayedContextMenu.y }}
-            onClick={(e) => e.stopPropagation()}
-          >
-            {displayedContextMenu.items.map((item, idx) =>
-              item.separator ? (
-                <div key={idx} className="context-menu-sep" />
-              ) : (
-                <div
-                  key={idx}
-                  className="context-menu-item"
-                  onMouseEnter={() => setHoverSubmenuIdx(idx)}
-                  onClick={() => {
-                    if (!item.disabled && item.action) {
-                      item.action();
-                    }
-                  }}
-                >
-                  <span>{item.label}</span>
-                  {item.shortcut && (
-                    <span className="context-menu-shortcut">{item.shortcut}</span>
-                  )}
-                  {item.submenu && <span className="context-menu-shortcut">›</span>}
-                  {item.submenu && displayedSubmenuIdx === idx && (
-                    <div className={`context-submenu ${isSubmenuClosing ? "closing" : ""}`}>
-                      {item.submenu.map((sub, sIdx) =>
-                        sub.separator ? (
-                          <div key={sIdx} className="context-menu-sep" />
-                        ) : (
-                          <button
-                            key={sIdx}
-                            className="context-menu-item"
-                            disabled={sub.disabled}
-                            onClick={() => {
-                              if (sub.action) sub.action();
-                            }}
-                          >
-                            <span>{sub.label}</span>
-                          </button>
-                        )
-                      )}
-                    </div>
-                  )}
-                </div>
-              )
-            )}
-          </div>
-        </div>
-      )}
+      <StudioContextMenu
+        menu={displayedContextMenu}
+        isClosing={isContextMenuClosing}
+        displayedSubmenuIdx={displayedSubmenuIdx}
+        isSubmenuClosing={isSubmenuClosing}
+        onHoverSubmenu={setHoverSubmenuIdx}
+        onClose={() => setContextMenu(null)}
+      />
 
       {uvdSaveModalTarget !== undefined &&
         outline?.pending_uvd_encodes &&
@@ -3024,9 +2623,8 @@ export default function App() {
               uvd_max_size: next.uvdMaxSize,
             });
             try {
-              const saved = await invoke<StudioSettings>("save_studio_settings", {
-                settings: payload,
-              });
+              const saved = await saveStudioSettings(payload,
+              );
               const coreDatChanged =
                 next.coreDatB1 !== coreDatB1 ||
                 next.coreDatB2 !== coreDatB2 ||
@@ -3093,295 +2691,18 @@ export default function App() {
       )}
 
       {/* PKZ Compression Type & Level Modal (matching PKZ Explorer CompressionDialog) */}
-      {pkzCompModal && (
-        <div
-          className="context-menu-backdrop"
-          style={{
-            display: "flex",
-            alignItems: "center",
-            justifyContent: "center",
-            backgroundColor: "rgba(0, 0, 0, 0.55)",
-          }}
-          onClick={() => setPkzCompModal(null)}
-        >
-          <div
-            className="studio-card"
-            style={{
-              width: 470,
-              maxWidth: "94vw",
-              padding: 16,
-              display: "flex",
-              flexDirection: "column",
-              gap: 12,
-            }}
-            onClick={(e) => e.stopPropagation()}
-          >
-            <div>
-              <div style={{ fontWeight: 700, fontSize: 14, color: "var(--brush-heading)" }}>
-                {pkzCompModal.title}
-              </div>
-              {pkzCompModal.subtitle && (
-                <div style={{ fontSize: 11.5, color: "var(--brush-muted)", marginTop: 3 }}>
-                  {pkzCompModal.subtitle}
-                </div>
-              )}
-            </div>
-
-            <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
-              {(
-                [
-                  [
-                    "None",
-                    "None (Uncompressed)",
-                    "Store every file as it is. Fastest loading, largest archives.",
-                  ],
-                  [
-                    "ZStandard",
-                    "ZStandard",
-                    "Built in, no extra DLL needed. Fast and widely supported.",
-                  ],
-                  [
-                    "OodleKraken",
-                    "Oodle Kraken",
-                    "What Bayonetta 3 and Astral Chain use natively. Requires oo2core_*_win64.dll for encoding.",
-                  ],
-                ] as const
-              ).map(([codecKey, codecLabel, codecDesc]) => {
-                const checked = pkzCompModal.compression === codecKey;
-                return (
-                  <StudioRadio
-                    key={codecKey}
-                    checked={checked}
-                    onChange={() => {
-                      const nextLvl = clampPkzLevel(
-                        codecKey,
-                        codecKey === "OodleKraken"
-                          ? 4
-                          : codecKey === "ZStandard"
-                          ? 3
-                          : 0
-                      );
-                      setPkzCompModal((prev) =>
-                        prev
-                          ? { ...prev, compression: codecKey, level: nextLvl }
-                          : null
-                      );
-                    }}
-                    style={{
-                      display: "flex",
-                      alignItems: "flex-start",
-                      gap: 9,
-                      padding: "8px 10px",
-                      borderRadius: 6,
-                      border: `1px solid ${
-                        checked ? "var(--brush-accent)" : "var(--brush-border)"
-                      }`,
-                      width: "100%",
-                    }}
-                    circleStyle={{ marginTop: 2 }}
-                  >
-                    <div>
-                      <div style={{ fontWeight: 600, fontSize: 12.5 }}>{codecLabel}</div>
-                      <div style={{ fontSize: 11.5, color: "var(--brush-muted)", marginTop: 2 }}>
-                        {codecDesc}
-                      </div>
-                    </div>
-                  </StudioRadio>
-                );
-              })}
-            </div>
-
-            {pkzCompModal.compression !== "None" && (
-              <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
-                <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
-                  <span style={{ fontSize: 12, fontWeight: 600 }}>
-                    Compression Level ({pkzCompModal.compression === "OodleKraken" ? "1–9" : "1–22"})
-                  </span>
-                  <span className="mono" style={{ fontWeight: 700, fontSize: 12.5 }}>
-                    {pkzCompModal.level}
-                  </span>
-                </div>
-                <StudioRange
-                  min={1}
-                  max={pkzCompModal.compression === "OodleKraken" ? 9 : 22}
-                  step={1}
-                  value={pkzCompModal.level}
-                  ticks={pkzCompModal.compression === "OodleKraken" ? 9 : 8}
-                  ariaLabel="Compression level"
-                  onChange={(next) => {
-                    setPkzCompModal((prev) =>
-                      prev ? { ...prev, level: next } : null
-                    );
-                  }}
-                />
-                <button
-                  type="button"
-                  role="checkbox"
-                  aria-checked={pkzCompModal.forceCompression}
-                  className={`studio-inline-checkbox${pkzCompModal.forceCompression ? " checked" : ""}`}
-                  style={{
-                    fontSize: 11.5,
-                    color: "var(--brush-muted)",
-                    marginTop: 2,
-                  }}
-                  onClick={() =>
-                    setPkzCompModal((prev) =>
-                      prev ? { ...prev, forceCompression: !prev.forceCompression } : null
-                    )
-                  }
-                >
-                  <span className="pill-checkbox-box">
-                    {pkzCompModal.forceCompression && <IconCheck />}
-                  </span>
-                  <span>
-                    Force compression even if file stays at ≥ 90% of original size
-                  </span>
-                </button>
-                <div style={{ fontSize: 11, color: "var(--brush-muted)", lineHeight: 1.4 }}>
-                  {pkzCompModal.forceCompression
-                    ? "Every file will be stored compressed even if compression does not reduce size by 10%."
-                    : "Files that stay at 90% or more of their original size are automatically stored uncompressed (None) for faster in-game loading."}
-                </div>
-              </div>
-            )}
-
-            {pkzCompModal.compression === "OodleKraken" && (
-              <div
-                style={{
-                  padding: "8px 10px",
-                  borderRadius: 6,
-                  border: "1px solid var(--brush-border)",
-                  fontSize: 11.5,
-                  display: "flex",
-                  justifyContent: "space-between",
-                  alignItems: "center",
-                  gap: 8,
-                }}
-              >
-                <div style={{ color: "var(--brush-muted)", flex: 1 }}>
-                  {oodleValidation?.can_compress
-                    ? `✓ ${oodleValidation.message}`
-                    : oodleValidation?.message ??
-                      "Oodle Kraken compression requires oo2core_*_win64.dll."}
-                </div>
-                <button
-                  type="button"
-                  className="pill-button"
-                  onClick={() => void handlePickOodleDll()}
-                >
-                  Browse DLL...
-                </button>
-              </div>
-            )}
-
-            <div style={{ display: "flex", justifyContent: "flex-end", gap: 8, marginTop: 4 }}>
-              <button
-                type="button"
-                className="pill-button"
-                onClick={() => setPkzCompModal(null)}
-              >
-                Cancel
-              </button>
-              <button
-                type="button"
-                className="pill-button accent"
-                onClick={() => {
-                  const { compression, level, forceCompression, onConfirm } = pkzCompModal;
-                  setPkzDefaultCompression(compression);
-                  if (compression !== "None") {
-                    setPkzDefaultLevel(level);
-                  }
-                  setPkzCompModal(null);
-                  void onConfirm(compression, level, forceCompression);
-                }}
-              >
-                OK
-              </button>
-            </div>
-          </div>
-        </div>
-      )}
-
-      {/* PKZ Collision & Extract Overwrite Modal (matching PKZ Explorer OverwriteDialog) */}
-      {pkzConflictModal && (
-        <div
-          className="context-menu-backdrop"
-          style={{
-            display: "flex",
-            alignItems: "center",
-            justifyContent: "center",
-            backgroundColor: "rgba(0, 0, 0, 0.55)",
-          }}
-          onClick={() => setPkzConflictModal(null)}
-        >
-          <div
-            className="studio-card"
-            style={{
-              width: 440,
-              maxWidth: "94vw",
-              padding: 16,
-              display: "flex",
-              flexDirection: "column",
-              gap: 12,
-            }}
-            onClick={(e) => e.stopPropagation()}
-          >
-            <div style={{ fontWeight: 700, fontSize: 14, color: "var(--brush-heading)" }}>
-              {pkzConflictModal.title}
-            </div>
-            <div
-              style={{
-                fontSize: 12,
-                color: "var(--brush-muted)",
-                whiteSpace: "pre-line",
-                lineHeight: 1.45,
-              }}
-            >
-              {pkzConflictModal.message}
-            </div>
-            {pkzConflictModal.paths && pkzConflictModal.paths.length > 0 && (
-              <div
-                className="mono"
-                style={{
-                  fontSize: 11,
-                  padding: "6px 8px",
-                  borderRadius: 4,
-                  border: "1px solid var(--brush-border)",
-                  maxHeight: 110,
-                  overflowY: "auto",
-                }}
-              >
-                {pkzConflictModal.paths.map((p, i) => (
-                  <div key={i}>{p}</div>
-                ))}
-              </div>
-            )}
-            <div style={{ display: "flex", justifyContent: "flex-end", gap: 8, marginTop: 4 }}>
-              <button
-                type="button"
-                className="pill-button"
-                onClick={() => setPkzConflictModal(null)}
-              >
-                Cancel
-              </button>
-              <button
-                type="button"
-                className="pill-button"
-                onClick={() => void pkzConflictModal.onChoice("skip")}
-              >
-                Skip Existing
-              </button>
-              <button
-                type="button"
-                className="pill-button accent"
-                onClick={() => void pkzConflictModal.onChoice("overwrite")}
-              >
-                Overwrite
-              </button>
-            </div>
-          </div>
-        </div>
-      )}
+      <PkzModals
+        pkzCompModal={pkzCompModal}
+        setPkzCompModal={setPkzCompModal}
+        pkzConflictModal={pkzConflictModal}
+        setPkzConflictModal={setPkzConflictModal}
+        oodleConfigured={oodleConfigured}
+        oodleValidation={oodleValidation}
+        setPkzDefaultCompression={setPkzDefaultCompression}
+        setPkzDefaultLevel={setPkzDefaultLevel}
+        handlePickOodleDll={handlePickOodleDll}
+        setStatusLeft={setStatusLeft}
+      />
 
       <StudioDialogHost />
       <StudioTooltipHost />

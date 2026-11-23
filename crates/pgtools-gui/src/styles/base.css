@@ -1,0 +1,915 @@
+/* ============================================================================
+ * PGTools Studio — Native Desktop Design System (Ported 1:1 from XT1 Studio WPF)
+ * Supports Dark.xaml & Light.xaml palettes, Pill Controls, Splitters, Context Menus,
+ * Collapsible Inspector Cards, Checkerboard Viewport, and 010-Style Structure Tables.
+ * ============================================================================ */
+
+:root,
+[data-theme="dark"] {
+  --brush-window: #1B1C1F;
+  --brush-card: #24262A;
+  --brush-control: #2A2C31;
+  --brush-control-hover: #34373D;
+  --brush-control-pressed: #3D4148;
+  --brush-input: #2B2D32;
+  --brush-border: #3A3D43;
+  --brush-border-strong: #454952;
+  --brush-text: #E6E8EC;
+  --brush-muted: #9AA0AA;
+  --brush-heading: #F2F4F8;
+  --brush-accent: #4F8DF7;
+  --brush-accent-soft: rgba(79, 141, 247, 0.24);
+  --brush-accent-mid: rgba(79, 141, 247, 0.36);
+  --brush-on-accent: #FFFFFF;
+  --brush-viewer: #141519;
+  --brush-success: #1E3326;
+  --brush-success-text: #7BD88F;
+  --brush-warning: #3A2224;
+  --brush-warning-text: #F19A9A;
+  --brush-status: #212327;
+  --checker-a: #212125;
+  --checker-b: #191A1D;
+  --menu-shadow: 0 10px 28px rgba(0, 0, 0, 0.55), 0 2px 6px rgba(0, 0, 0, 0.35);
+  color-scheme: dark;
+}
+
+[data-theme="light"] {
+  --brush-window: #F4F5F7;
+  --brush-card: #FFFFFF;
+  --brush-control: #ECEDF0;
+  --brush-control-hover: #E1E3E8;
+  --brush-control-pressed: #D3D6DC;
+  --brush-input: #FFFFFF;
+  --brush-border: #DEE1E6;
+  --brush-border-strong: #C7CBD1;
+  --brush-text: #1F2329;
+  --brush-muted: #6B7280;
+  --brush-heading: #111827;
+  --brush-accent: #3B82F6;
+  --brush-accent-soft: rgba(59, 130, 246, 0.16);
+  --brush-accent-mid: rgba(59, 130, 246, 0.26);
+  --brush-on-accent: #FFFFFF;
+  --brush-viewer: #E9EAED;
+  --brush-success: #EAF6EE;
+  --brush-success-text: #2F7D46;
+  --brush-warning: #FDECEC;
+  --brush-warning-text: #B42318;
+  --brush-status: #ECEDF0;
+  --checker-a: #FFFFFF;
+  --checker-b: #E3E4E8;
+  --menu-shadow: 0 10px 26px rgba(15, 23, 42, 0.14), 0 2px 6px rgba(15, 23, 42, 0.08);
+  color-scheme: light;
+}
+
+*,
+*::before,
+*::after {
+  box-sizing: border-box;
+}
+
+html,
+body,
+#root {
+  margin: 0;
+  padding: 0;
+  width: 100vw;
+  height: 100vh;
+  overflow: hidden;
+  background-color: var(--brush-window);
+  color: var(--brush-text);
+  font-family: "Inter", -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+  font-size: 12.5px;
+  line-height: 1.4;
+  user-select: none;
+  -webkit-font-smoothing: antialiased;
+}
+
+/* Custom Slim Themed Scrollbars (Matching Controls.xaml ThemedScrollBar) */
+::-webkit-scrollbar {
+  width: 10px;
+  height: 10px;
+}
+
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+::-webkit-scrollbar-corner {
+  background: transparent;
+}
+
+::-webkit-scrollbar-thumb {
+  background-color: var(--brush-border-strong);
+  border-radius: 5px;
+  border: 2px solid transparent;
+  background-clip: content-box;
+}
+
+::-webkit-scrollbar-thumb:hover {
+  background-color: var(--brush-muted);
+}
+
+/* Studio Shell Frame (4 rows: MenuBar, Toolbar, Main 3-Pane Area, StatusBar) */
+.studio-window {
+  display: grid;
+  grid-template-rows: auto auto 1fr auto;
+  width: 100vw;
+  height: 100vh;
+  background-color: var(--brush-window);
+  color: var(--brush-text);
+  position: relative;
+}
+
+/* Row 0: Menu Bar */
+.studio-menubar {
+  display: flex;
+  align-items: center;
+  padding: 3px 6px;
+  background-color: var(--brush-window);
+  border-bottom: 1px solid var(--brush-border);
+  gap: 2px;
+  position: relative;
+  z-index: 40;
+}
+
+.menu-top-button {
+  appearance: none;
+  background: transparent;
+  border: 1px solid transparent;
+  border-radius: 6px;
+  padding: 4px 9px;
+  color: var(--brush-text);
+  font-family: inherit;
+  font-size: 12.5px;
+  cursor: pointer;
+  transition: background-color 90ms ease, border-color 90ms ease;
+}
+
+.menu-top-button:hover,
+.menu-top-button.active {
+  background-color: var(--brush-control-hover);
+}
+
+.menu-top-button:active {
+  background-color: var(--brush-control-pressed);
+}
+
+/* Row 1: Contextual Toolbar */
+.studio-toolbar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 8px 10px;
+  background-color: var(--brush-window);
+  border-bottom: 1px solid var(--brush-border);
+  gap: 10px;
+}
+
+.toolbar-group {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.toolbar-label {
+  color: var(--brush-muted);
+  font-size: 12.5px;
+  margin-right: -1px;
+}
+
+.toolbar-spacer {
+  width: 8px;
+}
+
+/* Pill Controls (PillButton, PillCheckBox, PillComboBox, FieldBox from Controls.xaml) */
+.pill-button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 7px;
+  height: 30px;
+  padding: 0 11px;
+  border-radius: 8px;
+  background-color: var(--brush-control);
+  border: 1px solid var(--brush-border);
+  color: var(--brush-text);
+  font-family: inherit;
+  font-size: 12.5px;
+  cursor: pointer;
+  white-space: nowrap;
+  transition: background-color 100ms ease, border-color 100ms ease, opacity 100ms ease;
+}
+
+.pill-button:hover:not(:disabled) {
+  background-color: var(--brush-control-hover);
+}
+
+.pill-button:active:not(:disabled) {
+  background-color: var(--brush-control-pressed);
+}
+
+.pill-button:focus-visible {
+  outline: none;
+  border-color: var(--brush-accent);
+}
+
+.pill-button:disabled {
+  opacity: 0.45;
+  cursor: default;
+}
+
+.pill-button.accent {
+  background-color: var(--brush-accent);
+  border-color: var(--brush-accent);
+  color: var(--brush-on-accent);
+}
+
+.pill-button.accent:hover:not(:disabled) {
+  filter: brightness(1.08);
+}
+
+.pill-checkbox {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  height: 30px;
+  padding: 0 10px;
+  border-radius: 8px;
+  background-color: var(--brush-control);
+  border: 1px solid var(--brush-border);
+  color: var(--brush-text);
+  font-size: 12.5px;
+  cursor: pointer;
+  white-space: nowrap;
+  transition: background-color 100ms ease, border-color 100ms ease;
+}
+
+.pill-checkbox:hover:not(.disabled) {
+  background-color: var(--brush-control-hover);
+}
+
+.pill-checkbox.disabled {
+  opacity: 0.45;
+  cursor: default;
+}
+
+.pill-checkbox-box {
+  width: 14px;
+  height: 14px;
+  border-radius: 4px;
+  border: 1px solid var(--brush-border-strong);
+  background: transparent;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  transition: background-color 100ms ease, border-color 100ms ease;
+  flex-shrink: 0;
+}
+
+.pill-checkbox.checked .pill-checkbox-box {
+  background-color: var(--brush-accent);
+  border-color: var(--brush-accent);
+}
+
+.pill-select {
+  appearance: none;
+  height: 30px;
+  padding: 0 28px 0 10px;
+  border-radius: 8px;
+  background-color: var(--brush-control);
+  border: 1px solid var(--brush-border);
+  color: var(--brush-text);
+  font-family: inherit;
+  font-size: 12.5px;
+  cursor: pointer;
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='10' height='6' viewBox='0 0 10 6'%3E%3Cpath d='M1 1l4 4 4-4' stroke='%239AA0AA' stroke-width='1.5' fill='none' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E");
+  background-repeat: no-repeat;
+  background-position: right 10px center;
+  transition: background-color 100ms ease, border-color 100ms ease;
+}
+
+.pill-select:hover:not(:disabled) {
+  background-color: var(--brush-control-hover);
+}
+
+.pill-select:focus {
+  outline: none;
+  border-color: var(--brush-accent);
+}
+
+.pill-select:disabled {
+  opacity: 0.45;
+  cursor: default;
+}
+
+.field-box {
+  height: 30px;
+  padding: 4px 9px;
+  border-radius: 8px;
+  background-color: var(--brush-input);
+  border: 1px solid var(--brush-border);
+  color: var(--brush-text);
+  font-family: inherit;
+  font-size: 12.5px;
+  transition: border-color 100ms ease;
+}
+
+.field-box.mono {
+  font-family: "JetBrains Mono", "Cascadia Mono", Consolas, ui-monospace, monospace;
+  font-variant-numeric: tabular-nums;
+}
+
+.field-box:focus {
+  outline: none;
+  border-color: var(--brush-accent);
+}
+
+.field-box:disabled {
+  opacity: 0.45;
+}
+
+/* Row 2: Main 3-Pane Area with Invisible-Until-Hovered Splitters */
+.studio-main {
+  display: flex;
+  padding: 4px;
+  min-height: 0;
+  min-width: 0;
+  overflow: hidden;
+  background-color: var(--brush-window);
+}
+
+.left-column {
+  display: flex;
+  flex-direction: column;
+  min-width: 220px;
+  min-height: 0;
+  flex-shrink: 0;
+}
+
+.center-column {
+  flex: 1 1 0%;
+  min-width: 320px;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+}
+
+.right-column {
+  min-width: 290px;
+  min-height: 0;
+  flex-shrink: 0;
+  overflow-y: auto;
+  overflow-x: hidden;
+  padding-right: 2px;
+}
+
+/* GridSplitter (Matches Controls.xaml GridSplitter) */
+.splitter-v {
+  width: 4px;
+  cursor: col-resize;
+  display: flex;
+  align-items: stretch;
+  justify-content: center;
+  flex-shrink: 0;
+}
+
+.splitter-v-grip {
+  width: 2px;
+  border-radius: 1px;
+  background-color: var(--brush-border-strong);
+  opacity: 0;
+  transition: opacity 110ms ease, background-color 110ms ease;
+}
+
+.splitter-v:hover .splitter-v-grip {
+  opacity: 1;
+}
+
+.splitter-v.dragging .splitter-v-grip {
+  opacity: 1;
+  background-color: var(--brush-accent);
+}
+
+.splitter-h {
+  height: 4px;
+  cursor: row-resize;
+  display: flex;
+  align-items: center;
+  justify-content: stretch;
+  flex-shrink: 0;
+}
+
+.splitter-h-grip {
+  height: 2px;
+  width: 100%;
+  border-radius: 1px;
+  background-color: var(--brush-border-strong);
+  opacity: 0;
+  transition: opacity 110ms ease, background-color 110ms ease;
+}
+
+.splitter-h:hover .splitter-h-grip {
+  opacity: 1;
+}
+
+.splitter-h.dragging .splitter-h-grip {
+  opacity: 1;
+  background-color: var(--brush-accent);
+}
+
+/* Raised Card (Matches Controls.xaml Style="Card") */
+.studio-card {
+  background-color: var(--brush-card);
+  border: 1px solid var(--brush-border);
+  border-radius: 7px;
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  overflow: hidden;
+}
+
+.studio-card.viewer-card {
+  background-color: var(--brush-viewer);
+  flex: 1;
+}
+
+.pane-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 11px 14px 6px 14px;
+  gap: 8px;
+  flex-shrink: 0;
+}
+
+.pane-title {
+  font-weight: 600;
+  font-size: 13px;
+  color: var(--brush-heading);
+}
+
+/* TreeView (Matches Controls.xaml TreeView & TreeViewItem) */
+.tree-scroll {
+  flex: 1;
+  overflow-y: auto;
+  overflow-x: auto;
+  scrollbar-gutter: stable;
+  padding: 2px 6px 8px 6px;
+}
+
+.tree-row {
+  position: relative;
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  padding: 3px 6px;
+  border-radius: 6px;
+  cursor: pointer;
+  color: var(--brush-text);
+  white-space: nowrap;
+  transition: background-color 80ms ease;
+}
+
+.tree-row:hover {
+  background-color: var(--brush-control);
+}
+
+.tree-row.selected {
+  background-color: var(--brush-control-hover);
+  font-weight: 600;
+}
+
+/* Pointer Drag-and-Drop Insertion Indicators */
+.tree-row.drag-insert-before::before {
+  content: "";
+  position: absolute;
+  left: 4px;
+  right: 4px;
+  top: -1px;
+  height: 2px;
+  background-color: var(--brush-accent);
+  border-radius: 2px;
+  pointer-events: none;
+  z-index: 12;
+}
+
+.tree-row.drag-insert-after::after {
+  content: "";
+  position: absolute;
+  left: 4px;
+  right: 4px;
+  bottom: -1px;
+  height: 2px;
+  background-color: var(--brush-accent);
+  border-radius: 2px;
+  pointer-events: none;
+  z-index: 12;
+}
+
+.tree-arrow {
+  width: 15px;
+  height: 15px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  color: var(--brush-muted);
+  transition: transform 110ms ease;
+  flex-shrink: 0;
+}
+
+.tree-arrow.expanded {
+  transform: rotate(90deg);
+}
+
+.tree-badge {
+  font-family: "JetBrains Mono", "Cascadia Mono", Consolas, ui-monospace, monospace;
+  font-variant-numeric: tabular-nums;
+  font-size: 10px;
+  padding: 1px 5px;
+  border-radius: 4px;
+  background-color: var(--brush-control);
+  border: 1px solid var(--brush-border);
+  color: var(--brush-muted);
+  flex-shrink: 0;
+}
+
+.tree-row.selected .tree-badge {
+  border-color: var(--brush-accent);
+  color: var(--brush-text);
+}
+
+.tree-children {
+  margin-left: 14px;
+}
+
+/* Floating Drag Ghost Badge */
+.pointer-drag-ghost {
+  position: fixed;
+  z-index: 2000;
+  pointer-events: none;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 4px 10px;
+  border-radius: 7px;
+  background-color: var(--brush-card);
+  border: 1px solid var(--brush-accent);
+  color: var(--brush-text);
+  box-shadow: var(--menu-shadow);
+  font-size: 12px;
+  font-weight: 600;
+}
+
+/* External OS File Drop Overlay */
+.external-drop-overlay {
+  position: fixed;
+  inset: 8px;
+  z-index: 1800;
+  pointer-events: none;
+  border: 2px dashed var(--brush-accent);
+  border-radius: 12px;
+  background-color: rgba(79, 141, 247, 0.12);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: var(--brush-heading);
+  font-size: 16px;
+  font-weight: 600;
+}
+
+/* File Browser ListView (Matches Controls.xaml ListView & GridViewColumnHeader) */
+.file-browser-controls {
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+  padding: 0 10px 6px 10px;
+  flex-shrink: 0;
+}
+
+.file-folder-bar {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+}
+
+.file-table-wrap {
+  flex: 1;
+  overflow-y: auto;
+  overflow-x: hidden;
+  padding: 0 6px 6px 6px;
+}
+
+.file-table {
+  width: 100%;
+  border-collapse: collapse;
+  table-layout: fixed;
+}
+
+.file-table th {
+  position: sticky;
+  top: 0;
+  z-index: 5;
+  background-color: var(--brush-card);
+  color: var(--brush-muted);
+  font-weight: 600;
+  font-size: 12px;
+  text-align: left;
+  padding: 6px 8px;
+  border-bottom: 1px solid var(--brush-border);
+  cursor: pointer;
+  user-select: none;
+  transition: background-color 90ms ease;
+}
+
+.file-table th:hover {
+  background-color: var(--brush-control);
+  color: var(--brush-text);
+}
+
+.file-row {
+  cursor: pointer;
+  transition: background-color 75ms ease;
+}
+
+.file-row td {
+  padding: 4px 8px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  font-size: 12.5px;
+}
+
+.file-row td:first-child {
+  border-top-left-radius: 5px;
+  border-bottom-left-radius: 5px;
+}
+
+.file-row td:last-child {
+  border-top-right-radius: 5px;
+  border-bottom-right-radius: 5px;
+}
+
+.file-row:hover td {
+  background-color: var(--brush-control);
+}
+
+.file-row.selected td {
+  background-color: var(--brush-control-hover);
+  font-weight: 600;
+}
+
+/* Underline Tabs (Matches Controls.xaml UnderlineTabControl & UnderlineTabItem) */
+.underline-tabbar {
+  display: flex;
+  align-items: center;
+  padding: 4px 8px 0 8px;
+  gap: 2px;
+  border-bottom: 1px solid var(--brush-border);
+  background-color: transparent;
+  flex-shrink: 0;
+}
+
+.underline-tab {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  padding: 8px 13px 10px 13px;
+  background: transparent;
+  border: none;
+  color: var(--brush-muted);
+  font-family: inherit;
+  font-size: 12.5px;
+  cursor: pointer;
+  transition: color 100ms ease;
+}
+
+.underline-tab:hover {
+  color: var(--brush-text);
+}
+
+.underline-tab.active {
+  color: var(--brush-text);
+  font-weight: 500;
+}
+
+.underline-tab.active::after {
+  content: "";
+  position: absolute;
+  left: 6px;
+  right: 6px;
+  bottom: 0;
+  height: 2px;
+  border-radius: 1px;
+  background-color: var(--brush-accent);
+}
+
+/* 2D Checkerboard Viewport (Matches Dark.xaml & Light.xaml Brush.Checkerboard) */
+.checkerboard-canvas {
+  flex: 1;
+  position: relative;
+  overflow: hidden;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background-color: var(--checker-a);
+  background-image:
+    linear-gradient(45deg, var(--checker-b) 25%, transparent 25%),
+    linear-gradient(-45deg, var(--checker-b) 25%, transparent 25%),
+    linear-gradient(45deg, transparent 75%, var(--checker-b) 75%),
+    linear-gradient(-45deg, transparent 75%, var(--checker-b) 75%);
+  background-size: 16px 16px;
+  background-position: 0 0, 0 8px, 8px -8px, -8px 0;
+}
+
+.viewport-empty {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  text-align: center;
+  color: var(--brush-muted);
+  padding: 32px;
+  pointer-events: none;
+}
+
+.viewport-empty-title {
+  font-size: 18px;
+  font-weight: 600;
+  margin-top: 12px;
+  color: var(--brush-muted);
+}
+
+.viewport-empty-note {
+  margin-top: 5px;
+  color: var(--brush-muted);
+}
+
+/* Right Inspector (Matches MainWindow.xaml InspectorRoot & CardHeaderToggle) */
+.inspector-header {
+  display: flex;
+  align-items: flex-start;
+  gap: 12px;
+  padding: 2px 2px 0 2px;
+}
+
+.inspector-icon-box {
+  width: 42px;
+  height: 42px;
+  border-radius: 11px;
+  background-color: var(--brush-control);
+  border: 1px solid var(--brush-border);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: var(--brush-muted);
+  flex-shrink: 0;
+}
+
+.inspector-title {
+  font-size: 18px;
+  font-weight: 600;
+  color: var(--brush-heading);
+  line-height: 1.25;
+}
+
+.inspector-subtitle {
+  color: var(--brush-muted);
+  margin-top: 2px;
+  word-break: break-all;
+}
+
+.inspector-spec {
+  color: var(--brush-muted);
+  margin: 10px 2px 0 2px;
+  line-height: 1.45;
+}
+
+.validation-banner {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  border-radius: 10px;
+  padding: 9px 12px;
+  margin-top: 12px;
+  background-color: var(--brush-success);
+  color: var(--brush-success-text);
+  font-size: 12.5px;
+}
+
+.validation-banner.warn {
+  background-color: var(--brush-warning);
+  color: var(--brush-warning-text);
+}
+
+.inspector-card {
+  background-color: var(--brush-card);
+  border: 1px solid var(--brush-border);
+  border-radius: 7px;
+  margin-top: 4px;
+  overflow: hidden;
+}
+
+.card-header-toggle {
+  width: 100%;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 11px 14px;
+  background: transparent;
+  border: none;
+  color: var(--brush-text);
+  font-family: inherit;
+  font-size: 12.5px;
+  font-weight: 600;
+  cursor: pointer;
+}
+
+.card-header-left {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+}
+
+.card-chevron {
+  color: var(--brush-muted);
+  transition: transform 130ms cubic-bezier(0.22, 1, 0.36, 1), color 100ms ease;
+}
+
+.card-header-toggle:hover .card-chevron {
+  color: var(--brush-text);
+}
+
+.card-chevron.collapsed {
+  transform: rotate(-90deg);
+}
+
+.card-body {
+  padding: 0 14px 14px 14px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.inspector-row {
+  display: grid;
+  grid-template-columns: 110px 1fr;
+  align-items: center;
+  gap: 8px;
+}
+
+.inspector-row-label {
+  color: var(--brush-muted);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* 010 Editor-Style Structured Table (Used in Center Viewport for CSV/WMB/BXM/Cloth/MOT/EXP/Containers) */
+.struct-table-container {
+  flex: 1;
+  overflow: auto;
+  scrollbar-gutter: stable;
+  padding: 10px;
+}
+
+.struct-table {
+  width: max-content;
+  border-collapse: collapse;
+  font-size: 12px;
+}
+
+.struct-table th {
+  position: sticky;
+  top: 0;
+  z-index: 4;
+  background-color: var(--brush-card);
+  color: var(--brush-muted);
+  font-weight: 600;
+  text-align: left;
+  padding: 5px 6px;
+  border-bottom: 1px solid var(--brush-border);
+  white-space: nowrap;
+}
+
+.struct-table td {
+  padding: 3px 6px;
+  border-bottom: 1px solid var(--brush-border);
+  color: var(--brush-text);
+  vertical-align: middle;
+  white-space: nowrap;
+}
+
+.struct-table td .field-box,
+.struct-table th .field-box {
+  width: 100%;
+  min-width: 32px;
+  padding: 2px 5px;
+  box-sizing: border-box;
+}
+
+.struct-table tr:hover td {
+  background-color: var(--brush-control);
+}
+

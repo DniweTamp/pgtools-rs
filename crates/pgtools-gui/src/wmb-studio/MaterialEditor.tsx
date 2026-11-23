@@ -2,7 +2,8 @@ import React, { useCallback, useEffect, useMemo, useRef, useState } from "react"
 import { StudioColorPicker } from "../components/StudioColorPicker";
 import { StudioRange } from "../components/StudioRange";
 import { StudioSelect } from "../components/StudioSelect";
-import { invoke } from "@tauri-apps/api/core";
+import { useB2LayoutOverride } from "../hooks/useB2LayoutOverride";
+import { inspectAssetNode } from "../api/tauri";
 import {
   MaterialDesc,
   MaterialParamDesc,
@@ -25,7 +26,7 @@ import {
 } from "../types";
 import { DebugSlotPreview, SceneSelectionItem } from "./store";
 
-export interface MaterialEditorProps {
+interface MaterialEditorProps {
   manifest: WmbSceneManifest;
   material: MaterialDesc;
   onSelect: (items: SceneSelectionItem[], additive?: boolean) => void;
@@ -79,9 +80,9 @@ export const MaterialEditor: React.FC<MaterialEditorProps> = ({
   const colorCommitTimersRef = useRef<Record<string, ReturnType<typeof setTimeout>>>({});
   const [decodedMat, setDecodedMat] = useState<DecodedWmbMaterial | null>(null);
   const [wmb3Mat, setWmb3Mat] = useState<Wmb3Material | null>(null);
-  const [b2LayoutOverride, setB2LayoutOverride] = useState<boolean>(
-    manifest.game === "b2"
-  );
+  const [sharedB2Override, setSharedB2Override] = useB2LayoutOverride();
+  const b2LayoutOverride = sharedB2Override ?? manifest.game === "b2";
+  const setB2LayoutOverride = (next: boolean) => setSharedB2Override(next);
   const [headerOpen, setHeaderOpen] = useState(true);
   const [samplersOpen, setSamplersOpen] = useState(true);
   const [paramsOpen, setParamsOpen] = useState(true);
@@ -115,7 +116,7 @@ export const MaterialEditor: React.FC<MaterialEditorProps> = ({
     (async () => {
       try {
         const legacyId = await resolveLegacyNode(manifest.nodeId, material.id);
-        const res = await invoke<{
+        const res = await inspectAssetNode<{
           wmb?: {
             available_shaders?: ShaderOptionDesc[];
             core_pretextures?: CorePretextureInfo[];
@@ -126,7 +127,7 @@ export const MaterialEditor: React.FC<MaterialEditorProps> = ({
             available_shaders?: ShaderOptionDesc[];
             core_pretextures?: CorePretextureInfo[];
           };
-        }>("inspect_asset_node", {
+        }>({
           nodeId: legacyId,
           mipIndex: 0,
           channel: "RGBA",

@@ -46,7 +46,7 @@ interface SharedVbAttributeSet {
   color: THREE.BufferAttribute;
 }
 
-export function computeBatchRenderOrder(
+function computeBatchRenderOrder(
   queue: "opaque" | "alphatest" | "blend",
   localSortNo: number,
   fileOrder: number

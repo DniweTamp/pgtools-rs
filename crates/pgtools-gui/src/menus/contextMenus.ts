@@ -1,4 +1,4 @@
-import { invoke } from "@tauri-apps/api/core";
+import { fsBatchOperation, pickFileDialog, pickFolderDialog, pickMultipleFilesDialog, revealInExplorer, runFileContextOperation, saveFileDialog } from "../api/tauri";
 import { studioConfirm, studioPrompt } from "../components/StudioDialog";
 import {
   DecodedWmbMaterial,
@@ -13,7 +13,7 @@ import { isVirtualSubNode } from "../utils/format";
 import { convertMaterialBetweenGames } from "../wmb-studio/contract";
 import { UvdActions } from "../editors/UvdEditor";
 
-export interface AssetMenuDeps {
+interface AssetMenuDeps {
   selectedNodeIds?: string[];
   uvdActions?: UvdActions;
   activeTexture?: TextureNodeView | null;
@@ -25,13 +25,13 @@ export interface AssetMenuDeps {
   setMaterialClipboard: (val: MaterialClipboardState | null) => void;
   setContextMenu: (val: any) => void;
   setStatusLeft: (msg: string) => void;
-  runWmbMutation: (nodeId: string, operation: string, payload?: any) => Promise<void>;
+  runWmbMutation: (nodeId: string, operation: string, payload?: unknown) => Promise<void>;
   handleCrossGameMaterialConvert: (wmb: WmbSectionView, dstGame: "b1" | "b2" | "b3") => Promise<void>;
-  runContainerMutation: (nodeId: string, action: string, targetPath?: string, payload?: any) => Promise<void>;
+  runContainerMutation: (nodeId: string, action: string, targetPath?: string, payload?: unknown) => Promise<void>;
   promptAndRunTextureImport: (nodeId: string, action: "replace_file" | "add_texture") => Promise<void>;
   handleTextureExport: (nodeId: string, scope: "single" | "bank" | "container", format: "png" | "dds" | "raw") => Promise<void>;
   openBatchReplaceModal?: (nodeId: string) => void;
-  runTextureMutation: (nodeId: string, action: string, payload?: any) => Promise<void>;
+  runTextureMutation: (nodeId: string, action: string, payload?: Record<string, unknown>) => Promise<void>;
   runClothMutation: (nodeId: string, operation: string, preset?: string, updatedJson?: any) => Promise<void>;
   openPkzCompressionModal: (
     title: string,
@@ -49,7 +49,7 @@ export interface AssetMenuDeps {
   currentDirRef: React.MutableRefObject<string>;
 }
 
-export interface FileMenuDeps {
+interface FileMenuDeps {
   selectedFilePaths: string[];
   setSelectedFilePaths: (paths: string[]) => void;
   filteredFiles: FsEntry[];
@@ -215,7 +215,7 @@ export function createMenuBuilders(assetDeps: AssetMenuDeps, fileDeps: FileMenuD
           label: "Export Model to Wavefront .OBJ...",
           action: async () => {
             setContextMenu(null);
-            const dest = await invoke<string | null>("save_file_dialog", {
+            const dest = await saveFileDialog({
               title: "Export WMB Model to .OBJ",
               defaultName: "model.obj",
             });
@@ -257,7 +257,7 @@ export function createMenuBuilders(assetDeps: AssetMenuDeps, fileDeps: FileMenuD
             label: "Replace Sub-File from Disk...",
             action: async () => {
               setContextMenu(null);
-              const src = await invoke<string | null>("pick_file_dialog", {
+              const src = await pickFileDialog({
                 title: "Select Replacement Sub-File",
                 extensions: null,
               });
@@ -306,7 +306,7 @@ export function createMenuBuilders(assetDeps: AssetMenuDeps, fileDeps: FileMenuD
             label: "Export Raw Sub-File...",
             action: async () => {
               setContextMenu(null);
-              const dest = await invoke<string | null>("save_file_dialog", {
+              const dest = await saveFileDialog({
                 title: "Export Raw Sub-File",
                 defaultName: "extracted.bin",
               });
@@ -368,7 +368,7 @@ export function createMenuBuilders(assetDeps: AssetMenuDeps, fileDeps: FileMenuD
           label: `Add File(s) into '${folderPrefix}/'...`,
           action: async () => {
             setContextMenu(null);
-            const paths = await invoke<string[]>("pick_multiple_files_dialog", {
+            const paths = await pickMultipleFilesDialog({
               title: `Add File(s) into PKZ Folder '${folderPrefix}/'`,
               extensions: null,
             });
@@ -394,7 +394,7 @@ export function createMenuBuilders(assetDeps: AssetMenuDeps, fileDeps: FileMenuD
           label: `Add Folder into '${folderPrefix}/'...`,
           action: async () => {
             setContextMenu(null);
-            const folder = await invoke<string | null>("pick_folder_dialog", {
+            const folder = await pickFolderDialog({
               title: `Select Folder whose contents will be added into '${folderPrefix}/'`,
             });
             if (folder) {
@@ -419,7 +419,7 @@ export function createMenuBuilders(assetDeps: AssetMenuDeps, fileDeps: FileMenuD
           label: `Extract Folder '${folderPrefix}/' to Disk...`,
           action: async () => {
             setContextMenu(null);
-            const folder = await invoke<string | null>("pick_folder_dialog", {
+            const folder = await pickFolderDialog({
               title: `Extract PKZ Folder '${folderPrefix}'`,
             });
             if (folder) {
@@ -516,7 +516,7 @@ export function createMenuBuilders(assetDeps: AssetMenuDeps, fileDeps: FileMenuD
             label: "Add File(s)...",
             action: async () => {
               setContextMenu(null);
-              const paths = await invoke<string[]>("pick_multiple_files_dialog", {
+              const paths = await pickMultipleFilesDialog({
                 title: "Select File(s) to Add to PKZ",
                 extensions: null,
               });
@@ -541,7 +541,7 @@ export function createMenuBuilders(assetDeps: AssetMenuDeps, fileDeps: FileMenuD
             label: "Add Folder...",
             action: async () => {
               setContextMenu(null);
-              const folder = await invoke<string | null>("pick_folder_dialog", {
+              const folder = await pickFolderDialog({
                 title: "Select Folder to Add into PKZ",
               });
               if (folder) {
@@ -593,7 +593,7 @@ export function createMenuBuilders(assetDeps: AssetMenuDeps, fileDeps: FileMenuD
           label: "Add File(s) to Container...",
           action: async () => {
             setContextMenu(null);
-            const paths = await invoke<string[]>("pick_multiple_files_dialog", {
+            const paths = await pickMultipleFilesDialog({
               title: "Select File(s) to Add to Container",
               extensions: null,
             });
@@ -608,7 +608,7 @@ export function createMenuBuilders(assetDeps: AssetMenuDeps, fileDeps: FileMenuD
           label: "Extract All to Folder...",
           action: async () => {
             setContextMenu(null);
-            const folder = await invoke<string | null>("pick_folder_dialog", {
+            const folder = await pickFolderDialog({
               title: "Extract Container Entries to Folder",
             });
             if (folder) {
@@ -641,7 +641,7 @@ export function createMenuBuilders(assetDeps: AssetMenuDeps, fileDeps: FileMenuD
           label: "Export Raw Container...",
           action: async () => {
             setContextMenu(null);
-            const dest = await invoke<string | null>("save_file_dialog", {
+            const dest = await saveFileDialog({
               title: "Export Raw Container",
               defaultName: `archive.${kind.toLowerCase()}`,
             });
@@ -1028,7 +1028,7 @@ export function createMenuBuilders(assetDeps: AssetMenuDeps, fileDeps: FileMenuD
             if (openBatchReplaceModal) {
               openBatchReplaceModal(targetId);
             } else {
-              const folder = await invoke<string | null>("pick_folder_dialog", {
+              const folder = await pickFolderDialog({
                 title: "Select Folder of Replacement Textures (matched by tex<idx> or hash)",
               });
               if (folder) await runTextureMutation(targetId, "batch_replace_folder", { folder });
@@ -1047,7 +1047,7 @@ export function createMenuBuilders(assetDeps: AssetMenuDeps, fileDeps: FileMenuD
           label: "Export Model to Wavefront .OBJ...",
           action: async () => {
             setContextMenu(null);
-            const dest = await invoke<string | null>("save_file_dialog", {
+            const dest = await saveFileDialog({
               title: "Export WMB Model to .OBJ",
               defaultName: "model.obj",
             });
@@ -1165,7 +1165,7 @@ export function createMenuBuilders(assetDeps: AssetMenuDeps, fileDeps: FileMenuD
           label: "Export Decoded XML (.xml)...",
           action: async () => {
             setContextMenu(null);
-            const dest = await invoke<string | null>("save_file_dialog", {
+            const dest = await saveFileDialog({
               title: "Export Decoded XML (.xml)",
               defaultName: "decoded.xml",
             });
@@ -1180,7 +1180,7 @@ export function createMenuBuilders(assetDeps: AssetMenuDeps, fileDeps: FileMenuD
           label: "Import & Encode from .XML...",
           action: async () => {
             setContextMenu(null);
-            const srcXml = await invoke<string | null>("pick_file_dialog", {
+            const srcXml = await pickFileDialog({
               title: "Import & Encode XML into Binary BXM",
               extensions: ["xml"],
             });
@@ -1203,7 +1203,7 @@ export function createMenuBuilders(assetDeps: AssetMenuDeps, fileDeps: FileMenuD
         label: "Export Raw File...",
         action: async () => {
           setContextMenu(null);
-          const dest = await invoke<string | null>("save_file_dialog", {
+          const dest = await saveFileDialog({
             title: "Export Raw File",
             defaultName: "extracted.bin",
           });
@@ -1214,7 +1214,7 @@ export function createMenuBuilders(assetDeps: AssetMenuDeps, fileDeps: FileMenuD
         label: "Replace from Disk...",
         action: async () => {
           setContextMenu(null);
-          const src = await invoke<string | null>("pick_file_dialog", {
+          const src = await pickFileDialog({
             title: "Select Replacement File",
             extensions: null,
           });
@@ -1230,7 +1230,7 @@ export function createMenuBuilders(assetDeps: AssetMenuDeps, fileDeps: FileMenuD
       setContextMenu(null);
       try {
         setStatusLeft(`Running ${op} on ${entry.name}...`);
-        const msg = await invoke<string>("run_file_context_operation", {
+        const msg = await runFileContextOperation({
           filePath: entry.path,
           operation: op,
           destPath: dest ?? null,
@@ -1338,7 +1338,7 @@ export function createMenuBuilders(assetDeps: AssetMenuDeps, fileDeps: FileMenuD
     ) => {
       setContextMenu(null);
       try {
-        const msg = await invoke<string>("fs_batch_operation", {
+        const msg = await fsBatchOperation({
           operation: op,
           sourcePaths: paths,
           destDir: destDir ?? null,
@@ -1448,7 +1448,7 @@ export function createMenuBuilders(assetDeps: AssetMenuDeps, fileDeps: FileMenuD
         label: "Show in Explorer",
         action: () => {
           setContextMenu(null);
-          invoke("reveal_in_explorer", { path: entry.path });
+          revealInExplorer(entry.path);
         },
       }
     );

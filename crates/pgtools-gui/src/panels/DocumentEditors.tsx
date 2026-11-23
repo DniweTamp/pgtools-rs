@@ -33,7 +33,7 @@ import {
 import { EditorDraftsApi } from "../hooks/useEditorDrafts";
 import { MeshUiApi } from "../hooks/useMeshUi";
 
-export interface DocumentSelection {
+interface DocumentSelection {
   nodePayload: NodeInspectPayload | null;
   setNodePayload: React.Dispatch<React.SetStateAction<NodeInspectPayload | null>>;
   activeTexture: TextureNodeView | null;
@@ -42,7 +42,7 @@ export interface DocumentSelection {
   assetSearch: string;
 }
 
-export interface DocumentLayout {
+interface DocumentLayout {
   rightWidth: number;
   draggingSplit: "left" | "right" | "left-row" | null;
   setDraggingSplit: (v: "left" | "right" | "left-row" | null) => void;
@@ -50,7 +50,7 @@ export interface DocumentLayout {
   panStartRef: React.MutableRefObject<{ x: number; y: number }>;
 }
 
-export interface DocumentDllSettings {
+interface DocumentDllSettings {
   oodleDllPath: string;
   setOodleDllPath: (s: string) => void;
   oodleConfigured?: boolean;
@@ -61,22 +61,22 @@ export interface DocumentDllSettings {
   handlePickNvttDll: () => Promise<void>;
 }
 
-export interface DocumentActions {
+interface DocumentActions {
   selectAndInspectNode: (...args: any[]) => Promise<void>;
-  runWmbMutation: (nodeId: string, operation: string, payload?: any) => Promise<void>;
-  runTextureMutation: (nodeId: string, action: string, payload?: any) => Promise<void>;
-  runStructMutation: (nodeId: string, structKind: string, updatedData: any) => Promise<void>;
+  runWmbMutation: (nodeId: string, operation: string, payload?: unknown) => Promise<void>;
+  runTextureMutation: (nodeId: string, action: string, payload?: Record<string, unknown>) => Promise<void>;
+  runStructMutation: (nodeId: string, structKind: string, updatedData: unknown) => Promise<void>;
   runClothMutation: (
     nodeId: string,
     operation: string,
     preset?: string,
-    updatedJson?: any
+    updatedJson?: unknown
   ) => Promise<void>;
   runContainerMutation: (
     nodeId: string,
     action: string,
     targetPath?: string,
-    payload?: any
+    payload?: unknown
   ) => Promise<void>;
   openPkzCompressionModal: (
     title: string,
@@ -113,7 +113,7 @@ export interface DocumentActions {
   uvdActions: UvdActions;
 }
 
-export interface DocumentEditorsProps {
+interface DocumentEditorsProps {
   selection: DocumentSelection;
   drafts: EditorDraftsApi;
   meshUi: MeshUiApi;

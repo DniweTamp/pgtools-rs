@@ -1,5 +1,5 @@
 import React, { useCallback, useEffect, useRef, useState } from "react";
-import { invoke } from "@tauri-apps/api/core";
+import { pickFileDialog, saveFileDialog } from "../api/tauri";
 import {
   BxmXmlNode,
   ContextMenuState,
@@ -11,7 +11,7 @@ import { getBxmNodeByPath, safeXmlName } from "./xml";
 import { IconChevronDown, IconChevronRight, IconCode } from "../components/Icons";
 import { AnimatedBranch } from "../components/AnimatedBranch";
 
-export interface BxmCenterViewProps {
+interface BxmCenterViewProps {
   nodePayload: NodeInspectPayload;
   bxmViewMode: "tree" | "table" | "xml";
   bxmTreeDraft: BxmXmlNode | null;
@@ -23,7 +23,7 @@ export interface BxmCenterViewProps {
   setPointerDrag: React.Dispatch<React.SetStateAction<PointerDragState | null>>;
   updateBxmDraftTree: (nextRoot: BxmXmlNode) => void;
   commitBxmDraft: (customXml?: string) => Promise<void>;
-  runContainerMutation: (nodeId: string, action: string, targetPath?: string, payload?: any) => Promise<void>;
+  runContainerMutation: (nodeId: string, action: string, targetPath?: string, payload?: unknown) => Promise<void>;
   setContextMenu: React.Dispatch<React.SetStateAction<ContextMenuState | null>>;
   setHoverSubmenuIdx: React.Dispatch<React.SetStateAction<number | null>>;
   setStatusLeft: (msg: string) => void;
@@ -880,7 +880,7 @@ export const BxmCenterView: React.FC<BxmCenterViewProps> = ({
                       <button
                         className="pill-button"
                         onClick={async () => {
-                          const srcXml = await invoke<string | null>("pick_file_dialog", {
+                          const srcXml = await pickFileDialog({
                             title: "Import & Encode XML into Binary BXM",
                             extensions: ["xml"],
                           });
@@ -894,7 +894,7 @@ export const BxmCenterView: React.FC<BxmCenterViewProps> = ({
                       <button
                         className="pill-button"
                         onClick={async () => {
-                          const dest = await invoke<string | null>("save_file_dialog", {
+                          const dest = await saveFileDialog({
                             title: "Export Decoded XML (.xml)",
                             defaultName: `${(nodePayload.title || "decoded").replace(/\.[^.]+$/, "")}.xml`,
                           });
@@ -981,7 +981,7 @@ export const BxmCenterView: React.FC<BxmCenterViewProps> = ({
   );
 };
 
-export interface BxmInspectorViewProps {
+interface BxmInspectorViewProps {
   nodePayload: NodeInspectPayload;
   bxmTreeDraft: BxmXmlNode | null;
   selectedBxmPath: string;

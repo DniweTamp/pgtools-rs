@@ -1,19 +1,19 @@
 import React, { useEffect, useMemo, useRef, useState } from "react";
-import { invoke } from "@tauri-apps/api/core";
+import { pickFileDialog, validateOodleDll } from "../api/tauri";
 import { IconCheck } from "../components/Icons";
 import { StudioRadio } from "../components/StudioRadio";
 import { StudioRange } from "../components/StudioRange";
 import { StudioSelect } from "../components/StudioSelect";
-import { ALL_TEXTURE_ENCODE_FORMATS, ENCODE_QUALITY_OPTIONS } from "../editors/TextureEditor";
+import { ALL_TEXTURE_ENCODE_FORMATS, ENCODE_QUALITY_OPTIONS } from "../constants/textureFormats";
+import { clampPkzLevel } from "../hooks/useStudioSettings";
 import {
-  clampPkzLevel,
   DEFAULT_CUSTOM_DAT_ALIGNMENT,
   parseCustomDatAlignmentInput,
   sanitizeCustomDatAlignment,
-} from "../hooks/useStudioSettings";
+} from "../constants/datAlignment";
 import { OodleValidationReport, ThemeMode } from "../types";
 
-export interface SettingsDraftValues {
+interface SettingsDraftValues {
   theme: ThemeMode;
   hideUnsupported: boolean;
   assetBrowserZoom: number;
@@ -33,7 +33,7 @@ export interface SettingsDraftValues {
   uvdMaxSize: number;
 }
 
-export interface SettingsModalProps {
+interface SettingsModalProps {
   initialValues: SettingsDraftValues;
   oodleConfigured: boolean;
   nvttConfigured: boolean;
@@ -166,9 +166,8 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
     setTestingOodle(true);
     try {
       const target = pathOverride !== undefined ? pathOverride : draft.oodleDllPath;
-      const report = await invoke<OodleValidationReport>("validate_oodle_dll", {
-        path: target.trim() ? target : null,
-      });
+      const report = await validateOodleDll(target.trim() ? target : null,
+      );
       setOodleReport(report);
     } catch {
       setOodleReport(null);
@@ -538,7 +537,7 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
                         type="button"
                         className="pill-button"
                         onClick={async () => {
-                          const picked = await invoke<string | null>("pick_file_dialog", {
+                          const picked = await pickFileDialog({
                             title: "Locate Oodle Kraken Library (oo2core_*_win64.dll)",
                             extensions: ["dll", "so", "dylib"],
                           });
@@ -610,7 +609,7 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
                         type="button"
                         className="pill-button"
                         onClick={async () => {
-                          const picked = await invoke<string | null>("pick_file_dialog", {
+                          const picked = await pickFileDialog({
                             title: "Locate NVIDIA Texture Tools Library (nvtt30205.dll / nvtt.dll)",
                             extensions: ["dll", "so", "dylib"],
                           });
@@ -686,7 +685,7 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
                             type="button"
                             className="pill-button"
                             onClick={async () => {
-                              const picked = await invoke<string | null>("pick_file_dialog", {
+                              const picked = await pickFileDialog({
                                 title: `Select ${label} (${ext})`,
                                 extensions: ["dat", "wtb", "wta"],
                               });

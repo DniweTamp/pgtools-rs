@@ -1,10 +1,10 @@
 import * as THREE from "three";
 
-export const WTX1_MAGIC = 0x31585457; // "WTX1"
-export const WTX2_MAGIC = 0x32585457; // "WTX2"
-export const WTB2_MAGIC = 0x32425457; // "WTB2"
+const WTX1_MAGIC = 0x31585457; // "WTX1"
+const WTX2_MAGIC = 0x32585457; // "WTX2"
+const WTB2_MAGIC = 0x32425457; // "WTB2"
 
-export const GPU_FMT = {
+const GPU_FMT = {
   RGBA8: 0,
   R8: 2,
   RG8: 3,

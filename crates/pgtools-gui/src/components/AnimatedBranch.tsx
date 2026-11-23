@@ -49,7 +49,7 @@ function collectVisibleFollowingSiblings(
   return result;
 }
 
-export interface AnimatedBranchProps {
+interface AnimatedBranchProps {
   expanded: boolean;
   children: React.ReactNode;
   className?: string;

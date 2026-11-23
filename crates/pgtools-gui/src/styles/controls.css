@@ -1,0 +1,540 @@
+/* ============================================================================
+ * Studio Custom Controls (Replacing Native Browser/WebView2 Elements)
+ * ============================================================================ */
+
+/* Suppress default WebView2/browser spin buttons on numeric inputs */
+input[type="number"]::-webkit-inner-spin-button,
+input[type="number"]::-webkit-outer-spin-button {
+  -webkit-appearance: none;
+  margin: 0;
+}
+
+input[type="number"] {
+  -moz-appearance: textfield;
+  appearance: textfield;
+}
+
+/* StudioDialog (Custom Confirm / Prompt / Alert) */
+.studio-dialog-backdrop {
+  z-index: 2300;
+}
+
+.studio-dialog-card {
+  width: 440px;
+  max-width: 92vw;
+  gap: 10px;
+}
+
+.studio-dialog-title {
+  font-size: 14px;
+  font-weight: 600;
+  color: var(--brush-heading);
+}
+
+.studio-dialog-message {
+  font-size: 12.5px;
+  line-height: 1.48;
+  color: var(--brush-text);
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+.studio-dialog-input {
+  width: 100%;
+  margin-top: 2px;
+}
+
+.studio-dialog-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+  margin-top: 6px;
+}
+
+.pill-button.studio-dialog-danger {
+  background-color: var(--brush-warning);
+  border-color: rgba(241, 154, 154, 0.45);
+  color: var(--brush-warning-text);
+}
+
+.pill-button.studio-dialog-danger:hover:not(:disabled) {
+  filter: brightness(1.1);
+}
+
+/* StudioSelect (Custom Dropdown Trigger & Portal Menu) */
+.studio-select-trigger {
+  display: inline-flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  text-align: left;
+  background-image: none;
+  min-width: 0;
+}
+
+.studio-select-trigger.pill-select {
+  padding: 0 9px 0 10px;
+  background-image: none;
+}
+
+.studio-select-trigger.wmb-prop-select,
+.studio-select-trigger.wmb-vp-lod-select {
+  padding: 0 7px;
+  cursor: pointer;
+}
+
+.studio-select-trigger.open {
+  border-color: var(--brush-accent);
+}
+
+.studio-select-value {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.studio-select-chevron {
+  flex-shrink: 0;
+  color: var(--brush-muted);
+  transition: transform 110ms ease, color 100ms ease;
+}
+
+.studio-select-trigger.open .studio-select-chevron {
+  transform: rotate(180deg);
+  color: var(--brush-text);
+}
+
+.studio-select-menu {
+  position: fixed;
+  z-index: 2200;
+  background-color: var(--brush-card);
+  border: 1px solid var(--brush-border-strong);
+  border-radius: 9px;
+  box-shadow: var(--menu-shadow);
+  padding: 4px;
+  overflow-y: auto;
+  overflow-x: hidden;
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+}
+
+.studio-select-group {
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+}
+
+.studio-select-group + .studio-select-group {
+  margin-top: 4px;
+  padding-top: 4px;
+  border-top: 1px solid var(--brush-border);
+}
+
+.studio-select-group-label {
+  padding: 4px 8px 2px;
+  font-size: 10.5px;
+  font-weight: 600;
+  letter-spacing: 0.03em;
+  text-transform: uppercase;
+  color: var(--brush-muted);
+}
+
+.studio-select-option {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  width: 100%;
+  padding: 5px 8px;
+  border: 1px solid transparent;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--brush-text);
+  font-family: inherit;
+  font-size: 12px;
+  text-align: left;
+  cursor: pointer;
+  transition: background-color 80ms ease, border-color 80ms ease;
+}
+
+.studio-select-option.mono {
+  font-family: "JetBrains Mono", "Cascadia Mono", Consolas, ui-monospace, monospace;
+  font-size: 11.5px;
+}
+
+.studio-select-option.highlighted,
+.studio-select-option:hover:not(:disabled) {
+  background-color: var(--brush-control-hover);
+}
+
+.studio-select-option.selected {
+  background-color: rgba(79, 141, 247, 0.16);
+  border-color: rgba(79, 141, 247, 0.45);
+  color: var(--brush-heading);
+}
+
+.studio-select-option:disabled {
+  opacity: 0.45;
+  cursor: default;
+}
+
+.studio-select-option-label {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.studio-select-option-check {
+  width: 12px;
+  height: 12px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  color: var(--brush-accent);
+  flex-shrink: 0;
+}
+
+/* StudioRadio (Custom Radio Circle) */
+.studio-radio {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  cursor: pointer;
+  color: var(--brush-text);
+  user-select: none;
+}
+
+.studio-radio:focus-visible {
+  outline: none;
+}
+
+.studio-radio:focus-visible .studio-radio-circle {
+  border-color: var(--brush-accent);
+  box-shadow: 0 0 0 2px rgba(79, 141, 247, 0.25);
+}
+
+.studio-radio.disabled {
+  opacity: 0.45;
+  cursor: default;
+}
+
+.studio-radio-circle {
+  width: 15px;
+  height: 15px;
+  border-radius: 50%;
+  border: 1.5px solid var(--brush-border-strong);
+  background-color: var(--brush-input);
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+  transition: border-color 100ms ease, background-color 100ms ease;
+}
+
+.studio-radio:hover:not(.disabled) .studio-radio-circle {
+  border-color: var(--brush-muted);
+}
+
+.studio-radio.checked .studio-radio-circle {
+  border-color: var(--brush-accent);
+  background-color: rgba(79, 141, 247, 0.14);
+}
+
+.studio-radio-dot {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background-color: var(--brush-accent);
+}
+
+/* Compact Inline Checkbox (matches .pill-checkbox-box) */
+.studio-inline-checkbox {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  background: transparent;
+  border: none;
+  padding: 0;
+  margin: 0;
+  font-family: inherit;
+  color: inherit;
+  cursor: pointer;
+  text-align: left;
+}
+
+.studio-inline-checkbox.checked .pill-checkbox-box {
+  background-color: var(--brush-accent);
+  border-color: var(--brush-accent);
+  color: var(--brush-on-accent);
+}
+
+.studio-inline-checkbox:focus-visible {
+  outline: none;
+}
+
+.studio-inline-checkbox:focus-visible .pill-checkbox-box {
+  border-color: var(--brush-accent);
+  box-shadow: 0 0 0 2px rgba(79, 141, 247, 0.25);
+}
+
+/* StudioRange (DCC Fill-Bar Slider) */
+.studio-range {
+  position: relative;
+  display: flex;
+  align-items: center;
+  width: 100%;
+  height: 22px;
+  min-width: 48px;
+  border-radius: 6px;
+  background-color: var(--brush-input);
+  border: 1px solid var(--brush-border);
+  overflow: hidden;
+  cursor: pointer;
+  touch-action: none;
+  user-select: none;
+  outline: none;
+  transition: border-color 90ms ease, background-color 90ms ease;
+}
+
+.studio-range.compact {
+  height: 18px;
+  border-radius: 5px;
+}
+
+.studio-range:hover:not(.disabled) {
+  border-color: var(--brush-border-strong);
+}
+
+.studio-range:focus-visible,
+.studio-range.dragging {
+  border-color: var(--brush-accent);
+}
+
+.studio-range.disabled {
+  opacity: 0.42;
+  cursor: default;
+}
+
+.studio-range-fill {
+  position: absolute;
+  inset: 0 auto 0 0;
+  background-color: var(--brush-accent-soft);
+  transition: background-color 90ms ease;
+  pointer-events: none;
+}
+
+.studio-range:hover:not(.disabled) .studio-range-fill,
+.studio-range.dragging .studio-range-fill {
+  background-color: var(--brush-accent-mid);
+}
+
+.studio-range-edge {
+  position: absolute;
+  top: 2px;
+  bottom: 2px;
+  width: 2px;
+  border-radius: 2px;
+  background-color: var(--brush-accent);
+  transform: translateX(-1px);
+  pointer-events: none;
+}
+
+.studio-range-ticks {
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+}
+
+.studio-range-tick {
+  position: absolute;
+  bottom: 0;
+  width: 1px;
+  height: 4px;
+  background-color: var(--brush-border-strong);
+  opacity: 0.7;
+}
+
+/* StudioColorPicker (Custom Swatch & HSV Popover) */
+.studio-color-swatch {
+  width: 26px;
+  height: 22px;
+  padding: 0;
+  border-radius: 5px;
+  border: 1px solid var(--brush-border-strong);
+  cursor: pointer;
+  flex-shrink: 0;
+  transition: border-color 90ms ease, transform 90ms ease;
+}
+
+.studio-color-swatch:hover:not(:disabled) {
+  border-color: var(--brush-accent);
+}
+
+.studio-color-swatch:disabled {
+  opacity: 0.45;
+  cursor: default;
+}
+
+.studio-color-popover {
+  position: fixed;
+  z-index: 2200;
+  width: 228px;
+  background-color: var(--brush-card);
+  border: 1px solid var(--brush-border-strong);
+  border-radius: 10px;
+  box-shadow: var(--menu-shadow);
+  padding: 10px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.studio-color-sv {
+  position: relative;
+  width: 100%;
+  height: 132px;
+  border-radius: 6px;
+  overflow: hidden;
+  border: 1px solid var(--brush-border);
+  cursor: crosshair;
+  touch-action: none;
+}
+
+.studio-color-sv-white {
+  position: absolute;
+  inset: 0;
+  background: linear-gradient(to right, #ffffff, rgba(255, 255, 255, 0));
+}
+
+.studio-color-sv-black {
+  position: absolute;
+  inset: 0;
+  background: linear-gradient(to top, #000000, rgba(0, 0, 0, 0));
+}
+
+.studio-color-sv-thumb {
+  position: absolute;
+  width: 12px;
+  height: 12px;
+  border-radius: 50%;
+  border: 2px solid #ffffff;
+  box-shadow: 0 0 0 1px rgba(0, 0, 0, 0.65);
+  transform: translate(-50%, -50%);
+  pointer-events: none;
+}
+
+.studio-color-hue {
+  position: relative;
+  width: 100%;
+  height: 12px;
+  border-radius: 999px;
+  border: 1px solid var(--brush-border);
+  background: linear-gradient(
+    to right,
+    #ff0000 0%,
+    #ffff00 17%,
+    #00ff00 33%,
+    #00ffff 50%,
+    #0000ff 67%,
+    #ff00ff 83%,
+    #ff0000 100%
+  );
+  cursor: ew-resize;
+  touch-action: none;
+}
+
+.studio-color-hue-thumb {
+  position: absolute;
+  top: 50%;
+  width: 12px;
+  height: 12px;
+  border-radius: 50%;
+  background-color: #ffffff;
+  border: 2px solid var(--brush-window);
+  box-shadow: 0 0 0 1px rgba(0, 0, 0, 0.5);
+  transform: translate(-50%, -50%);
+  pointer-events: none;
+}
+
+.studio-color-controls {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.studio-color-preview {
+  width: 22px;
+  height: 24px;
+  border-radius: 5px;
+  border: 1px solid var(--brush-border-strong);
+  flex-shrink: 0;
+}
+
+.studio-color-hex {
+  width: 78px;
+  height: 24px;
+  padding: 2px 6px;
+  font-size: 11px;
+}
+
+.studio-color-rgb {
+  flex: 1;
+  min-width: 0;
+  font-size: 10px;
+  color: var(--brush-muted);
+  text-align: right;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.studio-color-presets {
+  display: grid;
+  grid-template-columns: repeat(10, 1fr);
+  gap: 4px;
+}
+
+.studio-color-preset-btn {
+  height: 16px;
+  padding: 0;
+  border-radius: 4px;
+  border: 1px solid var(--brush-border-strong);
+  cursor: pointer;
+}
+
+.studio-color-preset-btn:hover {
+  border-color: var(--brush-accent);
+}
+
+/* StudioTooltip (Custom Hover Tooltip) */
+.studio-tooltip {
+  position: fixed;
+  z-index: 2400;
+  max-width: 300px;
+  padding: 5px 8px;
+  border-radius: 6px;
+  background-color: var(--brush-card);
+  border: 1px solid var(--brush-border-strong);
+  color: var(--brush-text);
+  font-size: 11.5px;
+  line-height: 1.35;
+  box-shadow: var(--menu-shadow);
+  pointer-events: none;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+.studio-tooltip-top {
+  transform: translate(-50%, -100%);
+}
+
+.studio-tooltip-bottom {
+  transform: translate(-50%, 0);
+}
+
+

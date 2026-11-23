@@ -1,5 +1,7 @@
-import { StudioSelect } from "../components/StudioSelect";
 import { AnimatedBranch } from "../components/AnimatedBranch";
+import { useClosingTransition } from "../hooks/useClosingTransition";
+import { ContextMenuState, HierarchyContextMenu } from "./HierarchyContextMenu";
+import { HierarchyModals, MaterialDeleteModal, TextureSlotDropModal } from "./HierarchyModals";
 import React, {
   useCallback,
   useEffect,
@@ -45,7 +47,7 @@ import {
 } from "./store";
 import { formatHexU8 } from "../utils/format";
 
-export interface HierarchyProps {
+interface HierarchyProps {
   manifest: WmbSceneManifest;
   selection: SceneSelectionItem[];
   onSelect: (items: SceneSelectionItem[], additive?: boolean) => void;
@@ -74,37 +76,6 @@ interface FlatTreeRow {
   expandKey?: string;
 }
 
-interface ContextMenuState {
-  x: number;
-  y: number;
-  targetType:
-    | "root"
-    | "texturesHeader"
-    | "texture"
-    | "materialsHeader"
-    | "material"
-    | "bonesHeader"
-    | "bone"
-    | "meshGroupsHeader"
-    | "meshGroup"
-    | "lod"
-    | "batch";
-  texture?: TextureRefDesc;
-  material?: MaterialDesc;
-  bone?: BoneDesc;
-  meshGroup?: MeshGroupDesc;
-  lod?: LodDesc;
-  batch?: BatchDesc;
-}
-
-interface TextureSlotDropModal {
-  x: number;
-  y: number;
-  textureId: number;
-  textureName: string;
-  material: MaterialDesc;
-}
-
 interface OutlinerDropTarget {
   kind: SelectionKind;
   id: string;
@@ -121,11 +92,6 @@ interface OutlinerPointerDrag {
   curY: number;
   active: boolean;
   target: OutlinerDropTarget | null;
-}
-
-interface MaterialDeleteModal {
-  material: MaterialDesc;
-  reassignToIndex: number;
 }
 
 export const Hierarchy: React.FC<HierarchyProps> = React.memo(function Hierarchy({
@@ -192,61 +158,15 @@ export const Hierarchy: React.FC<HierarchyProps> = React.memo(function Hierarchy
   } | null>(null);
 
   const [contextMenu, setContextMenu] = useState<ContextMenuState | null>(null);
-  const [prevContextMenu, setPrevContextMenu] =
-    useState<ContextMenuState | null>(null);
-  const [closingContextMenu, setClosingContextMenu] =
-    useState<ContextMenuState | null>(null);
-
   const [slotDropModal, setSlotDropModal] =
     useState<TextureSlotDropModal | null>(null);
-  const [prevSlotDropModal, setPrevSlotDropModal] =
-    useState<TextureSlotDropModal | null>(null);
-  const [closingSlotDropModal, setClosingSlotDropModal] =
-    useState<TextureSlotDropModal | null>(null);
-
   const [matDeleteModal, setMatDeleteModal] =
     useState<MaterialDeleteModal | null>(null);
 
-  if (contextMenu !== prevContextMenu) {
-    if (contextMenu !== null) {
-      setClosingContextMenu(null);
-    } else if (prevContextMenu !== null) {
-      setClosingContextMenu(prevContextMenu);
-    }
-    setPrevContextMenu(contextMenu);
-  }
-
-  if (slotDropModal !== prevSlotDropModal) {
-    if (slotDropModal !== null) {
-      setClosingSlotDropModal(null);
-    } else if (prevSlotDropModal !== null) {
-      setClosingSlotDropModal(prevSlotDropModal);
-    }
-    setPrevSlotDropModal(slotDropModal);
-  }
-
-  useEffect(() => {
-    if (closingContextMenu === null) return;
-    const prev = closingContextMenu;
-    const timer = window.setTimeout(() => {
-      setClosingContextMenu((cur) => (cur === prev ? null : cur));
-    }, 115);
-    return () => window.clearTimeout(timer);
-  }, [closingContextMenu]);
-
-  useEffect(() => {
-    if (closingSlotDropModal === null) return;
-    const prev = closingSlotDropModal;
-    const timer = window.setTimeout(() => {
-      setClosingSlotDropModal((cur) => (cur === prev ? null : cur));
-    }, 115);
-    return () => window.clearTimeout(timer);
-  }, [closingSlotDropModal]);
-
-  const activeCtxMenu = contextMenu ?? closingContextMenu;
-  const isCtxMenuClosing = contextMenu === null && closingContextMenu !== null;
-  const activeSlotDrop = slotDropModal ?? closingSlotDropModal;
-  const isSlotDropClosing = slotDropModal === null && closingSlotDropModal !== null;
+  const { displayed: activeCtxMenu, isClosing: isCtxMenuClosing } =
+    useClosingTransition(contextMenu);
+  const { displayed: activeSlotDrop, isClosing: isSlotDropClosing } =
+    useClosingTransition(slotDropModal);
 
   useEffect(() => {
     const closeMenus = () => {
@@ -1989,625 +1909,35 @@ export const Hierarchy: React.FC<HierarchyProps> = React.memo(function Hierarchy
       </div>
 
       {/* Texture Drop onto Material -> Slot Picker Popover */}
-      {activeSlotDrop && (
-        <div
-          className={`wmb-context-menu ${isSlotDropClosing ? "closing" : ""}`}
-          style={{
-            left: Math.min(window.innerWidth - 260, activeSlotDrop.x),
-            top: Math.min(window.innerHeight - 240, activeSlotDrop.y),
-          }}
-          onClick={(e) => e.stopPropagation()}
-        >
-          <div className="wmb-ctx-header">
-            Assign {activeSlotDrop.textureName} to {activeSlotDrop.material.name}
-          </div>
-          {activeSlotDrop.material.textureSlots.map((slot) => (
-            <button
-              key={slot.slot}
-              type="button"
-              className="wmb-ctx-item"
-              onClick={() => {
-                const modal = activeSlotDrop;
-                setSlotDropModal(null);
-                void onMutateOp({
-                  op: "set_material_texture",
-                  materialId: modal.material.id,
-                  slot: slot.slot,
-                  textureId: modal.textureId,
-                });
-              }}
-            >
-              <span>
-                #{slot.slot} {slot.name}
-              </span>
-              <span className={`wmb-role-badge role-${slot.role}`}>
-                {slot.role}
-              </span>
-            </button>
-          ))}
-        </div>
-      )}
+      <HierarchyModals
+        activeSlotDrop={activeSlotDrop}
+        isSlotDropClosing={isSlotDropClosing}
+        matDeleteModal={matDeleteModal}
+        materials={manifest.materials}
+        onCloseSlotDrop={() => setSlotDropModal(null)}
+        onMutateOp={onMutateOp}
+        onChangeReassignIndex={(nextIndex) =>
+          setMatDeleteModal((prev) => (prev ? { ...prev, reassignToIndex: nextIndex } : null))
+        }
+        onCloseMatDelete={() => setMatDeleteModal(null)}
+      />
 
-      {/* Material Delete Reassignment Confirmation Modal */}
-      {matDeleteModal && (
-        <div
-          className="wmb-modal-backdrop"
-          onClick={() => setMatDeleteModal(null)}
-        >
-          <div
-            className="wmb-modal-card"
-            onClick={(e) => e.stopPropagation()}
-          >
-            <div className="wmb-modal-title">
-              Delete {matDeleteModal.material.name}?
-            </div>
-            <p className="wmb-modal-desc">
-              This material is currently used by{" "}
-              <strong>{matDeleteModal.material.usedByBatchIds.length}</strong>{" "}
-              batch(es). Choose a material to reassign those batches to before
-              deleting:
-            </p>
-            <div className="wmb-field-row">
-              <span>Reassign batches to:</span>
-              <StudioSelect
-                className="wmb-prop-select mono"
-                value={String(matDeleteModal.reassignToIndex)}
-                options={manifest.materials
-                  .filter((m) => m.index !== matDeleteModal.material.index)
-                  .map((m) => ({
-                    value: String(m.index),
-                    label: `mat${m.index} — ${m.shaderName ?? m.name}`,
-                  }))}
-                onChange={(val) =>
-                  setMatDeleteModal((prev) =>
-                    prev
-                      ? { ...prev, reassignToIndex: parseInt(val, 10) }
-                      : null
-                  )
-                }
-              />
-            </div>
-            <div className="wmb-modal-actions">
-              <button
-                type="button"
-                className="wmb-vp-btn"
-                onClick={() => setMatDeleteModal(null)}
-              >
-                Cancel
-              </button>
-              <button
-                type="button"
-                className="wmb-vp-btn danger"
-                onClick={() => {
-                  const m = matDeleteModal;
-                  setMatDeleteModal(null);
-                  void onMutateOp({
-                    op: "delete_items",
-                    items: [m.material.id],
-                    reassignMaterialTo: m.reassignToIndex,
-                  });
-                }}
-              >
-                Reassign & Delete
-              </button>
-            </div>
-          </div>
-        </div>
-      )}
-
-      {/* Context Menu */}
-      {activeCtxMenu && (
-        <div
-          key={`${activeCtxMenu.x}-${activeCtxMenu.y}`}
-          className={`wmb-context-menu ${isCtxMenuClosing ? "closing" : ""}`}
-          style={{
-            left: Math.min(window.innerWidth - 260, activeCtxMenu.x),
-            top: Math.min(window.innerHeight - 320, activeCtxMenu.y),
-          }}
-          onClick={(e) => e.stopPropagation()}
-        >
-          {activeCtxMenu.targetType === "root" && (
-            <>
-              <button
-                type="button"
-                className="wmb-ctx-item"
-                disabled={!canPasteClipboard(clipboardStatus, manifest.game).allowed}
-                data-tooltip={canPasteClipboard(clipboardStatus, manifest.game).reason}
-                onClick={() => {
-                  setContextMenu(null);
-                  void onPasteInto(null);
-                }}
-              >
-                Paste{" "}
-                {clipboardStatus
-                  ? `(${clipboardStatus.count} ${clipboardStatus.kind})`
-                  : ""}
-              </button>
-              <div className="wmb-ctx-sep" />
-              <button
-                type="button"
-                className="wmb-ctx-item"
-                onClick={() => {
-                  setContextMenu(null);
-                  void onOpenLegacyFlow("root", "import_obj");
-                }}
-              >
-                Import OBJ…
-              </button>
-              <button
-                type="button"
-                className="wmb-ctx-item"
-                onClick={() => {
-                  setContextMenu(null);
-                  void onOpenLegacyFlow("root", "export_obj");
-                }}
-              >
-                Export OBJ…
-              </button>
-              <button
-                type="button"
-                className="wmb-ctx-item"
-                onClick={() => {
-                  setContextMenu(null);
-                  void onOpenLegacyFlow("root", "import_gltf");
-                }}
-              >
-                Import GLTF…
-              </button>
-              <button
-                type="button"
-                className="wmb-ctx-item"
-                onClick={() => {
-                  setContextMenu(null);
-                  void onOpenLegacyFlow("root", "export_gltf");
-                }}
-              >
-                Export GLTF…
-              </button>
-            </>
-          )}
-
-          {activeCtxMenu.targetType === "texturesHeader" && (
-            <button
-              type="button"
-              className="wmb-ctx-item"
-              onClick={() => {
-                setContextMenu(null);
-                void onOpenLegacyFlow("textures", "import_texture");
-              }}
-            >
-              Import texture…
-            </button>
-          )}
-
-          {activeCtxMenu.targetType === "texture" && activeCtxMenu.texture && (
-            <>
-              <button
-                type="button"
-                className="wmb-ctx-item"
-                onClick={() => {
-                  const tex = activeCtxMenu.texture!;
-                  setContextMenu(null);
-                  void onOpenLegacyFlow(
-                    `tex:${tex.textureId}`,
-                    "export_texture"
-                  );
-                }}
-              >
-                Export DDS / PNG…
-              </button>
-              <button
-                type="button"
-                className="wmb-ctx-item"
-                onClick={() => {
-                  const tex = activeCtxMenu.texture!;
-                  setContextMenu(null);
-                  void onOpenLegacyFlow(
-                    `tex:${tex.textureId}`,
-                    "replace_texture"
-                  );
-                }}
-              >
-                Replace…
-              </button>
-              <div className="wmb-ctx-sep" />
-              <button
-                type="button"
-                className="wmb-ctx-item"
-                disabled={activeCtxMenu.texture.usedByMaterialIds.length === 0}
-                onClick={() => {
-                  const tex = activeCtxMenu.texture!;
-                  setContextMenu(null);
-                  onSelect(
-                    tex.usedByMaterialIds.map((id) => ({
-                      kind: "material",
-                      id,
-                    })),
-                    false
-                  );
-                }}
-              >
-                Select materials using this texture (
-                {activeCtxMenu.texture.usedByMaterialIds.length})
-              </button>
-            </>
-          )}
-
-          {activeCtxMenu.targetType === "materialsHeader" && (
-            <>
-              <button
-                type="button"
-                className="wmb-ctx-item"
-                onClick={() => {
-                  setContextMenu(null);
-                  void onMutateOp({ op: "add_material" });
-                }}
-              >
-                New material
-              </button>
-              <button
-                type="button"
-                className="wmb-ctx-item"
-                disabled={!canPasteClipboard(clipboardStatus, manifest.game, "materials").allowed}
-                data-tooltip={canPasteClipboard(clipboardStatus, manifest.game, "materials").reason}
-                onClick={() => {
-                  setContextMenu(null);
-                  void onPasteInto(null);
-                }}
-              >
-                Paste material
-              </button>
-            </>
-          )}
-
-          {activeCtxMenu.targetType === "material" && activeCtxMenu.material && (
-            <>
-              <button
-                type="button"
-                className="wmb-ctx-item"
-                onClick={() => {
-                  const mat = activeCtxMenu.material!;
-                  setContextMenu(null);
-                  void onCopyItems([mat.id]);
-                }}
-              >
-                Copy
-              </button>
-              <button
-                type="button"
-                className="wmb-ctx-item"
-                onClick={() => {
-                  const mat = activeCtxMenu.material!;
-                  setContextMenu(null);
-                  void onMutateOp({ op: "duplicate_item", itemId: mat.id });
-                }}
-              >
-                Duplicate
-              </button>
-              <button
-                type="button"
-                className="wmb-ctx-item danger"
-                disabled={manifest.materials.length <= 1}
-                onClick={() => {
-                  const mat = activeCtxMenu.material!;
-                  setContextMenu(null);
-                  void triggerDeleteSelected([{ kind: "material", id: mat.id }]);
-                }}
-              >
-                Delete…
-              </button>
-              <div className="wmb-ctx-sep" />
-              <button
-                type="button"
-                className="wmb-ctx-item"
-                disabled={activeCtxMenu.material.usedByBatchIds.length === 0}
-                onClick={() => {
-                  const mat = activeCtxMenu.material!;
-                  setContextMenu(null);
-                  onSelect(
-                    mat.usedByBatchIds.map((id) => ({ kind: "batch", id })),
-                    false
-                  );
-                }}
-              >
-                Select batches using this material (
-                {activeCtxMenu.material.usedByBatchIds.length})
-              </button>
-              <div className="wmb-ctx-sep" />
-              <div className="wmb-ctx-header">
-                Convert game profile (B1 ↔ B2 ↔ B3)
-              </div>
-              {(["b1", "b2", "b3"] as const).map((g) => (
-                <button
-                  key={g}
-                  type="button"
-                  className="wmb-ctx-item"
-                  onClick={() => {
-                    const mat = activeCtxMenu.material!;
-                    setContextMenu(null);
-                    void onConvertMaterialProfile(mat.index, g);
-                  }}
-                >
-                  Convert to {g.toUpperCase()} profile
-                </button>
-              ))}
-            </>
-          )}
-
-          {activeCtxMenu.targetType === "bonesHeader" && (
-            <>
-              <button
-                type="button"
-                className="wmb-ctx-item"
-                onClick={() => {
-                  setContextMenu(null);
-                  void onMutateOp({ op: "add_bone", parentGlobalId: -1 });
-                }}
-              >
-                Add bone
-              </button>
-              <button
-                type="button"
-                className="wmb-ctx-item"
-                onClick={() => {
-                  setContextMenu(null);
-                  void onOpenLegacyFlow("bones", "bone_preset");
-                }}
-              >
-                Apply bone mapping preset…
-              </button>
-            </>
-          )}
-
-          {activeCtxMenu.targetType === "bone" && activeCtxMenu.bone && (
-            <>
-              <button
-                type="button"
-                className="wmb-ctx-item"
-                onClick={() => {
-                  const b = activeCtxMenu.bone!;
-                  setContextMenu(null);
-                  void onMutateOp({
-                    op: "add_bone",
-                    parentGlobalId: b.globalId,
-                  });
-                }}
-              >
-                Add child bone
-              </button>
-
-              <button
-                type="button"
-                className="wmb-ctx-item danger"
-                disabled={manifest.bones.length <= 1}
-                onClick={() => {
-                  const b = activeCtxMenu.bone!;
-                  const bIdx = manifest.bones.indexOf(b);
-                  setContextMenu(null);
-                  void onMutateOp({
-                    op: "delete_items",
-                    items: [getBoneSceneId(b, bIdx >= 0 ? bIdx : 0)],
-                  });
-                }}
-              >
-                Delete bone
-              </button>
-            </>
-          )}
-
-          {activeCtxMenu.targetType === "meshGroupsHeader" && (
-            <>
-              <button
-                type="button"
-                className="wmb-ctx-item"
-                onClick={() => {
-                  setContextMenu(null);
-                  void onMutateOp({
-                    op: "add_mesh_group",
-                    name: `mesh_${manifest.meshGroups.length}`,
-                  });
-                }}
-              >
-                New mesh group
-              </button>
-              <button
-                type="button"
-                className="wmb-ctx-item"
-                disabled={
-                  !canPasteClipboard(clipboardStatus, manifest.game, "batches").allowed ||
-                  manifest.meshGroups.length === 0
-                }
-                data-tooltip={canPasteClipboard(clipboardStatus, manifest.game, "batches").reason}
-                onClick={() => {
-                  const firstTarget =
-                    manifest.meshGroups[0]?.lods[0]?.id ??
-                    manifest.meshGroups[0]?.id ??
-                    null;
-                  setContextMenu(null);
-                  void onPasteInto(firstTarget);
-                }}
-              >
-                Paste batch
-              </button>
-            </>
-          )}
-
-          {activeCtxMenu.targetType === "meshGroup" && activeCtxMenu.meshGroup && (
-            <>
-              <button
-                type="button"
-                className="wmb-ctx-item"
-                onClick={() => {
-                  const mg = activeCtxMenu.meshGroup!;
-                  setContextMenu(null);
-                  beginInlineRename(mg.id, mg.name);
-                }}
-              >
-                Rename
-              </button>
-              <button
-                type="button"
-                className="wmb-ctx-item"
-                onClick={() => {
-                  const mg = activeCtxMenu.meshGroup!;
-                  setContextMenu(null);
-                  void onMutateOp({ op: "duplicate_item", itemId: mg.id });
-                }}
-              >
-                Duplicate
-              </button>
-              <button
-                type="button"
-                className="wmb-ctx-item danger"
-                disabled={manifest.meshGroups.length <= 1}
-                onClick={() => {
-                  const mg = activeCtxMenu.meshGroup!;
-                  setContextMenu(null);
-                  void onMutateOp({ op: "delete_items", items: [mg.id] });
-                }}
-              >
-                Delete
-              </button>
-              <button
-                type="button"
-                className="wmb-ctx-item"
-                disabled={!canPasteClipboard(clipboardStatus, manifest.game, "batches").allowed}
-                data-tooltip={canPasteClipboard(clipboardStatus, manifest.game, "batches").reason}
-                onClick={() => {
-                  const mg = activeCtxMenu.meshGroup!;
-                  setContextMenu(null);
-                  void onPasteInto(mg.lods[0]?.id ?? mg.id);
-                }}
-              >
-                Paste batch here
-              </button>
-              <div className="wmb-ctx-sep" />
-              <div className="wmb-ctx-header">
-                Assign material to all batches ▸
-              </div>
-              <div className="wmb-ctx-subscroll">
-                {manifest.materials.map((m) => (
-                  <button
-                    key={m.id}
-                    type="button"
-                    className="wmb-ctx-item"
-                    onClick={() => {
-                      const mg = activeCtxMenu.meshGroup!;
-                      setContextMenu(null);
-                      void onMutateOp({
-                        op: "set_mesh_group_material",
-                        meshId: mg.id,
-                        materialIndex: m.index,
-                      });
-                    }}
-                  >
-                    mat{m.index} — {m.shaderName ?? m.name}
-                  </button>
-                ))}
-              </div>
-            </>
-          )}
-
-          {activeCtxMenu.targetType === "lod" && activeCtxMenu.lod && (
-            <>
-              <button
-                type="button"
-                className="wmb-ctx-item"
-                onClick={() => {
-                  const l = activeCtxMenu.lod!;
-                  setContextMenu(null);
-                  beginInlineRename(l.id, l.name);
-                }}
-              >
-                Rename
-              </button>
-              <button
-                type="button"
-                className="wmb-ctx-item"
-                disabled={!canPasteClipboard(clipboardStatus, manifest.game, "batches").allowed}
-                data-tooltip={canPasteClipboard(clipboardStatus, manifest.game, "batches").reason}
-                onClick={() => {
-                  const l = activeCtxMenu.lod!;
-                  setContextMenu(null);
-                  void onPasteInto(l.id);
-                }}
-              >
-                Paste batch here
-              </button>
-            </>
-          )}
-
-          {activeCtxMenu.targetType === "batch" && activeCtxMenu.batch && (
-            <>
-              <button
-                type="button"
-                className="wmb-ctx-item"
-                onClick={() => {
-                  const b = activeCtxMenu.batch!;
-                  const batchSelIds = selection
-                    .filter((s) => s.kind === "batch")
-                    .map((s) => s.id);
-                  setContextMenu(null);
-                  void onCopyItems(
-                    batchSelIds.includes(b.id) ? batchSelIds : [b.id]
-                  );
-                }}
-              >
-                Copy
-              </button>
-              <button
-                type="button"
-                className="wmb-ctx-item"
-                onClick={() => {
-                  const b = activeCtxMenu.batch!;
-                  setContextMenu(null);
-                  void onMutateOp({ op: "duplicate_item", itemId: b.id });
-                }}
-              >
-                Duplicate
-              </button>
-              <button
-                type="button"
-                className="wmb-ctx-item danger"
-                onClick={() => {
-                  const b = activeCtxMenu.batch!;
-                  const batchSel = selection.filter((s) => s.kind === "batch");
-                  setContextMenu(null);
-                  void triggerDeleteSelected(
-                    batchSel.some((x) => x.id === b.id)
-                      ? batchSel
-                      : [{ kind: "batch", id: b.id }]
-                  );
-                }}
-              >
-                Delete
-              </button>
-              <div className="wmb-ctx-sep" />
-              <div className="wmb-ctx-header">Assign material ▸</div>
-              <div className="wmb-ctx-subscroll">
-                {manifest.materials.map((m) => (
-                  <button
-                    key={m.id}
-                    type="button"
-                    className="wmb-ctx-item"
-                    onClick={() => {
-                      const b = activeCtxMenu.batch!;
-                      setContextMenu(null);
-                      void onMutateOp({
-                        op: "set_batch_material",
-                        batchId: b.id,
-                        materialIndex: m.index,
-                      });
-                    }}
-                  >
-                    mat{m.index} — {m.shaderName ?? m.name}
-                  </button>
-                ))}
-              </div>
-            </>
-          )}
-        </div>
-      )}
+      <HierarchyContextMenu
+        menu={activeCtxMenu}
+        isClosing={isCtxMenuClosing}
+        manifest={manifest}
+        selection={selection}
+        clipboardStatus={clipboardStatus}
+        onClose={() => setContextMenu(null)}
+        onSelect={onSelect}
+        onMutateOp={onMutateOp}
+        onCopyItems={onCopyItems}
+        onPasteInto={onPasteInto}
+        onConvertMaterialProfile={onConvertMaterialProfile}
+        onOpenLegacyFlow={onOpenLegacyFlow}
+        beginInlineRename={beginInlineRename}
+        triggerDeleteSelected={triggerDeleteSelected}
+      />
     </div>
   );
 });

@@ -1,6 +1,6 @@
 import React from "react";
 
-export interface StudioRadioProps {
+interface StudioRadioProps {
   checked: boolean;
   onChange: () => void;
   disabled?: boolean;

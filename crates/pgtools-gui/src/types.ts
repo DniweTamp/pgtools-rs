@@ -169,6 +169,7 @@ export interface DocumentOutline {
   redo_label: string | null;
   tree: AssetTreeNode[];
   pending_uvd_encodes?: PendingUvdSheetInfo[];
+  status_message?: string | null;
 }
 
 export interface MipLevelDesc {

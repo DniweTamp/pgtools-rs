@@ -2,7 +2,7 @@ import { MaterialDesc, TextureSlotDesc } from "../../contract";
 import { RenderQueueBucket, STUDIO_VERTEX_SHADER } from "../common";
 import { B3_PBR_COMMON_GLSL } from "./pbrCommon";
 
-export interface B3SamplerSlotBinding {
+interface B3SamplerSlotBinding {
   albedo?: TextureSlotDesc;
   normal?: TextureSlotDesc;
   mask?: TextureSlotDesc;
@@ -1998,7 +1998,7 @@ void main() {
 }
 `;
 
-export interface B3ResolvedFamily {
+interface B3ResolvedFamily {
   id: string;
   fragmentShader: string;
   queue: RenderQueueBucket;
@@ -2016,7 +2016,7 @@ export interface B3ResolvedFamily {
  * or returns `null` if the shader name is unknown/unimplemented so the registry falls back to
  * `FALLBACK_FRAGMENT_SHADER` (`isFallback: true`, showing the `⚠` badge in `Hierarchy.tsx`).
  */
-export function resolveB3ShaderFamily(
+function resolveB3ShaderFamily(
   shaderName: string | null
 ): B3ResolvedFamily | null {
   const raw = (shaderName ?? "").trim();

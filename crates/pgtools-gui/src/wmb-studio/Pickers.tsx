@@ -124,7 +124,7 @@ export function isSyntheticTexName(name: string | undefined | null): boolean {
  * Classify a material sampler slot label/role/index into a concise role badge
  * (e.g., "Albedo", "Normal", "Mask", "Spec", "Env", "LUT").
  */
-export function classifySamplerRole(
+function classifySamplerRole(
   slotLabel: string | undefined,
   slotIndex: number,
   slotRole?: string
@@ -227,7 +227,7 @@ function usePortalDropdownPosition(
   return pos;
 }
 
-export interface MaterialPickerPopoverProps {
+interface MaterialPickerPopoverProps {
   materials: MaterialDesc[];
   textures: TextureRefDesc[];
   currentMatIdx: number;
@@ -443,7 +443,7 @@ export const MaterialPickerPopover: React.FC<MaterialPickerPopoverProps> = ({
   );
 };
 
-export interface TextureSlotPickerPopoverProps {
+interface TextureSlotPickerPopoverProps {
   slotIndex: number;
   slotLabel: string;
   slotRole?: string;

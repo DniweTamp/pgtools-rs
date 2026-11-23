@@ -5,7 +5,7 @@ import { IconFolder } from "../components/Icons";
 import { FileBrowserApi } from "../hooks/useFileBrowser";
 import { ContextMenuState } from "../types";
 
-export interface FileBrowserPanelProps {
+interface FileBrowserPanelProps {
   fb: FileBrowserApi;
   hideUnsupported: boolean;
   setHideUnsupported: (b: boolean) => void;

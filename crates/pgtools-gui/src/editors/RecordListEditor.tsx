@@ -7,14 +7,14 @@ import React, {
 } from "react";
 import { createPortal } from "react-dom";
 
-export interface RecordCellCtx {
+interface RecordCellCtx {
   index: number;
   entry: any;
   /** Clone-and-replace the entry at `index` through the draft. */
   patch: (mutator: (entry: any) => void) => void;
 }
 
-export interface RecordColumn {
+interface RecordColumn {
   id: string;
   header: React.ReactNode;
   width?: number;
@@ -43,7 +43,7 @@ export interface RecordListConfig {
   sizeBytes?: (count: number) => number | null;
 }
 
-export interface RecordListEditorProps {
+interface RecordListEditorProps {
   config: RecordListConfig;
   draft: any;
   /** Original struct JSON from the inspector, for the unsaved-changes check and Revert. */

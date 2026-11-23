@@ -1,10 +1,10 @@
 import { BxmXmlNode } from "../types";
 
-export function stripInvalidXmlChars(s: string): string {
+function stripInvalidXmlChars(s: string): string {
   return (s ?? "").replace(/[\x00-\x08\x0B\x0C\x0E-\x1F]/g, "");
 }
 
-export function escapeXmlAttr(s: string): string {
+function escapeXmlAttr(s: string): string {
   return stripInvalidXmlChars(s)
     .replace(/&/g, "&amp;")
     .replace(/</g, "&lt;")
@@ -13,7 +13,7 @@ export function escapeXmlAttr(s: string): string {
     .replace(/'/g, "&apos;");
 }
 
-export function escapeXmlText(s: string): string {
+function escapeXmlText(s: string): string {
   return stripInvalidXmlChars(s)
     .replace(/&/g, "&amp;")
     .replace(/</g, "&lt;")
@@ -64,7 +64,7 @@ export function safeXmlName(name: string, fallback = "Node"): string {
   return fallback;
 }
 
-export function serializeBxmNodeToXml(node: BxmXmlNode, indent = 0): string {
+function serializeBxmNodeToXml(node: BxmXmlNode, indent = 0): string {
   const pad = "  ".repeat(indent);
   const tag = safeXmlName(node.name || "Node", "Node");
   const attrs = [...(node.attributes || [])]

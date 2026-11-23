@@ -4,7 +4,7 @@ import React, {
   useRef,
   useState,
 } from "react";
-import { invoke } from "@tauri-apps/api/core";
+import { inspectAssetNode, mutateWmbNode } from "../api/tauri";
 import {
   ClipboardStatus,
   convertMaterialBetweenGames,
@@ -35,7 +35,7 @@ import {
 import { Viewport, ViewportHandle } from "./Viewport";
 import { DocumentOutline } from "../types";
 
-export interface WorkspaceProps {
+interface WorkspaceProps {
   nodeId: string;
   docGeneration: number;
   theme: string;
@@ -236,11 +236,7 @@ export const Workspace: React.FC<WorkspaceProps> = React.memo(function Workspace
   const handleDirectWmbMutate = useCallback(
     async (operation: string, payload: Record<string, unknown>) => {
       try {
-        const outline = await invoke<DocumentOutline>("mutate_wmb_node", {
-          nodeId,
-          operation,
-          payload,
-        });
+        const outline = await mutateWmbNode(nodeId, operation, payload);
         // Note: onOutlineUpdated increments docGeneration, which triggers the refreshScene effect (#15)
         onOutlineUpdated(outline, `${operation} applied`);
       } catch (err) {
@@ -526,14 +522,14 @@ export const Workspace: React.FC<WorkspaceProps> = React.memo(function Workspace
           nodeId,
           `mat:${materialIndex}`
         );
-        const inspected = await invoke<{
+        const inspected = await inspectAssetNode<{
           wmb?: {
             is_wmb3: boolean;
             is_bayo2: boolean;
             material_decoded?: Record<string, unknown>;
             wmb3_material?: Record<string, unknown>;
           };
-        }>("inspect_asset_node", {
+        }>({
           nodeId: legacyId,
           mipIndex: 0,
           channel: "RGBA",

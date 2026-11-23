@@ -1,12 +1,13 @@
+pub(crate) use crate::common::{
+    DocSnapshot, DocumentOutline, PendingUvdSheetInfo, SaveEncodeOptions,
+};
 use crate::settings::{load_settings_from_disk, save_settings_to_disk, StudioSettings};
-use crate::vfs::{build_outline_from_session, DocumentOutline};
+use crate::vfs::{build_outline_from_parts, OutlineBuildContext};
 use pgtools_core::{
-    dat::DatFile,
     scene::UidMap,
     scene_ops::WmbClipboardData,
     wtb::WtbFile,
 };
-use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, HashMap, VecDeque};
 use std::fs;
 use std::panic::{catch_unwind, AssertUnwindSafe};
@@ -15,111 +16,21 @@ use std::sync::{Arc, Mutex, MutexGuard};
 use std::time::{SystemTime, UNIX_EPOCH};
 use tauri::State;
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct PendingUvdSheetInfo {
-    pub wta_container_id: String,
-    pub wta_name: String,
-    pub texture_id: u32,
-    pub texture_id_hex: String,
-    pub group_name: String,
-    pub width: u32,
-    pub height: u32,
-    pub original_format: String,
-    pub game_profile: String,
-    pub has_confirmed_xt1_flags: bool,
-    #[serde(skip)]
-    pub lossless_sheet: Option<Arc<image::RgbaImage>>,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct SaveEncodeOptions {
-    pub encode_format: String,
-    pub quality: String,
-    pub generate_mips: bool,
-    pub solidify: bool,
-    pub make_opaque: bool,
-    pub sync_flags: bool,
-}
-
-#[derive(Debug, Clone)]
-pub(crate) enum DocSnapshot {
-    SingleFile(Arc<Vec<u8>>),
-    SplitWtaWtp {
-        wta: Arc<Vec<u8>>,
-        wtp: Arc<Vec<u8>>,
-    },
-    PairedDatDtt {
-        dat: Arc<Vec<u8>>,
-        dtt: Arc<Vec<u8>>,
-    },
-}
-
-impl DocSnapshot {
-    pub(crate) fn single(bytes: Vec<u8>) -> Self {
-        Self::SingleFile(Arc::new(bytes))
-    }
-
-    pub(crate) fn split(wta: Vec<u8>, wtp: Vec<u8>) -> Self {
-        Self::SplitWtaWtp {
-            wta: Arc::new(wta),
-            wtp: Arc::new(wtp),
-        }
-    }
-
-    pub(crate) fn paired(dat: Vec<u8>, dtt: Vec<u8>) -> Self {
-        Self::PairedDatDtt {
-            dat: Arc::new(dat),
-            dtt: Arc::new(dtt),
-        }
-    }
-
-    pub(crate) fn byte_size(&self) -> usize {
-        match self {
-            Self::SingleFile(b) => b.len(),
-            Self::SplitWtaWtp { wta, wtp } => wta.len() + wtp.len(),
-            Self::PairedDatDtt { dat, dtt } => dat.len() + dtt.len(),
-        }
-    }
-
-    /// Apply forced custom DAT save alignment (`Some(align)`) to top-level `DAT` / `PairedDatDtt`
-    /// snapshots at save time. When `custom_align` is `None`, returns `self.clone()` untouched so
-    /// in-memory batch alignments are preserved and clean/already-aligned archives are not re-serialized.
-    pub(crate) fn apply_dat_save_alignment(&self, custom_align: Option<usize>) -> Self {
-        let Some(align) = custom_align else {
-            return self.clone();
-        };
-        match self {
-            Self::SingleFile(bytes) => {
-                if bytes.len() >= 0x20 && (&bytes[0..4] == b"DAT\0" || &bytes[0..4] == b"\0TAD") {
-                    if let Ok(dat) = DatFile::from_bytes(bytes) {
-                        return Self::SingleFile(Arc::new(dat.to_bytes_with_alignment(Some(align))));
-                    }
-                }
-                self.clone()
-            }
-            Self::PairedDatDtt { dat, dtt } => {
-                let next_dat = if dat.len() >= 0x20 && (&dat[0..4] == b"DAT\0" || &dat[0..4] == b"\0TAD") {
-                    DatFile::from_bytes(dat)
-                        .map(|d| Arc::new(d.to_bytes_with_alignment(Some(align))))
-                        .unwrap_or_else(|_| dat.clone())
-                } else {
-                    dat.clone()
-                };
-                let next_dtt = if dtt.len() >= 0x20 && (&dtt[0..4] == b"DAT\0" || &dtt[0..4] == b"\0TAD") {
-                    DatFile::from_bytes(dtt)
-                        .map(|d| Arc::new(d.to_bytes_with_alignment(Some(align))))
-                        .unwrap_or_else(|_| dtt.clone())
-                } else {
-                    dtt.clone()
-                };
-                Self::PairedDatDtt {
-                    dat: next_dat,
-                    dtt: next_dtt,
-                }
-            }
-            Self::SplitWtaWtp { .. } => self.clone(),
-        }
-    }
+pub(crate) fn build_outline_from_session(sess: &StudioSession) -> Result<DocumentOutline, String> {
+    build_outline_from_parts(OutlineBuildContext {
+        doc_path: sess.doc_path.as_deref(),
+        dtt_path: sess.dtt_path.as_deref(),
+        wtp_path: sess.wtp_path.as_deref(),
+        current: sess.current.as_ref(),
+        saved_snapshot: sess.saved_snapshot.as_ref(),
+        oodle_path: sess.settings.oodle_path(),
+        dirty: sess.dirty,
+        can_undo: !sess.undo_stack.is_empty(),
+        can_redo: !sess.redo_stack.is_empty(),
+        undo_label: sess.undo_stack.last().map(|u| u.description.clone()),
+        redo_label: sess.redo_stack.last().map(|u| u.description.clone()),
+        pending_uvd_encodes: sess.pending_uvd_sheets.values().cloned().collect(),
+    })
 }
 
 #[derive(Debug, Clone)]
@@ -306,7 +217,7 @@ pub(crate) fn atomic_write_file(dest: &Path, bytes: &[u8]) -> Result<(), String>
     })
 }
 
-pub(crate) fn atomic_write_pair(
+fn atomic_write_pair(
     dest1: &Path,
     bytes1: &[u8],
     dest2: &Path,
@@ -550,12 +461,22 @@ pub fn open_document(path: String, state: State<'_, AppState>) -> Result<Documen
         .map_err(|_| "Internal panic while parsing document outline".to_string())?
 }
 
-#[tauri::command]
-pub fn save_document(
+pub(crate) fn save_document_core<F>(
     output_path: Option<String>,
     encode_options: Option<SaveEncodeOptions>,
     state: State<'_, AppState>,
-) -> Result<DocumentOutline, String> {
+    reencode_pending_uvd: F,
+) -> Result<DocumentOutline, String>
+where
+    F: FnOnce(
+        &DocSnapshot,
+        &[PendingUvdSheetInfo],
+        &SaveEncodeOptions,
+        Option<&Path>,
+        Option<&Path>,
+        Option<usize>,
+    ) -> Result<DocSnapshot, String>,
+{
     // Snapshot under the lock, then drop it for the duration of recompression + disk I/O so other
     // commands (preview, list, undo) are not blocked on large document saves.
     let (dest, mut raw_snap, expected_revision, dat_align, pending_list, oodle_path, nvtt_path) = {
@@ -594,7 +515,7 @@ pub fn save_document(
             } else {
                 Some(Path::new(nvtt_path.as_str()))
             };
-            raw_snap = crate::uvd_cmd::reencode_pending_uvd_sheets_for_save(
+            raw_snap = reencode_pending_uvd(
                 &raw_snap,
                 &pending_list,
                 opts,

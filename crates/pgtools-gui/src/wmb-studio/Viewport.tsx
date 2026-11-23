@@ -49,7 +49,7 @@ export interface ViewportHandle {
   getShaderStatuses: () => Map<string, MaterialShaderStatus>;
 }
 
-export interface ViewportProps {
+interface ViewportProps {
   manifest: WmbSceneManifest | null;
   geomCache: WmbGeometryCache;
   selection: SceneSelectionItem[];

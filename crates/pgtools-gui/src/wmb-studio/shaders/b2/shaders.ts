@@ -6,7 +6,7 @@ import {
   STUDIO_VERTEX_SHADER,
 } from "../common";
 
-export interface B2SamplerSlotBinding {
+interface B2SamplerSlotBinding {
   albedo?: TextureSlotDesc;
   normal?: TextureSlotDesc;
   rss?: TextureSlotDesc;

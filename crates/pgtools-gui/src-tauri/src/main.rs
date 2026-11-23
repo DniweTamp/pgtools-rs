@@ -1,13 +1,18 @@
 // Prevents additional console window on Windows in release, DO NOT REMOVE!!
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
+mod common;
+mod container_cmd;
 mod formats_cmd;
 mod fs_ops;
 mod session;
 mod settings;
+mod settings_cmd;
 mod texture_cmd;
 mod uvd_cmd;
+mod uvd_resolve;
 mod vfs;
+mod wmb_mutate;
 mod wmb_scene;
 #[cfg(test)]
 mod tests;
@@ -110,9 +115,9 @@ fn main() {
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
-            settings::get_studio_settings,
-            settings::save_studio_settings,
-            settings::validate_oodle_dll,
+            settings_cmd::get_studio_settings,
+            settings_cmd::save_studio_settings,
+            settings_cmd::validate_oodle_dll,
             fs_ops::pick_file_dialog,
             fs_ops::pick_multiple_files_dialog,
             fs_ops::save_file_dialog,
@@ -120,15 +125,14 @@ fn main() {
             fs_ops::reveal_in_explorer,
             fs_ops::drag_out_asset_node,
             fs_ops::list_directory,
-            settings::get_recent_files,
+            settings_cmd::get_recent_files,
             session::open_document,
-            session::save_document,
+            formats_cmd::save_document,
             session::undo_document,
             session::redo_document,
             formats_cmd::inspect_asset_node,
             texture_cmd::mutate_texture_node,
             texture_cmd::export_texture_action,
-            texture_cmd::get_nvtt_status,
             texture_cmd::get_cubemap_faces_preview,
             texture_cmd::get_texture_gpu_surface,
             texture_cmd::get_texture_gpu_cubemap,
@@ -141,11 +145,11 @@ fn main() {
             uvd_cmd::mutate_uvd_node,
             uvd_cmd::extract_uvd_action,
             wmb_scene::convert_material_action,
-            wmb_scene::mutate_wmb_node,
+            wmb_mutate::mutate_wmb_node,
             formats_cmd::mutate_bxm_node,
             formats_cmd::mutate_struct_node,
             formats_cmd::mutate_cloth_node,
-            vfs::mutate_container_node,
+            container_cmd::mutate_container_node,
             fs_ops::run_file_context_operation,
             fs_ops::run_batch_dat_align_action,
             fs_ops::pack_folder_to_pkz,

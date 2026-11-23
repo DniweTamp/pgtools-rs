@@ -1,5 +1,5 @@
 import { useCallback, useMemo, useRef, useState } from "react";
-import { invoke } from "@tauri-apps/api/core";
+import { listDirectory } from "../api/tauri";
 import { FileSortCol, FsEntry } from "../types";
 import { compileGlobFilter } from "../utils/format";
 
@@ -67,9 +67,7 @@ export function useFileBrowser(opts: UseFileBrowserOptions): FileBrowserApi {
   const loadDirectory = useCallback(
     async (target?: string) => {
       try {
-        const [resolved, list] = await invoke<[string, FsEntry[]]>("list_directory", {
-          dirPath: target ?? null,
-        });
+        const [resolved, list] = await listDirectory(target ?? null);
         setCurrentDir(resolved);
         setDirInput(resolved);
         setFsEntries(list);

@@ -34,7 +34,7 @@ export interface DebugSlotPreview {
   channel: "RGB" | "R" | "G" | "B" | "A";
 }
 
-export interface CachedVertexBufferData {
+interface CachedVertexBufferData {
   geometryHash: string;
   vertexCount: number;
   position: Float32Array;
@@ -177,7 +177,7 @@ export function parseTextureSceneId(id: string): number | null {
   return Number.isNaN(parsed) ? null : parsed >>> 0;
 }
 
-export const LOD_PRIORITY_ORDER = [5, 0, 1, 2, 3, 4, -1] as const;
+const LOD_PRIORITY_ORDER = [5, 0, 1, 2, 3, 4, -1] as const;
 
 export function isNullShaderName(
   shaderName: string | null | undefined
@@ -186,7 +186,7 @@ export function isNullShaderName(
   return shaderName.trim().toLowerCase().startsWith("null00");
 }
 
-export function getLodPriority(level: number): number {
+function getLodPriority(level: number): number {
   const idx = (LOD_PRIORITY_ORDER as readonly number[]).indexOf(level);
   return idx >= 0 ? idx : LOD_PRIORITY_ORDER.length + Math.abs(level);
 }
@@ -344,7 +344,7 @@ export function filterValidSelection(
   return valid.length === 0 ? [{ kind: "root", id: "root" }] : valid;
 }
 
-export interface BoneHierarchyGraph {
+interface BoneHierarchyGraph {
   childrenByParentIdx: Map<number, Array<{ bone: BoneDesc; idx: number }>>;
   indexByGlobalId: Map<number, number>;
   parentIdxByBoneIdx: Map<number, number>;
@@ -525,7 +525,7 @@ export function computeSelectionBoundingBox(
   return [minX, minY, minZ, maxX, maxY, maxZ];
 }
 
-export interface TextureSlotDebugRow {
+interface TextureSlotDebugRow {
   slotIndex: number;
   name: string;
   role: TextureSlotRole;

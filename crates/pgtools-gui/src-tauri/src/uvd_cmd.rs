@@ -1,14 +1,17 @@
-use crate::session::{
-    lock_session, record_mutation, AppState, DocSnapshot, PendingUvdSheetInfo, SaveEncodeOptions,
-};
+use crate::common::{DocSnapshot, DocumentOutline, MipLevelDesc, PendingUvdSheetInfo, SaveEncodeOptions};
+use crate::session::{build_outline_from_session, lock_session, record_mutation, AppState};
 use crate::texture_cmd::{
     build_texture_node_view, encode_image_for_bank_entry, parse_requested_texture_format,
     TextureNodeView,
 };
+pub(crate) use crate::uvd_resolve::parse_uvd_leaf;
+use crate::uvd_resolve::{
+    collect_sibling_wta_banks, find_first_available_wta_texture, find_wta_texture_by_id,
+    SiblingWtaBank,
+};
 use crate::vfs::{
-    build_outline_from_session, compute_reorder_target, detect_file_format_tag,
-    is_bntx_blob, resolve_subblob, split_container_and_leaf,
-    write_back_subblob_with_align, DocumentOutline,
+    compute_reorder_target, is_bntx_blob, resolve_subblob,
+    split_container_and_leaf, write_back_subblob_with_align,
 };
 use base64::{engine::general_purpose::STANDARD as BASE64, Engine as _};
 use image::{Rgba, RgbaImage};
@@ -87,104 +90,8 @@ pub struct UvdContextView {
 }
 
 /// Information about a located WTA/WTB texture bank inside the same parent container as a `.uvd`.
-#[derive(Debug, Clone)]
-pub(crate) struct SiblingWtaBank {
-    pub container_parts: Vec<String>,
-    pub container_id: String,
-    pub wta_name: String,
-    pub wtb: WtbFile,
-    pub is_standalone_bntx: bool,
-}
-
-/// Parse `leaf` of a UVD node into `(Option<group_idx>, Option<item_idx>)`.
-pub(crate) fn parse_uvd_leaf(leaf: &str) -> (Option<usize>, Option<usize>) {
-    if leaf.is_empty() {
-        return (None, None);
-    }
-    let mut grp_idx = None;
-    let mut item_idx = None;
-    for seg in leaf.split('/') {
-        if let Some(g_str) = seg.strip_prefix("uvdgrp:") {
-            grp_idx = g_str.parse::<usize>().ok();
-        } else if let Some(i_str) = seg.strip_prefix("uvditem:") {
-            item_idx = i_str.parse::<usize>().ok();
-        }
-    }
-    (grp_idx, item_idx)
-}
-
-/// Discover all `.wta` / `.wtb` / `.bntx` texture banks in the same parent container as `uvd_container_parts`.
-pub(crate) fn collect_sibling_wta_banks(
-    snap: &DocSnapshot,
-    uvd_container_parts: &[&str],
-    oodle_opt: Option<&Path>,
-) -> Vec<SiblingWtaBank> {
-    let mut banks = Vec::new();
-    if uvd_container_parts.is_empty() {
-        return banks;
-    }
-    let parent_parts = &uvd_container_parts[..uvd_container_parts.len() - 1];
-    let parent_id = parent_parts.join("/");
-    let Ok((_, parent_bytes, _, _)) = resolve_subblob(snap, &parent_id, oodle_opt) else {
-        return banks;
-    };
-
-    if let Ok(dat) = DatFile::from_bytes(&parent_bytes) {
-        for (idx, entry) in dat.entries.iter().enumerate() {
-            let tag = detect_file_format_tag(&entry.name, &entry.data);
-            if matches!(tag, "WTB" | "BNTX") {
-                let mut c_parts: Vec<String> =
-                    parent_parts.iter().map(|s| (*s).to_string()).collect();
-                c_parts.push(format!("dat:{idx}"));
-                let cid = c_parts.join("/");
-                if let Ok((wta_name, wta_bytes, wtp_bytes, _)) =
-                    resolve_subblob(snap, &cid, oodle_opt)
-                {
-                    let is_bntx = is_bntx_blob(&wta_bytes);
-                    if let Ok(wtb) = WtbFile::from_bytes(&wta_bytes, wtp_bytes.as_deref()) {
-                        banks.push(SiblingWtaBank {
-                            container_parts: c_parts,
-                            container_id: cid,
-                            wta_name,
-                            wtb,
-                            is_standalone_bntx: is_bntx,
-                        });
-                    }
-                }
-            }
-        }
-    }
-    banks
-}
-
-/// Find the WTA bank and texture entry index whose `texture_id == target_id`.
-pub(crate) fn find_wta_texture_by_id(
-    banks: &[SiblingWtaBank],
-    target_id: u32,
-) -> Option<(usize, usize)> {
-    for (bi, bank) in banks.iter().enumerate() {
-        for (ei, entry) in bank.wtb.entries.iter().enumerate() {
-            if entry.texture_id == Some(target_id) {
-                return Some((bi, ei));
-            }
-        }
-    }
-    None
-}
-
-/// Find the first available WTA texture across `banks` (used as fallback when no matching ID exists).
-pub(crate) fn find_first_available_wta_texture(banks: &[SiblingWtaBank]) -> Option<(usize, usize)> {
-    for (bi, bank) in banks.iter().enumerate() {
-        if !bank.wtb.entries.is_empty() {
-            return Some((bi, 0));
-        }
-    }
-    None
-}
-
-/// Render a clean wireframe/checkerboard atlas layout preview PNG for a UVD group when its WTA
 /// texture payload is missing (e.g. header-only `ui_*.dat` without `.dtt`) or when no WTA matches.
-pub(crate) fn render_uvd_group_wireframe_preview(
+fn render_uvd_group_wireframe_preview(
     group: &UvdGroup,
     sheet_w: u32,
     sheet_h: u32,
@@ -242,28 +149,6 @@ pub(crate) fn render_uvd_group_wireframe_preview(
 
 /// If `node_id` points to a `uvdgrp:<g_idx>`, resolve it to its matched WTA texture node ID
 /// (`<wta_container_id>/tex:<entry_idx>`) so existing Texture Editor actions work directly on the group's sheet.
-pub(crate) fn resolve_uvd_group_to_wta_tex_node(
-    snap: &DocSnapshot,
-    node_id: &str,
-    oodle_opt: Option<&Path>,
-) -> Option<String> {
-    let (container_parts, leaf) = split_container_and_leaf(node_id);
-    let (Some(g_idx), None) = parse_uvd_leaf(leaf) else {
-        return None;
-    };
-    let container_id = container_parts.join("/");
-    let (_, sub_bytes, _, _) = resolve_subblob(snap, &container_id, oodle_opt).ok()?;
-    let uvd = UvdFile::from_bytes(&sub_bytes).ok()?;
-    let group = uvd.groups.get(g_idx)?;
-    let banks = collect_sibling_wta_banks(snap, &container_parts, oodle_opt);
-    let (bi, ei) = find_wta_texture_by_id(&banks, group.id)?;
-    let bank = &banks[bi];
-    if bank.container_id.is_empty() || bank.container_id == "root" {
-        Some(format!("tex:{ei}"))
-    } else {
-        Some(format!("{}/tex:{ei}", bank.container_id))
-    }
-}
 
 fn build_group_summary(
     uvd_node_id: &str,
@@ -532,7 +417,7 @@ pub(crate) fn build_uvd_inspect_payload(
                 layer_count: 1,
                 current_layer: 0,
                 mip_count: 1,
-                mips: vec![crate::texture_cmd::MipLevelDesc {
+                mips: vec![MipLevelDesc {
                     index: 0,
                     label: format!("mip 0 ({gw}x{gh})"),
                     width: gw,
@@ -689,7 +574,7 @@ pub(crate) fn build_uvd_inspect_payload(
         layer_count: 1,
         current_layer: 0,
         mip_count: 1,
-        mips: vec![crate::texture_cmd::MipLevelDesc {
+        mips: vec![MipLevelDesc {
             index: 0,
             label: format!("sprite ({crop_w}x{crop_h})"),
             width: crop_w,
@@ -795,7 +680,7 @@ fn extract_or_init_group_sprites(
 }
 
 /// Default `TextureFormat` for a `WtbGameProfile` when an entry's original format is not known.
-pub(crate) fn default_format_for_profile(profile: WtbGameProfile) -> TextureFormat {
+fn default_format_for_profile(profile: WtbGameProfile) -> TextureFormat {
     match profile {
         WtbGameProfile::SwitchXt1 | WtbGameProfile::Bayo2SwitchBntx => {
             TextureFormat::Astc(4, 4, true)
@@ -1364,7 +1249,7 @@ pub fn mutate_uvd_node(
                         uvd.groups.swap(gi - 1, gi);
                     }
                 } else {
-                    if *indices.last().unwrap() + 1 >= uvd.groups.len() {
+                    if indices.last().copied().ok_or("No groups selected")? + 1 >= uvd.groups.len() {
                         return Err("Selected groups are already at bottom".into());
                     }
                     for &gi in indices.iter().rev() {
@@ -1685,7 +1570,7 @@ pub fn mutate_uvd_node(
                         sprites.swap(ii - 1, ii);
                     }
                 } else {
-                    if *indices.last().unwrap() + 1 >= sprites.len() {
+                    if indices.last().copied().ok_or("No items selected")? + 1 >= sprites.len() {
                         return Err("Selected items are already at bottom".into());
                     }
                     for &ii in indices.iter().rev() {
@@ -1917,7 +1802,7 @@ pub fn extract_uvd_action(
                 let s = decode_sheet_by_id(item.group_id, &item.name)?;
                 sheet_cache.insert(item.group_id, s);
             }
-            let sheet = sheet_cache.get(&item.group_id).unwrap();
+            let sheet = sheet_cache.get(&item.group_id).ok_or("Failed to cache decoded UVD sheet")?;
             let clean_item = validate_single_entry_name(&item.name)
                 .unwrap_or_else(|_| format!("item_0x{:08X}", item.id));
             let sprite = crop_sprite_from_sheet(sheet, item);

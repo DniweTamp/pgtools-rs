@@ -181,7 +181,7 @@ export function isB1GlobalSpecLutId(texId: number): boolean {
   return (texId >>> 0) === 0x80000006;
 }
 
-export interface B1SamplerSlotBinding {
+interface B1SamplerSlotBinding {
   Color_1?: TextureSlotDesc;
   reliefmap?: TextureSlotDesc;
   envmap?: TextureSlotDesc;

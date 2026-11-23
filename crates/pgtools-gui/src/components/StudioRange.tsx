@@ -1,6 +1,6 @@
 import React, { useRef, useState } from "react";
 
-export interface StudioRangeProps {
+interface StudioRangeProps {
   min: number;
   max: number;
   step?: number;

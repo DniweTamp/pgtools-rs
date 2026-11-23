@@ -1,6 +1,6 @@
 import React, { useEffect, useMemo, useState } from "react";
 import { IconCheck } from "../components/Icons";
-import { invoke } from "@tauri-apps/api/core";
+import { inspectAssetNode } from "../api/tauri";
 import {
   BatchDesc,
   BoneDesc,
@@ -36,7 +36,7 @@ import {
   SceneSelectionItem,
 } from "./store";
 
-export interface PropertiesProps {
+interface PropertiesProps {
   manifest: WmbSceneManifest;
   selection: SceneSelectionItem[];
   onSelect: (items: SceneSelectionItem[], additive?: boolean) => void;
@@ -92,7 +92,7 @@ export const Properties: React.FC<PropertiesProps> = React.memo(function Propert
     (async () => {
       try {
         const legacyId = await resolveLegacyNode(manifest.nodeId, "root");
-        const res = await invoke<{
+        const res = await inspectAssetNode<{
           wmb?: {
             endian: string;
             data?: {
@@ -100,7 +100,7 @@ export const Properties: React.FC<PropertiesProps> = React.memo(function Propert
               flags?: number;
             };
           };
-        }>("inspect_asset_node", {
+        }>({
           nodeId: legacyId,
           mipIndex: 0,
           channel: "RGBA",

@@ -2,18 +2,18 @@ import React, { useEffect, useLayoutEffect, useMemo, useRef, useState } from "re
 import { createPortal } from "react-dom";
 import { IconCheck } from "./Icons";
 
-export interface StudioSelectOption {
+interface StudioSelectOption {
   value: string;
   label: string;
   disabled?: boolean;
 }
 
-export interface StudioSelectGroup {
+interface StudioSelectGroup {
   label: string;
   options: StudioSelectOption[];
 }
 
-export interface StudioSelectProps {
+interface StudioSelectProps {
   value: string;
   options?: StudioSelectOption[];
   groups?: StudioSelectGroup[];

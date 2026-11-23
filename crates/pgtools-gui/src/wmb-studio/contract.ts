@@ -74,7 +74,7 @@ export interface BatchDesc {
   uB?: number;
 }
 
-export interface VertexBufferDesc {
+interface VertexBufferDesc {
   index: number;
   vertexCount: number;
   geometryHash: string;
@@ -173,7 +173,7 @@ function align4(n: number): number {
  * Decode a binary scene response (`u32 LE manifest_byte_length | UTF-8 JSON | 4B pad | binary region`)
  * into `{ manifest, binary }`.
  */
-export function decodeWmbSceneBlob(raw: ArrayBuffer): WmbScenePayload {
+function decodeWmbSceneBlob(raw: ArrayBuffer): WmbScenePayload {
   if (raw.byteLength < 4) {
     throw new Error("Scene response buffer is shorter than 4-byte header");
   }
@@ -194,7 +194,7 @@ export function decodeWmbSceneBlob(raw: ArrayBuffer): WmbScenePayload {
  * Decode a `WTX1` binary texture response (`u32 magic 0x31585457 | u32 width | u32 height | u32 flags | RGBA8`)
  * into `{ width, height, cube, rgba }`.
  */
-export function decodeWtx1TextureBlob(raw: ArrayBuffer): DecodedWtx1Texture {
+function decodeWtx1TextureBlob(raw: ArrayBuffer): DecodedWtx1Texture {
   return decodeWtxBlob(raw);
 }
 
@@ -281,16 +281,4 @@ export interface MaterialShaderStatus {
   compileErrorLog?: string;
 }
 
-export async function convertMaterialBetweenGames<T = any>(
-  srcGame: "b1" | "b2" | "b3",
-  dstGame: "b1" | "b2" | "b3",
-  materialPayload: unknown,
-  targetShader: string | null = null
-): Promise<{ converted: T; report: any }> {
-  return invoke<{ converted: T; report: any }>("convert_material_action", {
-    srcGame,
-    dstGame,
-    materialPayload,
-    targetShader,
-  });
-}
+export { convertMaterialBetweenGames } from "../api/tauri";

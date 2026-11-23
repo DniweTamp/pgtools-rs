@@ -1,8 +1,12 @@
-use crate::formats_cmd::format_hex_preview;
-use crate::session::{atomic_write_file, lock_session, record_mutation, AppState, DocSnapshot};
+use crate::common::{
+    format_hex_preview, AssetTreeNode, BatchOperationReport, DocSnapshot, DocumentOutline,
+    MipLevelDesc,
+};
+use crate::session::{atomic_write_file, build_outline_from_session, lock_session, record_mutation, AppState};
+use crate::uvd_resolve::resolve_effective_texture_node;
 use crate::vfs::{
-    build_outline_from_session, detect_file_format_tag, is_bntx_blob, resolve_subblob,
-    split_container_and_leaf, write_back_subblob_with_align, AssetTreeNode, DocumentOutline,
+    detect_file_format_tag, is_bntx_blob, resolve_subblob, split_container_and_leaf,
+    write_back_subblob_with_align,
 };
 use base64::{engine::general_purpose::STANDARD as BASE64, Engine as _};
 use pgtools_core::{
@@ -31,7 +35,7 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use tauri::State;
 
-pub(crate) fn is_raster_image_path(low_path: &str) -> bool {
+fn is_raster_image_path(low_path: &str) -> bool {
     low_path.ends_with(".png")
         || low_path.ends_with(".jpg")
         || low_path.ends_with(".jpeg")
@@ -73,14 +77,6 @@ pub(crate) fn parse_replacement_filename_stem(stem: &str) -> (Option<usize>, Opt
         }
     }
     (None, None)
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct MipLevelDesc {
-    pub index: u32,
-    pub label: String,
-    pub width: u32,
-    pub height: u32,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -139,15 +135,6 @@ pub struct BatchReplaceScanResult {
     pub unsupported: usize,
     pub unused: usize,
     pub log_lines: Vec<String>,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct BatchOperationReport {
-    pub files_processed: usize,
-    pub converted: usize,
-    pub skipped: usize,
-    pub log_lines: Vec<String>,
-    pub updated_outline: Option<DocumentOutline>,
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -458,12 +445,6 @@ pub(crate) fn encode_image_for_bank_entry(
 }
 
 #[tauri::command]
-pub fn get_nvtt_status(state: State<'_, AppState>) -> (bool, String) {
-    let sess = lock_session(&state);
-    get_nvtt_status_description(sess.settings.nvtt_path())
-}
-
-#[tauri::command]
 pub fn get_cubemap_faces_preview(
     node_id: String,
     mip_index: u32,
@@ -473,8 +454,7 @@ pub fn get_cubemap_faces_preview(
     let sess = lock_session(&state);
     let snap = sess.current.as_ref().ok_or("No active document loaded")?;
     let oodle_opt = sess.settings.oodle_path();
-    let effective_node_id = crate::uvd_cmd::resolve_uvd_group_to_wta_tex_node(snap, &node_id, oodle_opt)
-        .unwrap_or_else(|| node_id.clone());
+    let effective_node_id = resolve_effective_texture_node(snap, &node_id, oodle_opt);
     let (container_parts, leaf) = split_container_and_leaf(&effective_node_id);
     let container_id = container_parts.join("/");
     let (_, sub_bytes, sub_wtp, _) = resolve_subblob(snap, &container_id, oodle_opt)?;
@@ -654,8 +634,7 @@ pub async fn get_texture_gpu_cubemap(
                 Some(Path::new(oodle_path.as_str()))
             };
             let effective_node_id =
-                crate::uvd_cmd::resolve_uvd_group_to_wta_tex_node(&snap, &node_id, oodle_opt)
-                    .unwrap_or_else(|| node_id.clone());
+                resolve_effective_texture_node(&snap, &node_id, oodle_opt);
             let (container_parts, leaf) = split_container_and_leaf(&effective_node_id);
             let container_id = container_parts.join("/");
 
@@ -1238,8 +1217,7 @@ pub fn mutate_texture_node(
         Some(Path::new(nvtt_path.as_str()))
     };
 
-    let effective_node_id = crate::uvd_cmd::resolve_uvd_group_to_wta_tex_node(&snap, &node_id, oodle_opt)
-        .unwrap_or_else(|| node_id.clone());
+    let effective_node_id = resolve_effective_texture_node(&snap, &node_id, oodle_opt);
     let (container_parts, leaf) = split_container_and_leaf(&effective_node_id);
     let container_id = container_parts.join("/");
     let (_, sub_bytes, sub_wtp, _) = resolve_subblob(&snap, &container_id, oodle_opt)?;
@@ -2054,8 +2032,7 @@ pub fn export_texture_action(
         ));
     }
 
-    let effective_node_id = crate::uvd_cmd::resolve_uvd_group_to_wta_tex_node(snap, &node_id, oodle_opt)
-        .unwrap_or_else(|| node_id.clone());
+    let effective_node_id = resolve_effective_texture_node(snap, &node_id, oodle_opt);
     let (container_parts, leaf) = split_container_and_leaf(&effective_node_id);
     let container_id = container_parts.join("/");
     let (_, sub_bytes, sub_wtp, _) = resolve_subblob(snap, &container_id, oodle_opt)?;

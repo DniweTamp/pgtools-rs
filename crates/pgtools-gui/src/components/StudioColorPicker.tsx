@@ -1,7 +1,7 @@
 import React, { useEffect, useLayoutEffect, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 
-export interface StudioColorPickerProps {
+interface StudioColorPickerProps {
   value: string;
   onChange: (hex: string) => void;
   onCommit?: (hex: string) => void;

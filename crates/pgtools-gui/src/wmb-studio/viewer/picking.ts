@@ -1,6 +1,6 @@
 import * as THREE from "three";
 
-export interface PickResult {
+interface PickResult {
   batchId: string;
   materialId: string;
   distance: number;

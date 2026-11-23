@@ -1,5 +1,5 @@
 import React, { useEffect, useMemo, useState } from "react";
-import { invoke } from "@tauri-apps/api/core";
+import { getTextureGpuThumbnailsBatch, getTextureThumbnailsBatch } from "../api/tauri";
 import { AssetTreeNode, PointerDragState } from "../types";
 import { isVirtualSubNode } from "../utils/format";
 import { StudioRange } from "../components/StudioRange";
@@ -7,7 +7,7 @@ import { AnimatedBranch } from "../components/AnimatedBranch";
 import { IconChevronRight } from "../components/Icons";
 import { decodeWtb2Batch, renderGpuSurfaceToDataUrl } from "../utils/gpuTexture";
 
-export interface AssetBrowserPanelProps {
+interface AssetBrowserPanelProps {
   outline: { tree: AssetTreeNode[]; file_name?: string; dirty?: boolean } | null;
   expandedNodes: Record<string, boolean>;
   selectedNodeId: string;
@@ -158,10 +158,7 @@ export function AssetBrowserPanel({
     const batch = missingIds.slice(0, 32);
     (async () => {
       try {
-        const rawBatch = await invoke<ArrayBuffer>(
-          "get_texture_gpu_thumbnails_batch",
-          { nodeIds: batch }
-        );
+        const rawBatch = await getTextureGpuThumbnailsBatch(batch);
         if (cancelled) return;
         const decoded = decodeWtb2Batch(rawBatch);
         const gpuUrls: Record<string, string | null> = {};
@@ -178,10 +175,7 @@ export function AssetBrowserPanel({
         }
         if (fallbackIds.length > 0 && !cancelled) {
           try {
-            const pairs = await invoke<[string, string | null][]>(
-              "get_texture_thumbnails_batch",
-              { nodeIds: fallbackIds }
-            );
+            const pairs = await getTextureThumbnailsBatch(fallbackIds);
             for (const [id, url] of pairs) {
               gpuUrls[id] = url;
             }
@@ -196,10 +190,7 @@ export function AssetBrowserPanel({
       } catch {
         // Fallback to legacy CPU PNG thumbnails if binary batch fails
         try {
-          const pairs = await invoke<[string, string | null][]>(
-            "get_texture_thumbnails_batch",
-            { nodeIds: batch }
-          );
+          const pairs = await getTextureThumbnailsBatch(batch);
           if (cancelled) return;
           setThumbMap((prev) => {
             const next = { ...prev };

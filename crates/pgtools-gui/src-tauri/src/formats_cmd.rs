@@ -1,8 +1,12 @@
-use crate::session::{lock_session, record_mutation, AppState};
+pub(crate) use crate::common::format_hex_preview;
+use crate::common::{DocumentOutline, SaveEncodeOptions};
+use crate::session::{
+    build_outline_from_session, lock_session, record_mutation, save_document_core, AppState,
+};
 use crate::texture_cmd::build_texture_node_view;
 use crate::vfs::{
-    build_outline_from_session, compute_pkz_modified_map, detect_file_format_tag, resolve_subblob,
-    split_container_and_leaf, write_back_subblob_with_align, DocumentOutline,
+    compute_pkz_modified_map, detect_file_format_tag, resolve_subblob,
+    split_container_and_leaf, write_back_subblob_with_align,
 };
 use crate::wmb_scene::{build_wmb1_section_view, build_wmb3_section_view};
 use pgtools_core::{
@@ -31,34 +35,6 @@ use std::collections::BTreeMap;
 use std::path::Path;
 use tauri::State;
 
-pub(crate) fn format_hex_preview(bytes: &[u8], max_bytes: usize, include_ascii: bool) -> String {
-    bytes
-        .iter()
-        .take(max_bytes)
-        .collect::<Vec<_>>()
-        .chunks(16)
-        .enumerate()
-        .map(|(row, ch)| {
-            let hex: Vec<String> = ch.iter().map(|b| format!("{b:02X}")).collect();
-            if include_ascii {
-                let ascii: String = ch
-                    .iter()
-                    .map(|&&b| {
-                        if (0x20..=0x7E).contains(&b) {
-                            b as char
-                        } else {
-                            '.'
-                        }
-                    })
-                    .collect();
-                format!("{:04X}: {:<47}  {}", row * 16, hex.join(" "), ascii)
-            } else {
-                format!("{:04X}: {}", row * 16, hex.join(" "))
-            }
-        })
-        .collect::<Vec<_>>()
-        .join("\n")
-}
 
 pub(crate) fn decode_csv_bytes_auto(bytes: &[u8]) -> String {
     if bytes.starts_with(&[0xEF, 0xBB, 0xBF]) {
@@ -915,4 +891,18 @@ pub fn mutate_cloth_node(
     let next_snap = write_back_subblob_with_align(&snap, &container_parts, new_bytes, None, oodle_opt, dat_align)?;
     record_mutation(&mut sess, desc, next_snap);
     build_outline_from_session(&sess)
+}
+
+#[tauri::command]
+pub fn save_document(
+    output_path: Option<String>,
+    encode_options: Option<SaveEncodeOptions>,
+    state: State<'_, AppState>,
+) -> Result<DocumentOutline, String> {
+    save_document_core(
+        output_path,
+        encode_options,
+        state,
+        crate::uvd_cmd::reencode_pending_uvd_sheets_for_save,
+    )
 }
