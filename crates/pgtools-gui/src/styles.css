@@ -913,6 +913,287 @@ body,
   background-color: var(--brush-control);
 }
 
+/* ============================================================================
+ * Flat Record List Editor (COS / ATT / OBI / MSQ)
+ * Toolbar plus drag-reorderable rows with copy / paste / delete actions.
+ * ============================================================================ */
+.record-list-root {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  min-height: 0;
+}
+
+.record-list-toolbar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 6px;
+  flex-wrap: wrap;
+  padding: 7px 9px;
+  background-color: var(--brush-card);
+  border: 1px solid var(--brush-border);
+  border-radius: 8px;
+}
+
+.record-list-heading {
+  display: flex;
+  align-items: baseline;
+  gap: 7px;
+  min-width: 0;
+  flex-wrap: wrap;
+}
+
+.record-list-title {
+  font-weight: 600;
+  font-size: 13px;
+  color: var(--brush-heading);
+  white-space: nowrap;
+}
+
+.record-list-meta {
+  font-size: 11.5px;
+  color: var(--brush-muted);
+  white-space: nowrap;
+}
+
+.record-list-dirty {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  height: 19px;
+  padding: 0 8px;
+  border-radius: 999px;
+  background: var(--brush-accent-soft);
+  color: var(--brush-accent);
+  border: 1px solid var(--brush-accent-mid);
+  font-size: 10.5px;
+  font-weight: 600;
+  letter-spacing: 0.02em;
+  white-space: nowrap;
+}
+
+.record-list-dirty::before {
+  content: "";
+  width: 5px;
+  height: 5px;
+  border-radius: 50%;
+  background: currentColor;
+}
+
+.record-list-actions {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.record-list-filter {
+  width: 190px;
+  height: 28px;
+  padding: 3px 8px;
+  font-size: 12px;
+  border-radius: 7px;
+}
+
+.record-list-btn {
+  height: 28px;
+  padding: 0 9px;
+  font-size: 12px;
+  gap: 6px;
+  border-radius: 7px;
+}
+
+.record-list-wrap {
+  position: relative;
+}
+
+.record-list-table {
+  width: 100%;
+  table-layout: fixed;
+}
+
+.record-list-table th {
+  padding: 5px 6px;
+}
+
+.record-col-handle {
+  width: 30px;
+}
+
+.record-col-index {
+  width: 46px;
+  text-align: right !important;
+}
+
+.record-col-actions {
+  width: 88px;
+}
+
+.record-cell-handle {
+  color: var(--brush-muted);
+  text-align: center;
+  cursor: grab;
+  font-size: 11px;
+  padding-left: 0 !important;
+  padding-right: 0 !important;
+}
+
+.record-row:active .record-cell-handle {
+  cursor: grabbing;
+}
+
+.record-index {
+  color: var(--brush-muted);
+  text-align: right;
+  padding-right: 8px !important;
+}
+
+.record-name-wrap {
+  position: relative;
+  display: flex;
+  align-items: center;
+}
+
+.record-name-input {
+  width: 100%;
+  height: 26px;
+  padding: 2px 8px;
+  border-radius: 6px;
+  font-size: 12px;
+}
+
+.record-name-count {
+  position: absolute;
+  right: 6px;
+  top: 50%;
+  transform: translateY(-50%);
+  font-size: 9.5px;
+  color: var(--brush-warning-text);
+  pointer-events: none;
+}
+
+.record-vec3 {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 4px;
+}
+
+.record-readonly {
+  font-weight: 600;
+}
+
+.record-row-actions {
+  display: flex;
+  gap: 2px;
+  justify-content: flex-end;
+  opacity: 0.5;
+  transition: opacity 90ms ease;
+}
+
+.record-row:hover .record-row-actions,
+.record-row.is-selected .record-row-actions {
+  opacity: 1;
+}
+
+.record-mini-btn {
+  width: 24px;
+  height: 22px;
+  padding: 0;
+  border-radius: 5px;
+  background: transparent;
+  border: 1px solid transparent;
+  color: var(--brush-muted);
+  cursor: pointer;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.record-mini-btn svg {
+  width: 13px;
+  height: 13px;
+  display: block;
+}
+
+.record-mini-btn:hover:not(:disabled) {
+  background: var(--brush-control-hover);
+  color: var(--brush-text);
+  border-color: var(--brush-border);
+}
+
+.record-mini-btn:disabled {
+  opacity: 0.45;
+  cursor: default;
+}
+
+.record-mini-btn.danger:hover {
+  background: var(--brush-warning);
+  color: var(--brush-warning-text);
+}
+
+.record-row.is-selected td,
+.record-row.is-selected:hover td {
+  background-color: var(--brush-accent-soft);
+}
+
+.record-row.is-selected td:first-child {
+  box-shadow: inset 2px 0 0 var(--brush-accent);
+}
+
+/* Transient confirmation after a paste overwrites a row's values. */
+.record-row.is-flashed td {
+  background-color: var(--brush-success);
+}
+
+.record-row.is-flashed td:first-child {
+  box-shadow: inset 2px 0 0 var(--brush-success-text);
+}
+
+.record-row.is-dragging td {
+  opacity: 0.4;
+}
+
+.record-drop-line {
+  position: absolute;
+  left: 0;
+  right: 0;
+  height: 2px;
+  margin-top: -1px;
+  background-color: var(--brush-accent);
+  border-radius: 2px;
+  pointer-events: none;
+  box-shadow: 0 0 6px var(--brush-accent-soft);
+}
+
+.record-drop-line::before {
+  content: "";
+  position: absolute;
+  left: -2px;
+  top: -3px;
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background-color: var(--brush-accent);
+}
+
+.record-list-empty {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 9px;
+  padding: 30px 20px;
+  text-align: center;
+  color: var(--brush-muted);
+  border: 1px dashed var(--brush-border-strong);
+  border-radius: 8px;
+}
+
+.record-list-empty-title {
+  font-weight: 600;
+  color: var(--brush-text);
+  font-size: 12.5px;
+}
+
 /* Material Editor Cards & Sampler Previews */
 .mat-sampler-grid {
   display: grid;

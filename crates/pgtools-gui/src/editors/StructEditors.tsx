@@ -8,6 +8,13 @@ import { StudioColorPicker } from "../components/StudioColorPicker";
 import { studioConfirm } from "../components/StudioDialog";
 import { StudioSelect } from "../components/StudioSelect";
 import { IconChevronDown, IconCube, IconImage } from "../components/Icons";
+import { RecordListEditor } from "./RecordListEditor";
+import {
+  ATT_LIST_CONFIG,
+  COS_LIST_CONFIG,
+  MSQ_LIST_CONFIG,
+  OBI_LIST_CONFIG,
+} from "./recordConfigs";
 
 export interface StructCenterViewProps {
   nodePayload: NodeInspectPayload;
@@ -97,379 +104,28 @@ export const StructCenterView: React.FC<StructCenterViewProps> = ({
     const kind = nodePayload?.struct_kind;
     if (!structDraft) return null;
 
-    if (kind === "COS" && Array.isArray(structDraft.entries)) {
+    if (kind === "COS" || kind === "ATT" || kind === "OBI" || kind === "MSQ") {
+      const listConfig =
+        kind === "COS"
+          ? COS_LIST_CONFIG
+          : kind === "ATT"
+            ? ATT_LIST_CONFIG
+            : kind === "OBI"
+              ? OBI_LIST_CONFIG
+              : MSQ_LIST_CONFIG;
       return (
-        <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
-          <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
-            <span style={{ fontWeight: 600, color: "var(--brush-heading)" }}>
-              Costume Color Palettes ({structDraft.entries.length} entries)
-            </span>
-            <button
-              className="pill-button accent"
-              onClick={() => runStructMutation(nodePayload.node_id, "COS", structDraft)}
-            >
-              <span>Commit COS Changes</span>
-            </button>
-          </div>
-          <table className="struct-table">
-            <thead>
-              <tr>
-                <th style={{ width: 55 }}>#</th>
-                <th style={{ width: 180 }}>Costume Name</th>
-                <th>7 RGB Swatches (Click to Edit)</th>
-              </tr>
-            </thead>
-            <tbody>
-              {structDraft.entries.map((e: any, ei: number) => (
-                <tr key={ei}>
-                  <td className="mono">#{ei}</td>
-                  <td>
-                    <input
-                      type="text"
-                      className="field-box mono"
-                      style={{ width: "100%", height: 25 }}
-                      value={e.name}
-                      onChange={(ev) => {
-                        const copy = structuredClone(structDraft);
-                        copy.entries[ei].name = ev.target.value;
-                        setStructDraft(copy);
-                      }}
-                    />
-                  </td>
-                  <td>
-                    <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
-                      {(e.colors as number[][]).map((rgb, ci) => (
-                        <label
-                          key={ci}
-                          style={{ display: "flex", alignItems: "center", gap: 4, fontSize: 11 }}
-                          className="mono"
-                        >
-                          <StudioColorPicker
-                            value={rgbFloatToHex(rgb)}
-                            onChange={(hex) => {
-                              const [r, g, b] = hexToRgbFloat(hex);
-                              const copy = structuredClone(structDraft);
-                              copy.entries[ei].colors[ci] = [r, g, b];
-                              setStructDraft(copy);
-                            }}
-                            style={{ width: 24, height: 24 }}
-                          />
-                          <span>C{ci}</span>
-                        </label>
-                      ))}
-                    </div>
-                  </td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
-        </div>
-      );
-    }
-
-    if (kind === "ATT" && Array.isArray(structDraft.points)) {
-      return (
-        <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
-          <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
-            <span style={{ fontWeight: 600, color: "var(--brush-heading)" }}>
-              Bone Attachment Points ({structDraft.points.length})
-            </span>
-            <div style={{ display: "flex", gap: 8 }}>
-              <button
-                className="pill-button"
-                onClick={() => {
-                  const copy = structuredClone(structDraft);
-                  copy.points.push({ source_bone: 0, target_bone: 0, option: 0 });
-                  setStructDraft(copy);
-                }}
-              >
-                + Add Point
-              </button>
-              <button
-                className="pill-button accent"
-                onClick={() => runStructMutation(nodePayload.node_id, "ATT", structDraft)}
-              >
-                Commit ATT Changes
-              </button>
-            </div>
-          </div>
-          <table className="struct-table">
-            <thead>
-              <tr>
-                <th style={{ width: 65 }}>#</th>
-                <th>Source Bone</th>
-                <th>Target Bone</th>
-                <th>Option Flag</th>
-                <th style={{ width: 80 }}>Remove</th>
-              </tr>
-            </thead>
-            <tbody>
-              {structDraft.points.map((pt: any, pi: number) => (
-                <tr key={pi}>
-                  <td className="mono">#{pi}</td>
-                  <td>
-                    <EditableNumberCell
-                      style={{ width: 110, height: 25 }}
-                      value={pt.source_bone ?? 0}
-                      onChangeValue={(v) => {
-                        const copy = structuredClone(structDraft);
-                        copy.points[pi].source_bone = v;
-                        setStructDraft(copy);
-                      }}
-                    />
-                  </td>
-                  <td>
-                    <EditableNumberCell
-                      style={{ width: 110, height: 25 }}
-                      value={pt.target_bone ?? 0}
-                      onChangeValue={(v) => {
-                        const copy = structuredClone(structDraft);
-                        copy.points[pi].target_bone = v;
-                        setStructDraft(copy);
-                      }}
-                    />
-                  </td>
-                  <td>
-                    <EditableNumberCell
-                      style={{ width: 110, height: 25 }}
-                      value={pt.option ?? 0}
-                      onChangeValue={(v) => {
-                        const copy = structuredClone(structDraft);
-                        copy.points[pi].option = v;
-                        setStructDraft(copy);
-                      }}
-                    />
-                  </td>
-                  <td>
-                    <button
-                      className="pill-button"
-                      style={{ height: 24, padding: "0 8px" }}
-                      onClick={() => {
-                        const copy = structuredClone(structDraft);
-                        copy.points.splice(pi, 1);
-                        setStructDraft(copy);
-                      }}
-                    >
-                      ✕
-                    </button>
-                  </td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
-        </div>
-      );
-    }
-
-    if (kind === "OBI" && Array.isArray(structDraft.entries)) {
-      return (
-        <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
-          <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
-            <span style={{ fontWeight: 600, color: "var(--brush-heading)" }}>
-              Object Placement Instances ({structDraft.entries.length})
-            </span>
-            <button
-              className="pill-button accent"
-              onClick={() => runStructMutation(nodePayload.node_id, "OBI", structDraft)}
-            >
-              Commit OBI Changes
-            </button>
-          </div>
-          <table className="struct-table">
-            <thead>
-              <tr>
-                <th>#</th>
-                <th>Object ID</th>
-                <th>Position (X, Y, Z)</th>
-                <th>Rotation (X, Y, Z)</th>
-                <th>Scale (X, Y, Z)</th>
-                <th>Difficulty</th>
-              </tr>
-            </thead>
-            <tbody>
-              {structDraft.entries.map((e: any, ei: number) => (
-                <tr key={ei}>
-                  <td className="mono">#{ei}</td>
-                  <td className="mono" style={{ fontWeight: 600 }}>
-                    {e.object_name} (0x{Number(e.object_id).toString(16).toUpperCase()})
-                  </td>
-                  <td>
-                    <div style={{ display: "grid", gridTemplateColumns: "repeat(3, 1fr)", gap: 4 }}>
-                      {(["x", "y", "z"] as const).map((axis) => (
-                        <EditableNumberCell
-                          key={axis}
-                          isFloat
-                          decimals={3}
-                          step="0.1"
-                          style={{ height: 24 }}
-                          value={e.position?.[axis] ?? 0}
-                          onChangeValue={(v) => {
-                            const copy = structuredClone(structDraft);
-                            copy.entries[ei].position[axis] = v;
-                            setStructDraft(copy);
-                          }}
-                        />
-                      ))}
-                    </div>
-                  </td>
-                  <td>
-                    <div style={{ display: "grid", gridTemplateColumns: "repeat(3, 1fr)", gap: 4 }}>
-                      {(["x", "y", "z"] as const).map((axis) => (
-                        <EditableNumberCell
-                          key={axis}
-                          isFloat
-                          decimals={3}
-                          step="0.05"
-                          style={{ height: 24 }}
-                          value={e.orientation?.[axis] ?? 0}
-                          onChangeValue={(v) => {
-                            const copy = structuredClone(structDraft);
-                            copy.entries[ei].orientation[axis] = v;
-                            setStructDraft(copy);
-                          }}
-                        />
-                      ))}
-                    </div>
-                  </td>
-                  <td>
-                    <div style={{ display: "grid", gridTemplateColumns: "repeat(3, 1fr)", gap: 4 }}>
-                      {(["x", "y", "z"] as const).map((axis) => (
-                        <EditableNumberCell
-                          key={axis}
-                          isFloat
-                          decimals={3}
-                          step="0.05"
-                          style={{ height: 24 }}
-                          value={e.scale?.[axis] ?? 1}
-                          onChangeValue={(v) => {
-                            const copy = structuredClone(structDraft);
-                            copy.entries[ei].scale[axis] = v;
-                            setStructDraft(copy);
-                          }}
-                        />
-                      ))}
-                    </div>
-                  </td>
-                  <td>
-                    <input
-                      type="number"
-                      className="field-box mono"
-                      style={{ width: 85, height: 24 }}
-                      value={e.difficulty_selector}
-                      onChange={(ev) => {
-                        const copy = structuredClone(structDraft);
-                        copy.entries[ei].difficulty_selector = parseInt(ev.target.value || "0", 10);
-                        setStructDraft(copy);
-                      }}
-                    />
-                  </td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
-        </div>
-      );
-    }
-
-    if (kind === "MSQ" && Array.isArray(structDraft.events)) {
-      return (
-        <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
-          <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
-            <span style={{ fontWeight: 600, color: "var(--brush-heading)" }}>
-              Subtitle / Sequence Events ({structDraft.events.length})
-            </span>
-            <button
-              className="pill-button accent"
-              onClick={() => runStructMutation(nodePayload.node_id, "MSQ", structDraft)}
-            >
-              Commit MSQ Changes
-            </button>
-          </div>
-          <table className="struct-table">
-            <thead>
-              <tr>
-                <th>#</th>
-                <th>Event Name</th>
-                <th>ID</th>
-                <th>Event Type</th>
-                <th>Line / Group</th>
-                <th>Duration (Frames)</th>
-              </tr>
-            </thead>
-            <tbody>
-              {structDraft.events.map((ev: any, ei: number) => (
-                <tr key={ei}>
-                  <td className="mono">#{ei}</td>
-                  <td>
-                    <input
-                      type="text"
-                      className="field-box mono"
-                      style={{ width: "100%", height: 25 }}
-                      value={ev.name}
-                      onChange={(e) => {
-                        const copy = structuredClone(structDraft);
-                        copy.events[ei].name = e.target.value;
-                        setStructDraft(copy);
-                      }}
-                    />
-                  </td>
-                  <td>
-                    <input
-                      type="number"
-                      className="field-box mono"
-                      style={{ width: 95, height: 25 }}
-                      value={ev.id}
-                      onChange={(e) => {
-                        const copy = structuredClone(structDraft);
-                        copy.events[ei].id = parseInt(e.target.value || "0", 10);
-                        setStructDraft(copy);
-                      }}
-                    />
-                  </td>
-                  <td>
-                    <input
-                      type="number"
-                      className="field-box mono"
-                      style={{ width: 95, height: 25 }}
-                      value={ev.event_type}
-                      onChange={(e) => {
-                        const copy = structuredClone(structDraft);
-                        copy.events[ei].event_type = parseInt(e.target.value || "0", 10);
-                        setStructDraft(copy);
-                      }}
-                    />
-                  </td>
-                  <td>
-                    <input
-                      type="number"
-                      className="field-box mono"
-                      style={{ width: 95, height: 25 }}
-                      value={ev.line_number_per_group}
-                      onChange={(e) => {
-                        const copy = structuredClone(structDraft);
-                        copy.events[ei].line_number_per_group = parseInt(e.target.value || "0", 10);
-                        setStructDraft(copy);
-                      }}
-                    />
-                  </td>
-                  <td>
-                    <input
-                      type="number"
-                      className="field-box mono"
-                      style={{ width: 95, height: 25 }}
-                      value={ev.event_duration}
-                      onChange={(e) => {
-                        const copy = structuredClone(structDraft);
-                        copy.events[ei].event_duration = parseInt(e.target.value || "0", 10);
-                        setStructDraft(copy);
-                      }}
-                    />
-                  </td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
-        </div>
+        <RecordListEditor
+          key={nodePayload.node_id}
+          config={listConfig}
+          draft={structDraft}
+          baseline={nodePayload.data}
+          onChange={setStructDraft}
+          onCommit={() => runStructMutation(nodePayload.node_id, kind, structDraft)}
+          onRevert={() => {
+            void selectAndInspectNode(nodePayload.node_id);
+          }}
+          onStatus={setStatusLeft}
+        />
       );
     }
 

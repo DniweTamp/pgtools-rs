@@ -14,6 +14,58 @@ use crate::io::{BinReader, BinWriter, Endian};
 use crate::{PgError, Result};
 use serde::{Deserialize, Serialize};
 
+/// Marks an entry that has no counterpart in the original file (newly added in the editor).
+pub(crate) const NO_SOURCE_INDEX: i32 = -1;
+
+fn default_src_index() -> i32 {
+    NO_SOURCE_INDEX
+}
+
+/// Write a `u32` at `pos` when the buffer is large enough (record patching helper).
+fn put_u32(buf: &mut [u8], pos: usize, val: u32, endian: Endian) {
+    if pos + 4 <= buf.len() {
+        let b = match endian {
+            Endian::Little => val.to_le_bytes(),
+            Endian::Big => val.to_be_bytes(),
+        };
+        buf[pos..pos + 4].copy_from_slice(&b);
+    }
+}
+
+/// Write an `i32` at `pos` when the buffer is large enough (record patching helper).
+fn put_i32(buf: &mut [u8], pos: usize, val: i32, endian: Endian) {
+    if pos + 4 <= buf.len() {
+        let b = match endian {
+            Endian::Little => val.to_le_bytes(),
+            Endian::Big => val.to_be_bytes(),
+        };
+        buf[pos..pos + 4].copy_from_slice(&b);
+    }
+}
+
+/// Write an `f32` at `pos` when the buffer is large enough (record patching helper).
+fn put_f32(buf: &mut [u8], pos: usize, val: f32, endian: Endian) {
+    if pos + 4 <= buf.len() {
+        let b = match endian {
+            Endian::Little => val.to_le_bytes(),
+            Endian::Big => val.to_be_bytes(),
+        };
+        buf[pos..pos + 4].copy_from_slice(&b);
+    }
+}
+
+/// Read an `i32` at `pos`, returning 0 when out of bounds.
+fn get_i32(buf: &[u8], pos: usize, endian: Endian) -> i32 {
+    if pos + 4 > buf.len() {
+        return 0;
+    }
+    let raw: [u8; 4] = buf[pos..pos + 4].try_into().unwrap();
+    match endian {
+        Endian::Little => i32::from_le_bytes(raw),
+        Endian::Big => i32::from_be_bytes(raw),
+    }
+}
+
 /// Editable particle effect record parsed from a `.est` file (standalone or nested inside `.eff` inside `.dat`).
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct EstRecord {
@@ -300,6 +352,11 @@ impl EstFile {
 pub struct CosEntry {
     pub name: String,
     pub colors: [[f32; 3]; 7],
+    /// Index of the record this entry was parsed from, or -1 when newly added. Used when
+    /// rebuilding to reuse the original 64-byte name field, so padding filler (Bayonetta 3
+    /// writes `0xFE`) is kept for names the user did not touch. Not shown in the editor.
+    #[serde(default = "default_src_index")]
+    pub src_index: i32,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -309,6 +366,33 @@ pub struct CosFile {
 }
 
 impl CosFile {
+    /// Bytes per costume record: seven RGB `f32` triples plus a 64-byte fixed name field.
+    pub const ENTRY_LEN: usize = 7 * 12 + 0x40;
+
+    /// Detect the wrapped layout used by `CosPres_*.cos` in Bayonetta 3's `core.dat`.
+    ///
+    /// Those files carry an outer header (`size`, date, `offset_entries = 16`, `count = 0`) whose
+    /// offset points at a *second* header holding the real count and record offset. A genuinely
+    /// empty palette — the 16-byte file this editor writes when every costume is removed — has no
+    /// nested header, so the probe below rejects it and the caller falls back to zero entries.
+    ///
+    /// Returns `(records_offset, count, inner_header_offset)`.
+    fn nested_layout(data: &[u8], outer_offset: usize) -> Option<(usize, usize, usize)> {
+        let header = data.get(outer_offset..outer_offset.checked_add(16)?)?;
+        let inner_size = u32::from_le_bytes(header[0..4].try_into().ok()?) as usize;
+        let inner_count = u32::from_le_bytes(header[8..12].try_into().ok()?) as usize;
+        let inner_offset = u32::from_le_bytes(header[12..16].try_into().ok()?) as usize;
+        if inner_size < 16 || inner_offset < 16 {
+            return None;
+        }
+        let records_offset = outer_offset.checked_add(inner_offset)?;
+        let records_end = records_offset.checked_add(inner_count.checked_mul(Self::ENTRY_LEN)?)?;
+        if records_end > data.len() {
+            return None;
+        }
+        Some((records_offset, inner_count, outer_offset))
+    }
+
     pub fn from_bytes(data: &[u8]) -> Result<Self> {
         let mut r = BinReader::new(data, Endian::Little);
         let size = r.read_u32()?;
@@ -318,18 +402,22 @@ impl CosFile {
 
         let (actual_offset, actual_count) = if size != 0 && num_entries != 0 {
             (offset_entries, num_entries)
+        } else if let Some((records_offset, count, _)) =
+            Self::nested_layout(data, offset_entries)
+        {
+            (records_offset, count)
+        } else if size != 0 {
+            // Valid header with no records and no nested header: an empty palette.
+            (offset_entries, 0)
         } else {
-            r.seek(offset_entries)?;
-            let _size2 = r.read_u32()?;
-            let _ver2 = r.read_u32()?;
-            let count2 = r.read_u32()? as usize;
-            let off2 = r.read_u32()? as usize;
-            (offset_entries + off2, count2)
+            return Err(PgError::InvalidData(
+                "COS file has no entry count and no nested header".into(),
+            ));
         };
 
         r.seek(actual_offset)?;
         let mut entries = Vec::with_capacity(actual_count);
-        for _ in 0..actual_count {
+        for i in 0..actual_count {
             let mut colors = [[0.0f32; 3]; 7];
             for rgb in &mut colors {
                 rgb[0] = r.read_f32()?;
@@ -337,28 +425,131 @@ impl CosFile {
                 rgb[2] = r.read_f32()?;
             }
             let name = r.read_fixed_string(0x40)?;
-            entries.push(CosEntry { name, colors });
+            entries.push(CosEntry {
+                name,
+                colors,
+                src_index: i as i32,
+            });
         }
         Ok(Self { version, entries })
     }
 
-    pub fn to_bytes(&self) -> Vec<u8> {
-        let offset_entries = 16usize;
-        let total_size = offset_entries + self.entries.len() * (7 * 12 + 0x40);
-        let mut w = BinWriter::with_capacity(total_size, Endian::Little);
-        w.write_u32(total_size as u32);
-        w.write_u32(self.version);
-        w.write_u32(offset_entries as u32);
-        w.write_u32(self.entries.len() as u32);
+    /// Build the 64-byte name field for `entry`.
+    ///
+    /// When the entry came from `original` and its name is unchanged, the original field is
+    /// reused verbatim so filler bytes past the NUL (Bayonetta 3 writes `0xFE`) are preserved.
+    fn name_field(&self, entry: &CosEntry, src: Option<(&[u8], usize, usize)>) -> [u8; 0x40] {
+        if let Some((original, records_offset, orig_count)) = src {
+            let src_index = entry.src_index;
+            if src_index >= 0 && (src_index as usize) < orig_count {
+                let name_off = records_offset
+                    + src_index as usize * Self::ENTRY_LEN
+                    + 7 * 12;
+                if let Some(raw) = original.get(name_off..name_off + 0x40) {
+                    let end = raw.iter().position(|&b| b == 0).unwrap_or(raw.len());
+                    if &raw[..end] == entry.name.as_bytes() {
+                        let mut field = [0u8; 0x40];
+                        field.copy_from_slice(raw);
+                        return field;
+                    }
+                }
+            }
+        }
+        let mut field = [0u8; 0x40];
+        let bytes = entry.name.as_bytes();
+        let copy_len = bytes.len().min(0x40);
+        field[..copy_len].copy_from_slice(&bytes[..copy_len]);
+        field
+    }
+
+    fn push_entry_bytes(&self, out: &mut Vec<u8>, src: Option<(&[u8], usize, usize)>) {
         for e in &self.entries {
             for rgb in &e.colors {
-                w.write_f32(rgb[0]);
-                w.write_f32(rgb[1]);
-                w.write_f32(rgb[2]);
+                out.extend_from_slice(&rgb[0].to_le_bytes());
+                out.extend_from_slice(&rgb[1].to_le_bytes());
+                out.extend_from_slice(&rgb[2].to_le_bytes());
             }
-            w.write_fixed_string(&e.name, 0x40);
+            let name = self.name_field(e, src);
+            out.extend_from_slice(&name);
         }
-        w.into_inner()
+    }
+
+    pub fn to_bytes(&self) -> Vec<u8> {
+        let offset_entries = 16usize;
+        let total_size = offset_entries + self.entries.len() * Self::ENTRY_LEN;
+        let mut out = Vec::with_capacity(total_size);
+        out.extend_from_slice(&(total_size as u32).to_le_bytes());
+        out.extend_from_slice(&self.version.to_le_bytes());
+        out.extend_from_slice(&(offset_entries as u32).to_le_bytes());
+        out.extend_from_slice(&(self.entries.len() as u32).to_le_bytes());
+        self.push_entry_bytes(&mut out, None);
+        out
+    }
+
+    /// Serialize back into the layout `original` used.
+    ///
+    /// A wrapped `CosPres_*.cos` keeps its outer header (count stays 0, size refreshed) and its
+    /// inner header (count and size refreshed), so committing an edit does not silently rewrite the
+    /// file into the flat layout. Names that were not edited keep their original field bytes.
+    pub fn rebuild(&self, original: &[u8]) -> Vec<u8> {
+        let outer_size = original
+            .get(0..4)
+            .map(|b| u32::from_le_bytes(b.try_into().unwrap()) as usize)
+            .unwrap_or(0);
+        let outer_offset = original
+            .get(8..12)
+            .map(|b| u32::from_le_bytes(b.try_into().unwrap()) as usize)
+            .unwrap_or(16);
+        let outer_count = original
+            .get(12..16)
+            .map(|b| u32::from_le_bytes(b.try_into().unwrap()) as usize)
+            .unwrap_or(0);
+
+        // Wrapped layout: outer header (count == 0 or size == 0) + inner header + records.
+        if outer_size == 0 || outer_count == 0 {
+            if let Some((records_offset, orig_count, inner_offset)) =
+                Self::nested_layout(original, outer_offset)
+            {
+                let prefix_len = records_offset.min(original.len());
+                let inner_size =
+                    (prefix_len - inner_offset) + self.entries.len() * Self::ENTRY_LEN;
+                let mut out = Vec::with_capacity(prefix_len + self.entries.len() * Self::ENTRY_LEN);
+                out.extend_from_slice(&original[..prefix_len]);
+                put_u32(&mut out, inner_offset, inner_size as u32, Endian::Little);
+                put_u32(
+                    &mut out,
+                    inner_offset + 8,
+                    self.entries.len() as u32,
+                    Endian::Little,
+                );
+                self.push_entry_bytes(
+                    &mut out,
+                    Some((original, records_offset, orig_count)),
+                );
+                let total = out.len() as u32;
+                put_u32(&mut out, 0, total, Endian::Little);
+                return out;
+            }
+        }
+
+        // Flat layout: 16-byte header followed directly by records.
+        let header_len = 16usize;
+        if original.len() < header_len {
+            return self.to_bytes();
+        }
+        let records_offset = u32::from_le_bytes(original[8..12].try_into().unwrap()) as usize;
+        let orig_count = u32::from_le_bytes(original[12..16].try_into().unwrap()) as usize;
+        if records_offset < header_len || records_offset > original.len() {
+            return self.to_bytes();
+        }
+
+        let mut out = Vec::with_capacity(records_offset + self.entries.len() * Self::ENTRY_LEN);
+        out.extend_from_slice(&original[..records_offset]);
+        self.push_entry_bytes(&mut out, Some((original, records_offset, orig_count)));
+        let total = out.len() as u32;
+        put_u32(&mut out, 0, total, Endian::Little);
+        put_u32(&mut out, 12, self.entries.len() as u32, Endian::Little);
+        out
     }
 }
 
@@ -420,6 +611,11 @@ pub struct ObiEntry {
     pub orientation: Vec3,
     pub scale: Vec3,
     pub difficulty_selector: u8,
+    /// Index of the record this entry was parsed from, or -1 when newly added. The rebuild
+    /// path reuses that original 128-byte record so reserved/unknown fields survive edits,
+    /// reordering and renumbering. Not shown in the editor.
+    #[serde(default = "default_src_index")]
+    pub src_index: i32,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -429,6 +625,9 @@ pub struct ObiFile {
 }
 
 impl ObiFile {
+    pub const HEADER_LEN: usize = 32;
+    pub const RECORD_LEN: usize = 128;
+
     pub fn format_object_id(id: u32) -> String {
         let prefix = match id >> 16 {
             0 => "sc",
@@ -469,7 +668,7 @@ impl ObiFile {
         let _ = r.read_bytes(12)?;
 
         let mut entries = Vec::with_capacity(num_entries);
-        for _ in 0..num_entries {
+        for i in 0..num_entries {
             let object_id = r.read_u32()?;
             let _u_a = r.read_i32()?;
             let flags = r.read_i32()?;
@@ -488,58 +687,57 @@ impl ObiFile {
                 orientation,
                 scale,
                 difficulty_selector,
+                src_index: i as i32,
             });
         }
         Ok(Self { endian, entries })
     }
 
-    pub fn apply_to_bytes(&self, original: &[u8]) -> Vec<u8> {
-        let mut out = original.to_vec();
-        let write_u32 = |buf: &mut [u8], pos: usize, val: u32, endian: Endian| {
-            if pos + 4 <= buf.len() {
-                let b = match endian {
-                    Endian::Little => val.to_le_bytes(),
-                    Endian::Big => val.to_be_bytes(),
-                };
-                buf[pos..pos + 4].copy_from_slice(&b);
-            }
+    /// Rebuild the whole file from the current entry list, preserving bytes the editor does not
+    /// model. Each entry reuses the original 128-byte record it came from (`src_index`), so
+    /// reserved fields travel with the entry when rows are reordered, and any bytes after the
+    /// original record block are copied through verbatim.
+    pub fn rebuild(&self, original: &[u8]) -> Vec<u8> {
+        let header_len = Self::HEADER_LEN.min(original.len());
+        let orig_count = {
+            let n = get_i32(original, 4, self.endian);
+            n.max(0) as usize
         };
-        let write_i32 = |buf: &mut [u8], pos: usize, val: i32, endian: Endian| {
-            if pos + 4 <= buf.len() {
-                let b = match endian {
-                    Endian::Little => val.to_le_bytes(),
-                    Endian::Big => val.to_be_bytes(),
-                };
-                buf[pos..pos + 4].copy_from_slice(&b);
-            }
-        };
-        let write_f32 = |buf: &mut [u8], pos: usize, val: f32, endian: Endian| {
-            if pos + 4 <= buf.len() {
-                let b = match endian {
-                    Endian::Little => val.to_le_bytes(),
-                    Endian::Big => val.to_be_bytes(),
-                };
-                buf[pos..pos + 4].copy_from_slice(&b);
-            }
-        };
-        for (i, e) in self.entries.iter().enumerate() {
-            let base = 32 + i * 128;
-            if base + 128 > out.len() {
-                break;
-            }
-            write_u32(&mut out, base, e.object_id, self.endian);
-            write_i32(&mut out, base + 8, e.flags, self.endian);
-            write_f32(&mut out, base + 16, e.position.x, self.endian);
-            write_f32(&mut out, base + 20, e.position.y, self.endian);
-            write_f32(&mut out, base + 24, e.position.z, self.endian);
-            write_f32(&mut out, base + 28, e.orientation.x, self.endian);
-            write_f32(&mut out, base + 32, e.orientation.y, self.endian);
-            write_f32(&mut out, base + 36, e.orientation.z, self.endian);
-            write_f32(&mut out, base + 40, e.scale.x, self.endian);
-            write_f32(&mut out, base + 44, e.scale.y, self.endian);
-            write_f32(&mut out, base + 48, e.scale.z, self.endian);
-            out[base + 56] = e.difficulty_selector;
+        let block_end = (header_len + orig_count * Self::RECORD_LEN).min(original.len());
+        let mut out = Vec::with_capacity(
+            header_len + self.entries.len() * Self::RECORD_LEN + (original.len() - block_end),
+        );
+        out.extend_from_slice(&original[..header_len]);
+        put_i32(&mut out, 4, self.entries.len() as i32, self.endian);
+
+        let blank = vec![0u8; Self::RECORD_LEN];
+        for e in &self.entries {
+            let src = e.src_index;
+            let mut rec = if src >= 0 && (src as usize) < orig_count {
+                let off = header_len + src as usize * Self::RECORD_LEN;
+                match original.get(off..off + Self::RECORD_LEN) {
+                    Some(slice) => slice.to_vec(),
+                    None => blank.clone(),
+                }
+            } else {
+                blank.clone()
+            };
+            put_u32(&mut rec, 0, e.object_id, self.endian);
+            put_i32(&mut rec, 8, e.flags, self.endian);
+            put_f32(&mut rec, 16, e.position.x, self.endian);
+            put_f32(&mut rec, 20, e.position.y, self.endian);
+            put_f32(&mut rec, 24, e.position.z, self.endian);
+            put_f32(&mut rec, 28, e.orientation.x, self.endian);
+            put_f32(&mut rec, 32, e.orientation.y, self.endian);
+            put_f32(&mut rec, 36, e.orientation.z, self.endian);
+            put_f32(&mut rec, 40, e.scale.x, self.endian);
+            put_f32(&mut rec, 44, e.scale.y, self.endian);
+            put_f32(&mut rec, 48, e.scale.z, self.endian);
+            rec[56] = e.difficulty_selector;
+            out.extend_from_slice(&rec);
         }
+
+        out.extend_from_slice(&original[block_end..]);
         out
     }
 }
@@ -551,6 +749,10 @@ pub struct MsqEvent {
     pub event_type: u32,
     pub line_number_per_group: u32,
     pub event_duration: u32,
+    /// Index of the record this event was parsed from, or -1 when newly added. Used by
+    /// [`MsqFile::rebuild`] to carry reserved/unknown bytes along with the event.
+    #[serde(default = "default_src_index")]
+    pub src_index: i32,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -560,6 +762,9 @@ pub struct MsqFile {
 }
 
 impl MsqFile {
+    pub const HEADER_LEN: usize = 8;
+    pub const RECORD_LEN: usize = 76;
+
     pub fn from_bytes(data: &[u8]) -> Result<Self> {
         if data.len() < 8 {
             return Err(PgError::InvalidData("MSQ file shorter than 8 bytes".into()));
@@ -570,7 +775,7 @@ impl MsqFile {
         let count = r.read_u32()? as usize;
         let _offset = r.read_u32()?;
         let mut events = Vec::with_capacity(count);
-        for _ in 0..count {
+        for i in 0..count {
             let name = r.read_fixed_string(0x20)?;
             let id = r.read_u32()?;
             let event_type = r.read_u32()?;
@@ -584,37 +789,57 @@ impl MsqFile {
                 event_type,
                 line_number_per_group,
                 event_duration,
+                src_index: i as i32,
             });
         }
         Ok(Self { endian, events })
     }
 
-    pub fn apply_to_bytes(&self, original: &[u8]) -> Vec<u8> {
-        let mut out = original.to_vec();
-        let write_u32 = |buf: &mut [u8], pos: usize, val: u32, endian: Endian| {
-            if pos + 4 <= buf.len() {
-                let b = match endian {
-                    Endian::Little => val.to_le_bytes(),
-                    Endian::Big => val.to_be_bytes(),
-                };
-                buf[pos..pos + 4].copy_from_slice(&b);
-            }
+    /// Rebuild the event block from the current list, reusing each event's original 76-byte
+    /// record (via `src_index`) so reserved fields and the trailing group data survive
+    /// reordering. Any bytes after the original block are copied through verbatim.
+    pub fn rebuild(&self, original: &[u8]) -> Vec<u8> {
+        let header_len = Self::HEADER_LEN.min(original.len());
+        let orig_count = {
+            let n = get_i32(original, 0, self.endian);
+            n.max(0) as usize
         };
-        for (i, ev) in self.events.iter().enumerate() {
-            let base = 8 + i * 76;
-            if base + 76 > out.len() {
-                break;
-            }
+        let block_end = (header_len + orig_count * Self::RECORD_LEN).min(original.len());
+        let mut out = Vec::with_capacity(
+            header_len + self.events.len() * Self::RECORD_LEN + (original.len() - block_end),
+        );
+        out.extend_from_slice(&original[..header_len]);
+        put_u32(&mut out, 0, self.events.len() as u32, self.endian);
+
+        let blank = vec![0u8; Self::RECORD_LEN];
+        for ev in &self.events {
+            let src = ev.src_index;
+            let mut rec = if src >= 0 && (src as usize) < orig_count {
+                let off = header_len + src as usize * Self::RECORD_LEN;
+                match original.get(off..off + Self::RECORD_LEN) {
+                    Some(slice) => slice.to_vec(),
+                    None => blank.clone(),
+                }
+            } else {
+                blank.clone()
+            };
+
+            // Name is a NUL-terminated 32-byte field: rewrite it whole so shortening a name
+            // cannot leave stale trailing bytes from the record it replaced.
             let mut name_buf = [0u8; 0x20];
             let bytes = ev.name.as_bytes();
             let copy_len = bytes.len().min(0x1F);
             name_buf[..copy_len].copy_from_slice(&bytes[..copy_len]);
-            out[base..base + 0x20].copy_from_slice(&name_buf);
-            write_u32(&mut out, base + 0x20, ev.id, self.endian);
-            write_u32(&mut out, base + 0x24, ev.event_type, self.endian);
-            write_u32(&mut out, base + 0x28, ev.line_number_per_group, self.endian);
-            write_u32(&mut out, base + 0x30, ev.event_duration, self.endian);
+            rec[..0x20].copy_from_slice(&name_buf);
+
+            put_u32(&mut rec, 0x20, ev.id, self.endian);
+            put_u32(&mut rec, 0x24, ev.event_type, self.endian);
+            put_u32(&mut rec, 0x28, ev.line_number_per_group, self.endian);
+            put_u32(&mut rec, 0x30, ev.event_duration, self.endian);
+            out.extend_from_slice(&rec);
         }
+
+        out.extend_from_slice(&original[block_end..]);
         out
     }
 }
@@ -1439,3 +1664,4 @@ impl MdbFile {
         Ok(out)
     }
 }
+

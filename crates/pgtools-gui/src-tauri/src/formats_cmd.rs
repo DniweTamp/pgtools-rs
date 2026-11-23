@@ -725,7 +725,10 @@ pub fn mutate_struct_node(
         }
         "COS" => {
             let cos: CosFile = serde_json::from_value(updated_data).map_err(|e| e.to_string())?;
-            (cos.to_bytes(), "Update COS Costume Colors".to_string())
+            (
+                cos.rebuild(&sub_bytes),
+                "Update COS Costume Colors".to_string(),
+            )
         }
         "ATT" => {
             let att: AttFile = serde_json::from_value(updated_data).map_err(|e| e.to_string())?;
@@ -737,14 +740,14 @@ pub fn mutate_struct_node(
         "OBI" => {
             let obi: ObiFile = serde_json::from_value(updated_data).map_err(|e| e.to_string())?;
             (
-                obi.apply_to_bytes(&sub_bytes),
+                obi.rebuild(&sub_bytes),
                 "Update OBI Object Placement".to_string(),
             )
         }
         "MSQ" => {
             let msq: MsqFile = serde_json::from_value(updated_data).map_err(|e| e.to_string())?;
             (
-                msq.apply_to_bytes(&sub_bytes),
+                msq.rebuild(&sub_bytes),
                 "Update MSQ Sequence Events".to_string(),
             )
         }
