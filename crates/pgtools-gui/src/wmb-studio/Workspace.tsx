@@ -29,6 +29,7 @@ import {
   getMeshGroupBatchIds,
   mergeScenePayloadIntoCache,
   parseBoneSceneId,
+  pickDefaultLodLevel,
   SceneSelectionItem,
 } from "./store";
 import { Viewport, ViewportHandle } from "./Viewport";
@@ -84,6 +85,7 @@ export const Workspace: React.FC<WorkspaceProps> = React.memo(function Workspace
   const prevNodeIdRef = useRef<string>("");
   const activeNodeIdRef = useRef<string>(nodeId);
   const refreshSeqRef = useRef<number>(0);
+  const lodInitNodeKeyRef = useRef<string>("");
 
   const [manifest, setManifest] = useState<WmbSceneManifest | null>(null);
   const manifestRef = useRef<WmbSceneManifest | null>(null);
@@ -114,6 +116,7 @@ export const Workspace: React.FC<WorkspaceProps> = React.memo(function Workspace
       prevNodeIdRef.current = nodeId;
       refreshSeqRef.current += 1;
       geomCacheRef.current = createGeometryCache();
+      lodInitNodeKeyRef.current = "";
       setActiveLodLevel(null);
       setDebugSlot(null);
       setHiddenBatchIds(new Set());
@@ -137,6 +140,22 @@ export const Workspace: React.FC<WorkspaceProps> = React.memo(function Workspace
         return;
       }
       mergeScenePayloadIntoCache(payload, geomCacheRef.current);
+      const manifestNodeKey = `${payload.manifest.nodeId}:${payload.manifest.fileName}`;
+      if (lodInitNodeKeyRef.current !== manifestNodeKey) {
+        lodInitNodeKeyRef.current = manifestNodeKey;
+        setActiveLodLevel(pickDefaultLodLevel(payload.manifest));
+      } else {
+        setActiveLodLevel((prev) => {
+          if (
+            prev !== null &&
+            (!payload.manifest.isWmb3 ||
+              !payload.manifest.lodLevels.includes(prev))
+          ) {
+            return pickDefaultLodLevel(payload.manifest);
+          }
+          return prev;
+        });
+      }
       setManifest(payload.manifest);
       setSelection((prev) => filterValidSelection(payload.manifest, prev));
       const clip = await refreshClipboardStatus();

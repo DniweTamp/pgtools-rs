@@ -4,21 +4,26 @@ import React, {
   useCallback,
   useEffect,
   useImperativeHandle,
+  useLayoutEffect,
   useMemo,
   useRef,
   useState,
 } from "react";
+import { createPortal } from "react-dom";
 import * as THREE from "three";
 import { OrbitControls } from "three/examples/jsm/controls/OrbitControls.js";
 import { MaterialDesc, WmbSceneManifest } from "./contract";
 import {
+  collectBatchIdsForSelection,
   collectDebugTextureSlots,
   computeSelectionBoundingBox,
   DebugChannelMode,
   DebugSlotPreview,
   findBatchById,
   findMaterialById,
+  isNullShaderName,
   SceneSelectionItem,
+  sortLodLevelsByPriority,
   WmbGeometryCache,
 } from "./store";
 import {
@@ -103,8 +108,18 @@ export const Viewport = React.memo(forwardRef<ViewportHandle, ViewportProps>(
     const pointerDownPosRef = useRef<{ x: number; y: number } | null>(null);
     const lastFramedNodeKeyRef = useRef<string>("");
 
+    const debugBtnRef = useRef<HTMLButtonElement | null>(null);
+    const debugPopoverRef = useRef<HTMLDivElement | null>(null);
+
     const [contextLost, setContextLost] = useState(false);
     const [debugPopoverOpen, setDebugPopoverOpen] = useState(false);
+    const [debugPopoverPos, setDebugPopoverPos] = useState<{
+      left: number;
+      top?: number;
+      bottom?: number;
+      width: number;
+      maxHeight: number;
+    }>({ left: 8, top: 48, width: 390, maxHeight: 360 });
     const [internalDebugSlot, setInternalDebugSlot] = useState<DebugSlotPreview | null>(null);
     const [secondaryNormalsEnabled, setSecondaryNormalsEnabled] = useState(false);
 
@@ -131,45 +146,199 @@ export const Viewport = React.memo(forwardRef<ViewportHandle, ViewportProps>(
       });
     }, []);
 
-    const frameBoundingBox = useCallback(
-      (bbox: number[] | null) => {
+    const frameMeshesOrBoxes = useCallback(
+      (meshes: THREE.Mesh[], fallbackBoxes: number[][]) => {
         const camera = cameraRef.current;
         const controls = controlsRef.current;
-        if (!camera || !controls || !bbox || bbox.length < 6) return;
+        if (!camera || !controls) return;
 
-        const minX = bbox[0];
-        const minY = bbox[1];
-        const minZ = bbox[2];
-        const maxX = bbox[3];
-        const maxY = bbox[4];
-        const maxZ = bbox[5];
+        let minX = Infinity;
+        let minY = Infinity;
+        let minZ = Infinity;
+        let maxX = -Infinity;
+        let maxY = -Infinity;
+        let maxZ = -Infinity;
+        let hasMeshVerts = false;
+
+        for (const mesh of meshes) {
+          const posAttr = mesh.geometry.getAttribute("position");
+          if (!(posAttr instanceof THREE.BufferAttribute) || posAttr.count === 0) continue;
+          const posArr = posAttr.array as ArrayLike<number>;
+          const indexAttr = mesh.geometry.getIndex();
+          if (indexAttr && indexAttr.count > 0) {
+            const idxArr = indexAttr.array as ArrayLike<number>;
+            const idxCount = indexAttr.count;
+            const vCount = posAttr.count;
+            for (let i = 0; i < idxCount; i++) {
+              const vi = idxArr[i];
+              if (vi >= vCount) continue;
+              const base = vi * 3;
+              const x = posArr[base];
+              const y = posArr[base + 1];
+              const z = posArr[base + 2];
+              if (!Number.isFinite(x) || !Number.isFinite(y) || !Number.isFinite(z)) continue;
+              if (x < minX) minX = x;
+              if (y < minY) minY = y;
+              if (z < minZ) minZ = z;
+              if (x > maxX) maxX = x;
+              if (y > maxY) maxY = y;
+              if (z > maxZ) maxZ = z;
+              hasMeshVerts = true;
+            }
+          } else {
+            const vCount = posAttr.count;
+            for (let vi = 0; vi < vCount; vi++) {
+              const base = vi * 3;
+              const x = posArr[base];
+              const y = posArr[base + 1];
+              const z = posArr[base + 2];
+              if (!Number.isFinite(x) || !Number.isFinite(y) || !Number.isFinite(z)) continue;
+              if (x < minX) minX = x;
+              if (y < minY) minY = y;
+              if (z < minZ) minZ = z;
+              if (x > maxX) maxX = x;
+              if (y > maxY) maxY = y;
+              if (z > maxZ) maxZ = z;
+              hasMeshVerts = true;
+            }
+          }
+        }
+
+        const validBoxes: number[][] = [];
+        if (!hasMeshVerts) {
+          for (const b of fallbackBoxes) {
+            if (b.length < 6) continue;
+            if (
+              !Number.isFinite(b[0]) ||
+              !Number.isFinite(b[1]) ||
+              !Number.isFinite(b[2]) ||
+              !Number.isFinite(b[3]) ||
+              !Number.isFinite(b[4]) ||
+              !Number.isFinite(b[5])
+            ) {
+              continue;
+            }
+            if (b[0] < minX) minX = b[0];
+            if (b[1] < minY) minY = b[1];
+            if (b[2] < minZ) minZ = b[2];
+            if (b[3] > maxX) maxX = b[3];
+            if (b[4] > maxY) maxY = b[4];
+            if (b[5] > maxZ) maxZ = b[5];
+            validBoxes.push(b);
+          }
+          if (validBoxes.length === 0) return;
+        }
+
+        if (
+          !Number.isFinite(minX) ||
+          !Number.isFinite(maxX) ||
+          !Number.isFinite(minY) ||
+          !Number.isFinite(maxY) ||
+          !Number.isFinite(minZ) ||
+          !Number.isFinite(maxZ)
+        ) {
+          return;
+        }
 
         const cx = (minX + maxX) * 0.5;
         const cy = (minY + maxY) * 0.5;
         const cz = (minZ + maxZ) * 0.5;
-        const dx = Math.max(0.1, maxX - minX);
-        const dy = Math.max(0.1, maxY - minY);
-        const dz = Math.max(0.1, maxZ - minZ);
-        const radius = Math.max(0.25, Math.hypot(dx, dy, dz) * 0.5);
 
-        // Fit model so height fills ~70% of viewport height
-        const fovRad = (camera.fov * Math.PI) / 180;
-        const targetHeight = Math.max(dy, radius * 1.35) / 0.7;
-        const dist = Math.max(
-          0.4,
-          (targetHeight * 0.5) / Math.tan(fovRad * 0.5)
-        );
-
-        // Front-three-quarter elevation
+        // Front-three-quarter elevation basis
         const dir = new THREE.Vector3(0.42, 0.26, 0.87).normalize();
+        const right = new THREE.Vector3(0, 1, 0).cross(dir).normalize();
+        const camUp = new THREE.Vector3().crossVectors(dir, right).normalize();
+        const rx = right.x, ry = right.y, rz = right.z;
+        const ux = camUp.x, uy = camUp.y, uz = camUp.z;
+        const dx = dir.x, dy = dir.y, dz = dir.z;
+
+        const container = containerRef.current;
+        const aspect =
+          container && container.clientHeight > 0
+            ? Math.max(0.1, container.clientWidth / container.clientHeight)
+            : Math.max(0.1, camera.aspect || 1);
+        const tanHalfV = Math.tan(((camera.fov * Math.PI) / 180) * 0.5);
+        const tanHalfH = tanHalfV * aspect;
+        const fill = 0.82;
+        const invV = 1 / (fill * tanHalfV);
+        const invH = 1 / (fill * tanHalfH);
+
+        let reqDist = 0;
+        let minProjZ = Infinity;
+        let maxProjZ = -Infinity;
+
+        const considerPoint = (vx: number, vy: number, vz: number) => {
+          const px = vx - cx;
+          const py = vy - cy;
+          const pz = vz - cz;
+          const camX = px * rx + py * ry + pz * rz;
+          const camY = px * ux + py * uy + pz * uz;
+          const camZ = px * dx + py * dy + pz * dz;
+          const dV = camZ + Math.abs(camY) * invV;
+          const dH = camZ + Math.abs(camX) * invH;
+          if (dV > reqDist) reqDist = dV;
+          if (dH > reqDist) reqDist = dH;
+          if (camZ < minProjZ) minProjZ = camZ;
+          if (camZ > maxProjZ) maxProjZ = camZ;
+        };
+
+        if (hasMeshVerts) {
+          for (const mesh of meshes) {
+            const posAttr = mesh.geometry.getAttribute("position");
+            if (!(posAttr instanceof THREE.BufferAttribute) || posAttr.count === 0) continue;
+            const posArr = posAttr.array as ArrayLike<number>;
+            const indexAttr = mesh.geometry.getIndex();
+            if (indexAttr && indexAttr.count > 0) {
+              const idxArr = indexAttr.array as ArrayLike<number>;
+              const idxCount = indexAttr.count;
+              const vCount = posAttr.count;
+              for (let i = 0; i < idxCount; i++) {
+                const vi = idxArr[i];
+                if (vi >= vCount) continue;
+                const base = vi * 3;
+                const x = posArr[base];
+                const y = posArr[base + 1];
+                const z = posArr[base + 2];
+                if (!Number.isFinite(x) || !Number.isFinite(y) || !Number.isFinite(z)) continue;
+                considerPoint(x, y, z);
+              }
+            } else {
+              const vCount = posAttr.count;
+              for (let vi = 0; vi < vCount; vi++) {
+                const base = vi * 3;
+                const x = posArr[base];
+                const y = posArr[base + 1];
+                const z = posArr[base + 2];
+                if (!Number.isFinite(x) || !Number.isFinite(y) || !Number.isFinite(z)) continue;
+                considerPoint(x, y, z);
+              }
+            }
+          }
+        } else {
+          for (const b of validBoxes) {
+            for (const x of [b[0], b[3]]) {
+              for (const y of [b[1], b[4]]) {
+                for (const z of [b[2], b[5]]) {
+                  considerPoint(x, y, z);
+                }
+              }
+            }
+          }
+        }
+
+        if (!Number.isFinite(minProjZ)) minProjZ = -0.25;
+        if (!Number.isFinite(maxProjZ)) maxProjZ = 0.25;
+
+        const dist = Math.max(0.25, reqDist, maxProjZ + 0.05);
         controls.target.set(cx, cy, cz);
         camera.position.set(
-          cx + dir.x * dist,
-          cy + dir.y * dist,
-          cz + dir.z * dist
+          cx + dx * dist,
+          cy + dy * dist,
+          cz + dz * dist
         );
-        camera.near = Math.max(0.005, dist * 0.005);
-        camera.far = Math.max(500, dist * 25);
+        const frontClearance = Math.max(0.002, dist - maxProjZ);
+        camera.near = Math.max(0.002, Math.min(dist * 0.01, frontClearance * 0.25));
+        camera.far = Math.max(500, (dist - minProjZ) * 10, dist * 25);
         camera.updateProjectionMatrix();
         controls.update();
         requestRender();
@@ -179,14 +348,66 @@ export const Viewport = React.memo(forwardRef<ViewportHandle, ViewportProps>(
 
     const frameAll = useCallback(() => {
       if (!manifest) return;
-      frameBoundingBox(manifest.boundingBox);
-    }, [frameBoundingBox, manifest]);
+      const visibleMeshes: THREE.Mesh[] = [];
+      const meshBuilder = meshBuilderRef.current;
+      if (meshBuilder) {
+        meshBuilder.batchMeshes.forEach((mesh) => {
+          if (mesh.visible) visibleMeshes.push(mesh);
+        });
+      }
+      if (visibleMeshes.length > 0) {
+        frameMeshesOrBoxes(visibleMeshes, []);
+        return;
+      }
+      const matShaderById = new Map<string, string | null>();
+      for (const m of manifest.materials) {
+        matShaderById.set(m.id, m.shaderName);
+      }
+      const fallbackBoxes = manifest.batches
+        .filter(
+          (b) =>
+            !b.isShadowProxy &&
+            !isNullShaderName(matShaderById.get(b.materialId)) &&
+            b.bbox.length === 6 &&
+            b.indexCount > 0
+        )
+        .map((b) => b.bbox);
+      if (fallbackBoxes.length > 0) {
+        frameMeshesOrBoxes([], fallbackBoxes);
+      } else if (manifest.boundingBox.length === 6) {
+        frameMeshesOrBoxes([], [manifest.boundingBox]);
+      }
+    }, [frameMeshesOrBoxes, manifest]);
 
     const frameSelection = useCallback(() => {
       if (!manifest) return;
+      if (
+        selection.length === 0 ||
+        selection.some((s) => s.kind === "root")
+      ) {
+        frameAll();
+        return;
+      }
+      const hasBoneSel = selection.some((s) => s.kind === "bone");
+      if (!hasBoneSel && meshBuilderRef.current) {
+        const selBatchIds = collectBatchIdsForSelection(manifest, selection, false);
+        const selMeshes: THREE.Mesh[] = [];
+        selBatchIds.forEach((bid) => {
+          const m = meshBuilderRef.current?.batchMeshes.get(bid);
+          if (m && m.visible) selMeshes.push(m);
+        });
+        if (selMeshes.length > 0) {
+          frameMeshesOrBoxes(selMeshes, []);
+          return;
+        }
+      }
       const bbox = computeSelectionBoundingBox(manifest, selection);
-      frameBoundingBox(bbox ?? manifest.boundingBox);
-    }, [frameBoundingBox, manifest, selection]);
+      if (bbox) {
+        frameMeshesOrBoxes([], [bbox]);
+      } else {
+        frameAll();
+      }
+    }, [frameAll, frameMeshesOrBoxes, manifest, selection]);
 
     useImperativeHandle(
       ref,
@@ -366,7 +587,7 @@ export const Viewport = React.memo(forwardRef<ViewportHandle, ViewportProps>(
       const nodeKey = `${manifest.nodeId}:${manifest.fileName}`;
       if (lastFramedNodeKeyRef.current !== nodeKey) {
         lastFramedNodeKeyRef.current = nodeKey;
-        frameBoundingBox(manifest.boundingBox);
+        frameAll();
       } else {
         requestRender();
       }
@@ -381,7 +602,7 @@ export const Viewport = React.memo(forwardRef<ViewportHandle, ViewportProps>(
       hiddenBatchIds,
       hiddenMeshGroupIds,
       selection,
-      frameBoundingBox,
+      frameAll,
       requestRender,
       onShaderStatusesChanged,
       contextLost,
@@ -493,6 +714,75 @@ export const Viewport = React.memo(forwardRef<ViewportHandle, ViewportProps>(
       return collectDebugTextureSlots(manifest, targetMat);
     }, [manifest, selection]);
 
+    const sortedLodLevels = useMemo(
+      () => sortLodLevelsByPriority(manifest?.lodLevels ?? []),
+      [manifest?.lodLevels]
+    );
+
+    const updateDebugPopoverPosition = useCallback(() => {
+      const btn = debugBtnRef.current;
+      if (!btn) return;
+      const rect = btn.getBoundingClientRect();
+      const vw = window.innerWidth;
+      const vh = window.innerHeight;
+      const margin = 8;
+      const width = Math.min(390, Math.max(220, vw - margin * 2));
+      const left = Math.max(margin, Math.min(rect.left, vw - width - margin));
+      const desiredMaxH = 360;
+      const spaceBelow = vh - rect.bottom - margin - 4;
+      const spaceAbove = rect.top - margin - 4;
+      const openUp = spaceBelow < 180 && spaceAbove > spaceBelow;
+      const maxHeight = Math.max(
+        120,
+        Math.min(desiredMaxH, openUp ? spaceAbove : spaceBelow)
+      );
+      if (openUp) {
+        const bottom = Math.max(margin, vh - rect.top + 4);
+        setDebugPopoverPos({ left, bottom, width, maxHeight });
+      } else {
+        const top = Math.max(margin, Math.min(vh - margin - 120, rect.bottom + 4));
+        setDebugPopoverPos({ left, top, width, maxHeight });
+      }
+    }, []);
+
+    useLayoutEffect(() => {
+      if (!debugPopoverOpen) return;
+      updateDebugPopoverPosition();
+    }, [debugPopoverOpen, debugSlotRows.length, updateDebugPopoverPosition]);
+
+    useEffect(() => {
+      if (!debugPopoverOpen) return;
+      const onPointerDown = (e: MouseEvent) => {
+        const target = e.target as Node | null;
+        if (
+          debugBtnRef.current?.contains(target) ||
+          debugPopoverRef.current?.contains(target)
+        ) {
+          return;
+        }
+        setDebugPopoverOpen(false);
+      };
+      const onKeyDown = (e: KeyboardEvent) => {
+        if (e.key === "Escape") {
+          e.preventDefault();
+          e.stopPropagation();
+          setDebugPopoverOpen(false);
+          debugBtnRef.current?.focus();
+        }
+      };
+      const onViewportChange = () => updateDebugPopoverPosition();
+      document.addEventListener("mousedown", onPointerDown, true);
+      document.addEventListener("keydown", onKeyDown, true);
+      window.addEventListener("resize", onViewportChange);
+      window.addEventListener("scroll", onViewportChange, true);
+      return () => {
+        document.removeEventListener("mousedown", onPointerDown, true);
+        document.removeEventListener("keydown", onKeyDown, true);
+        window.removeEventListener("resize", onViewportChange);
+        window.removeEventListener("scroll", onViewportChange, true);
+      };
+    }, [debugPopoverOpen, updateDebugPopoverPosition]);
+
     const channels: Array<"RGB" | "R" | "G" | "B" | "A"> = [
       "RGB",
       "R",
@@ -556,7 +846,7 @@ export const Viewport = React.memo(forwardRef<ViewportHandle, ViewportProps>(
               Grid
             </button>
 
-            {manifest && manifest.lodLevels.length > 1 && (
+            {manifest && sortedLodLevels.length > 1 && (
               <div className="wmb-vp-lod-label" data-tooltip="Filter WMB3 LOD level">
                 <span>LOD:</span>
                 <StudioSelect
@@ -564,7 +854,7 @@ export const Viewport = React.memo(forwardRef<ViewportHandle, ViewportProps>(
                   value={activeLodLevel === null ? "all" : String(activeLodLevel)}
                   options={[
                     { value: "all", label: "All LODs" },
-                    ...manifest.lodLevels.map((lvl) => ({
+                    ...sortedLodLevels.map((lvl) => ({
                       value: String(lvl),
                       label: `LOD ${lvl}`,
                     })),
@@ -578,6 +868,7 @@ export const Viewport = React.memo(forwardRef<ViewportHandle, ViewportProps>(
 
             <div className="wmb-vp-popover-anchor">
               <button
+                ref={debugBtnRef}
                 type="button"
                 className={`wmb-vp-btn ${debugSlot ? "active" : ""}`}
                 onClick={() => setDebugPopoverOpen((prev) => !prev)}
@@ -588,87 +879,105 @@ export const Viewport = React.memo(forwardRef<ViewportHandle, ViewportProps>(
                   : "Tex Debug ▾"}
               </button>
 
-              {debugPopoverOpen && (
-                <div className="wmb-vp-debug-popover">
-                  <div className="wmb-vp-debug-header">
-                    <span>Texture Channel Preview</span>
-                    <button
-                      type="button"
-                      className={`wmb-vp-channel-pill ${
-                        !debugSlot ? "active" : ""
-                      }`}
-                      onClick={() => setDebugSlot(null)}
-                    >
-                      Off (Shaded)
-                    </button>
-                  </div>
-                  {debugSlotRows.length === 0 ? (
-                    <div className="wmb-vp-debug-empty">
-                      No texture slots on this model.
+              {debugPopoverOpen &&
+                createPortal(
+                  <div
+                    ref={debugPopoverRef}
+                    className="wmb-vp-debug-popover"
+                    style={{
+                      left: `${debugPopoverPos.left}px`,
+                      top:
+                        debugPopoverPos.top !== undefined
+                          ? `${debugPopoverPos.top}px`
+                          : undefined,
+                      bottom:
+                        debugPopoverPos.bottom !== undefined
+                          ? `${debugPopoverPos.bottom}px`
+                          : undefined,
+                      width: `${debugPopoverPos.width}px`,
+                      maxHeight: `${debugPopoverPos.maxHeight}px`,
+                    }}
+                  >
+                    <div className="wmb-vp-debug-header">
+                      <span>Texture Channel Preview</span>
+                      <button
+                        type="button"
+                        className={`wmb-vp-channel-pill ${
+                          !debugSlot ? "active" : ""
+                        }`}
+                        onClick={() => setDebugSlot(null)}
+                      >
+                        Off (Shaded)
+                      </button>
                     </div>
-                  ) : (
-                    <div className="wmb-vp-debug-grid">
-                      {debugSlotRows.map((row) => (
-                        <div key={row.slotIndex} className="wmb-vp-debug-row">
-                          <div className="wmb-vp-debug-slot-info">
-                            {row.thumbnailDataUrl ? (
-                              <img
-                                src={row.thumbnailDataUrl}
-                                alt={row.name}
-                                className="wmb-vp-debug-thumb"
-                              />
-                            ) : (
-                              <div className="wmb-vp-debug-thumb-placeholder">
-                                #{row.slotIndex}
+                    {debugSlotRows.length === 0 ? (
+                      <div className="wmb-vp-debug-empty">
+                        No texture slots on this model.
+                      </div>
+                    ) : (
+                      <div className="wmb-vp-debug-grid">
+                        {debugSlotRows.map((row) => (
+                          <div key={row.slotIndex} className="wmb-vp-debug-row">
+                            <div className="wmb-vp-debug-slot-info">
+                              {row.thumbnailDataUrl ? (
+                                <img
+                                  src={row.thumbnailDataUrl}
+                                  alt={row.name}
+                                  className="wmb-vp-debug-thumb"
+                                />
+                              ) : (
+                                <div className="wmb-vp-debug-thumb-placeholder">
+                                  #{row.slotIndex}
+                                </div>
+                              )}
+                              <div className="wmb-vp-debug-meta">
+                                <span className="wmb-vp-debug-name">
+                                  {row.name}
+                                </span>
+                                <span
+                                  className={`wmb-role-badge role-${row.role}`}
+                                >
+                                  {row.role}
+                                </span>
                               </div>
-                            )}
-                            <div className="wmb-vp-debug-meta">
-                              <span className="wmb-vp-debug-name">
-                                {row.name}
-                              </span>
-                              <span
-                                className={`wmb-role-badge role-${row.role}`}
-                              >
-                                {row.role}
-                              </span>
+                            </div>
+                            <div className="wmb-vp-channel-pills">
+                              {channels.map((ch) => {
+                                const isActive =
+                                  debugSlot?.slotIndex === row.slotIndex &&
+                                  debugSlot?.channel === ch;
+                                return (
+                                  <button
+                                    key={ch}
+                                    type="button"
+                                    className={`wmb-vp-channel-pill ${
+                                      isActive ? "active" : ""
+                                    }`}
+                                    onClick={() => {
+                                      if (isActive) {
+                                        setDebugSlot(null);
+                                      } else {
+                                        setDebugSlot({
+                                          slotIndex: row.slotIndex,
+                                          slotName: row.name,
+                                          role: row.role,
+                                          channel: ch,
+                                        });
+                                      }
+                                    }}
+                                  >
+                                    {ch}
+                                  </button>
+                                );
+                              })}
                             </div>
                           </div>
-                          <div className="wmb-vp-channel-pills">
-                            {channels.map((ch) => {
-                              const isActive =
-                                debugSlot?.slotIndex === row.slotIndex &&
-                                debugSlot?.channel === ch;
-                              return (
-                                <button
-                                  key={ch}
-                                  type="button"
-                                  className={`wmb-vp-channel-pill ${
-                                    isActive ? "active" : ""
-                                  }`}
-                                  onClick={() => {
-                                    if (isActive) {
-                                      setDebugSlot(null);
-                                    } else {
-                                      setDebugSlot({
-                                        slotIndex: row.slotIndex,
-                                        slotName: row.name,
-                                        role: row.role,
-                                        channel: ch,
-                                      });
-                                    }
-                                  }}
-                                >
-                                  {ch}
-                                </button>
-                              );
-                            })}
-                          </div>
-                        </div>
-                      ))}
-                    </div>
-                  )}
-                </div>
-              )}
+                        ))}
+                      </div>
+                    )}
+                  </div>,
+                  document.body
+                )}
             </div>
           </div>
 

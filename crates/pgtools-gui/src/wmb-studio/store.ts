@@ -177,6 +177,62 @@ export function parseTextureSceneId(id: string): number | null {
   return Number.isNaN(parsed) ? null : parsed >>> 0;
 }
 
+export const LOD_PRIORITY_ORDER = [5, 0, 1, 2, 3, 4, -1] as const;
+
+export function isNullShaderName(
+  shaderName: string | null | undefined
+): boolean {
+  if (!shaderName) return false;
+  return shaderName.trim().toLowerCase().startsWith("null00");
+}
+
+export function getLodPriority(level: number): number {
+  const idx = (LOD_PRIORITY_ORDER as readonly number[]).indexOf(level);
+  return idx >= 0 ? idx : LOD_PRIORITY_ORDER.length + Math.abs(level);
+}
+
+export function sortLodLevelsByPriority(levels: readonly number[]): number[] {
+  return [...levels].sort((a, b) => {
+    const diff = getLodPriority(a) - getLodPriority(b);
+    return diff !== 0 ? diff : a - b;
+  });
+}
+
+export function pickDefaultLodLevel(
+  manifest: WmbSceneManifest | null
+): number | null {
+  if (!manifest || !manifest.isWmb3 || manifest.lodLevels.length === 0) {
+    return null;
+  }
+  const matShaderById = new Map<string, string | null>();
+  for (const m of manifest.materials) {
+    matShaderById.set(m.id, m.shaderName);
+  }
+  const renderableBatchIds = new Set<string>();
+  for (const b of manifest.batches) {
+    if (
+      !b.isShadowProxy &&
+      !isNullShaderName(matShaderById.get(b.materialId)) &&
+      b.indexCount > 0 &&
+      b.vertexCount > 0
+    ) {
+      renderableBatchIds.add(b.id);
+    }
+  }
+  const populatedLevels = new Set<number>();
+  for (const mg of manifest.meshGroups) {
+    for (const lod of mg.lods) {
+      if (lod.batchIds.some((bid) => renderableBatchIds.has(bid))) {
+        populatedLevels.add(lod.level);
+      }
+    }
+  }
+  const candidates =
+    populatedLevels.size > 0 ? Array.from(populatedLevels) : manifest.lodLevels;
+  const sorted = sortLodLevelsByPriority(candidates);
+  return sorted.length > 0 ? sorted[0] : null;
+}
+
 export function findMaterialById(
   manifest: WmbSceneManifest | null,
   id: string
@@ -429,8 +485,19 @@ export function computeSelectionBoundingBox(
   let maxZ = -Infinity;
   let anyFound = false;
 
+  const matShaderById = new Map<string, string | null>();
+  for (const m of manifest.materials) {
+    matShaderById.set(m.id, m.shaderName);
+  }
+  const explicitBatchSelection = selection.every((s) => s.kind === "batch");
+
   for (const b of manifest.batches) {
-    if (batchIds.has(b.id) && !b.isShadowProxy && b.bbox.length === 6) {
+    if (
+      batchIds.has(b.id) &&
+      !b.isShadowProxy &&
+      (explicitBatchSelection || !isNullShaderName(matShaderById.get(b.materialId))) &&
+      b.bbox.length === 6
+    ) {
       minX = Math.min(minX, b.bbox[0]);
       minY = Math.min(minY, b.bbox[1]);
       minZ = Math.min(minZ, b.bbox[2]);

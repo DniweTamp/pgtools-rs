@@ -114,14 +114,35 @@ pub(crate) fn parse_eff_entry_id(fname: &str) -> u32 {
 }
 
 pub(crate) fn find_pkz_peer_dtt_index(pkz: &PkzArchive, entry_name: &str) -> Option<usize> {
-    if !entry_name.to_ascii_lowercase().ends_with(".dat") || entry_name.len() < 4 {
+    let norm = entry_name.replace('\\', "/");
+    let trimmed = norm.trim_start_matches('/');
+    if !trimmed.to_ascii_lowercase().ends_with(".dat") || trimmed.len() < 4 {
         return None;
     }
-    let stem = &entry_name[..entry_name.len() - 4];
+    let stem = &trimmed[..trimmed.len() - 4];
     let target_dtt = format!("{stem}.dtt");
-    pkz.descriptors
-        .iter()
-        .position(|d| d.name.eq_ignore_ascii_case(&target_dtt))
+    pkz.descriptors.iter().position(|d| {
+        d.name
+            .replace('\\', "/")
+            .trim_start_matches('/')
+            .eq_ignore_ascii_case(&target_dtt)
+    })
+}
+
+pub(crate) fn find_pkz_peer_dat_index(pkz: &PkzArchive, entry_name: &str) -> Option<usize> {
+    let norm = entry_name.replace('\\', "/");
+    let trimmed = norm.trim_start_matches('/');
+    if !trimmed.to_ascii_lowercase().ends_with(".dtt") || trimmed.len() < 4 {
+        return None;
+    }
+    let stem = &trimmed[..trimmed.len() - 4];
+    let target_dat = format!("{stem}.dat");
+    pkz.descriptors.iter().position(|d| {
+        d.name
+            .replace('\\', "/")
+            .trim_start_matches('/')
+            .eq_ignore_ascii_case(&target_dat)
+    })
 }
 
 /// Compare a current `PkzArchive` against its saved baseline bytes (if any).

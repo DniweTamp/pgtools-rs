@@ -2,13 +2,15 @@ use crate::session::{
     atomic_write_file, lock_clipboard, lock_session, record_mutation_with_key, AppState, DocSnapshot,
 };
 use crate::vfs::{
-    build_outline_from_session, detect_file_format_tag, find_paired_wtp_bytes, is_bntx_blob,
-    resolve_subblob, split_container_and_leaf, write_back_subblob_with_align, DocumentOutline,
+    build_outline_from_session, detect_file_format_tag, find_paired_wtp_bytes,
+    find_pkz_peer_dat_index, find_pkz_peer_dtt_index, is_bntx_blob, resolve_subblob,
+    split_container_and_leaf, write_back_subblob_with_align, DocumentOutline,
 };
 use base64::{engine::general_purpose::STANDARD as BASE64, Engine as _};
 use pgtools_core::{
     dat::DatFile,
     databases::lookup_wmb_vertex_layout,
+    pkz::{OodleLibrary, PkzArchive},
     demo::build_demo_dat,
     scene::{
         build_wmb3_scene, build_wmb_scene, extract_texture_for_wtx2,
@@ -115,20 +117,10 @@ pub(crate) fn collect_paired_wtb_texture_ids(
         }
     }
 
-    let mut candidate_roots: Vec<Vec<u8>> = Vec::new();
-    if let DocSnapshot::PairedDatDtt { dat, dtt } = snap {
-        candidate_roots.push(dat.as_ref().clone());
-        candidate_roots.push(dtt.as_ref().clone());
-    } else if !container_parts.is_empty() {
-        let parent_parts = &container_parts[..container_parts.len() - 1];
-        let parent_id = parent_parts.join("/");
-        if let Ok((_, parent_bytes, _, _)) = resolve_subblob(snap, &parent_id, oodle_dll) {
-            candidate_roots.push(parent_bytes);
-        }
-    }
+    let candidate_roots = collect_candidate_dat_roots(snap, &container_parts, oodle_dll);
 
-    for dat_bytes in candidate_roots {
-        if let Ok(dat) = DatFile::from_bytes(&dat_bytes) {
+    for (_prefix, dat_bytes, _peer_dtt) in candidate_roots {
+        if let Ok(dat) = DatFile::from_bytes(dat_bytes.as_slice()) {
             for e in &dat.entries {
                 let ext = e.extension.to_ascii_lowercase();
                 if ext == "wtb" || ext == "wta" || ext == "bntx" {
@@ -141,6 +133,110 @@ pub(crate) fn collect_paired_wtb_texture_ids(
     }
 
     ids
+}
+
+/// Resolve the parent DAT/DTT container roots (with optional peer DTT bytes for `.wta`+`.wtp`
+/// pairing) for a model node, including `.dat`/`.dtt` sibling pairs stored inside a `.pkz` archive.
+fn collect_candidate_dat_roots(
+    snap: &DocSnapshot,
+    container_parts: &[&str],
+    oodle_dll: Option<&Path>,
+) -> Vec<(String, Arc<Vec<u8>>, Option<Arc<Vec<u8>>>)> {
+    let mut candidate_roots: Vec<(String, Arc<Vec<u8>>, Option<Arc<Vec<u8>>>)> = Vec::new();
+    if let DocSnapshot::PairedDatDtt { dat, dtt } = snap {
+        candidate_roots.push(("root:dat".to_string(), dat.clone(), Some(dtt.clone())));
+        candidate_roots.push(("root:dtt".to_string(), dtt.clone(), None));
+        return candidate_roots;
+    }
+    if container_parts.is_empty() {
+        return candidate_roots;
+    }
+
+    let parent_parts = &container_parts[..container_parts.len() - 1];
+    let parent_id = parent_parts.join("/");
+
+    // If the parent container is an entry inside a PKZ archive (e.g. `pkz:4/dat:0`),
+    // also resolve its sibling `.dtt` (or `.dat`) inside the same PKZ so `.wta`+`.wtp`
+    // and `.wtb`/`.bntx` banks in the peer archive are loaded automatically.
+    if let Some(pkz_idx) = parent_parts
+        .last()
+        .and_then(|p| p.strip_prefix("pkz:"))
+        .and_then(|s| s.parse::<usize>().ok())
+    {
+        let grandparent_parts = &parent_parts[..parent_parts.len() - 1];
+        let grandparent_id = grandparent_parts.join("/");
+
+        let borrowed_pkz: Option<Arc<Vec<u8>>> = if grandparent_id.is_empty() {
+            match snap {
+                DocSnapshot::SingleFile(b) => Some(b.clone()),
+                _ => None,
+            }
+        } else {
+            resolve_subblob(snap, &grandparent_id, oodle_dll)
+                .ok()
+                .map(|(_, bytes, _, _)| Arc::new(bytes))
+        };
+
+        if let Some(pkz_bytes) = borrowed_pkz {
+            if let Ok(pkz) = PkzArchive::from_bytes(pkz_bytes.as_slice()) {
+                if let Some(desc) = pkz.descriptors.get(pkz_idx) {
+                    let oodle_lib = OodleLibrary::load(oodle_dll).ok();
+                    if let Ok(parent_bytes) =
+                        pkz.extract_entry_with_lib(pkz_bytes.as_slice(), pkz_idx, oodle_lib.as_ref())
+                    {
+                        let parent_arc = Arc::new(parent_bytes);
+                        let make_pkz_node_id = |entry_idx: usize| -> String {
+                            if grandparent_id.is_empty() {
+                                format!("pkz:{entry_idx}")
+                            } else {
+                                format!("{grandparent_id}/pkz:{entry_idx}")
+                            }
+                        };
+
+                        if let Some(dtt_idx) = find_pkz_peer_dtt_index(&pkz, &desc.name) {
+                            if let Ok(dtt_bytes) = pkz.extract_entry_with_lib(
+                                pkz_bytes.as_slice(),
+                                dtt_idx,
+                                oodle_lib.as_ref(),
+                            ) {
+                                let dtt_arc = Arc::new(dtt_bytes);
+                                candidate_roots.push((
+                                    parent_id,
+                                    parent_arc,
+                                    Some(dtt_arc.clone()),
+                                ));
+                                candidate_roots.push((make_pkz_node_id(dtt_idx), dtt_arc, None));
+                                return candidate_roots;
+                            }
+                        } else if let Some(dat_idx) = find_pkz_peer_dat_index(&pkz, &desc.name) {
+                            if let Ok(dat_bytes) = pkz.extract_entry_with_lib(
+                                pkz_bytes.as_slice(),
+                                dat_idx,
+                                oodle_lib.as_ref(),
+                            ) {
+                                let dat_arc = Arc::new(dat_bytes);
+                                candidate_roots.push((
+                                    make_pkz_node_id(dat_idx),
+                                    dat_arc,
+                                    Some(parent_arc.clone()),
+                                ));
+                                candidate_roots.push((parent_id, parent_arc, None));
+                                return candidate_roots;
+                            }
+                        }
+
+                        candidate_roots.push((parent_id, parent_arc, None));
+                        return candidate_roots;
+                    }
+                }
+            }
+        }
+    }
+
+    if let Ok((_, parent_bytes, _, _)) = resolve_subblob(snap, &parent_id, oodle_dll) {
+        candidate_roots.push((parent_id, Arc::new(parent_bytes), None));
+    }
+    candidate_roots
 }
 
 /// Discover all sibling texture banks (`.wtb`, `.wta`+`.wtp`, `.bntx`) for `model_node_id`.
@@ -171,18 +267,8 @@ pub(crate) fn collect_paired_wtb_banks(
         }
     }
 
-    // 2. Model inside DAT / Paired DAT+DTT / PKZ (zero-copy Arc borrows for PairedDatDtt)
-    let mut candidate_roots: Vec<(String, Arc<Vec<u8>>, Option<Arc<Vec<u8>>>)> = Vec::new();
-    if let DocSnapshot::PairedDatDtt { dat, dtt } = snap {
-        candidate_roots.push(("root:dat".to_string(), dat.clone(), Some(dtt.clone())));
-        candidate_roots.push(("root:dtt".to_string(), dtt.clone(), None));
-    } else if !container_parts.is_empty() {
-        let parent_parts = &container_parts[..container_parts.len() - 1];
-        let parent_id = parent_parts.join("/");
-        if let Ok((_, parent_bytes, _, _)) = resolve_subblob(snap, &parent_id, oodle_dll) {
-            candidate_roots.push((parent_id, Arc::new(parent_bytes), None));
-        }
-    }
+    // 2. Model inside DAT / Paired DAT+DTT / PKZ (zero-copy Arc borrows for PairedDatDtt & root PKZ)
+    let candidate_roots = collect_candidate_dat_roots(snap, &container_parts, oodle_dll);
 
     for (prefix, dat_bytes, peer_dtt) in candidate_roots {
         if let Ok(dat) = DatFile::from_bytes(dat_bytes.as_slice()) {

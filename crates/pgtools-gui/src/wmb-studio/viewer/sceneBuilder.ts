@@ -20,7 +20,7 @@ import {
   updateMaterialUniformsInPlace,
 } from "../shaders/registry";
 import { STUDIO_VERTEX_SHADER } from "../shaders/common";
-import { DebugChannelMode, DebugSlotPreview, WmbGeometryCache } from "../store";
+import { DebugChannelMode, DebugSlotPreview, isNullShaderName, WmbGeometryCache } from "../store";
 import { ViewerTextureCache } from "./textures";
 
 const verifiedShaderPrograms = new WeakMap<
@@ -320,8 +320,12 @@ export class SceneMeshBuilder {
         batch.fileOrder
       );
 
-      // Visibility filtering: shadow proxies, LOD level filter, and manual visibility toggles
-      let visible = !batch.isShadowProxy && batch.indexCount > 0 && batch.vertexCount > 0;
+      // Visibility filtering: shadow proxies, NULL00 shader meshes, LOD level filter, and manual visibility toggles
+      let visible =
+        !batch.isShadowProxy &&
+        !isNullShaderName(matDesc?.shaderName) &&
+        batch.indexCount > 0 &&
+        batch.vertexCount > 0;
       if (
         visible &&
         options.activeLodLevel !== null &&

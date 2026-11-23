@@ -1127,6 +1127,7 @@ pub fn build_wmb3_scene(
     let mut mat_used_by_batches: BTreeMap<usize, Vec<String>> = BTreeMap::new();
     let mut batches = Vec::with_capacity(wmb3.batches.len());
     let mut all_model_positions = Vec::new();
+    let mut non_null_model_positions = Vec::new();
 
     for (bi, b) in wmb3.batches.iter().enumerate() {
         let batch_uid = uid_map.wmb3_batch_uids[bi];
@@ -1144,6 +1145,11 @@ pub fn build_wmb3_scene(
         let mesh_id = format!("mesh:{mesh_uid}");
         let mat_uid = uid_map.material_uids.get(mat_idx).copied().unwrap_or(0);
         let mat_id = format!("mat:{mat_uid}");
+        let is_null_shader = wmb3
+            .materials
+            .get(mat_idx)
+            .map(|m| m.shader_name.trim().to_ascii_lowercase().starts_with("null00"))
+            .unwrap_or(false);
 
         let lod_id = if let Some((lvl, _)) = lod_opt {
             mesh_lod_batches
@@ -1195,6 +1201,9 @@ pub fn build_wmb3_scene(
                         if let Some(&p) = vg_positions.get(vgi).and_then(|vp| vp.get(v_idx)) {
                             batch_positions.push(p);
                             all_model_positions.push(p);
+                            if !is_null_shader {
+                                non_null_model_positions.push(p);
+                            }
                         }
                     }
                 }
@@ -1270,8 +1279,8 @@ pub fn build_wmb3_scene(
         });
     }
 
-    let model_bbox = if wmb3.bounding_box != [0.0; 6] {
-        wmb3.bounding_box
+    let model_bbox = if !non_null_model_positions.is_empty() {
+        compute_bbox_from_positions(&non_null_model_positions)
     } else {
         compute_bbox_from_positions(&all_model_positions)
     };
