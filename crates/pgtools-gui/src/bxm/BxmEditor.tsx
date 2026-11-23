@@ -1,4 +1,4 @@
-import React from "react";
+import React, { useCallback, useEffect, useRef, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import {
   BxmXmlNode,
@@ -8,7 +8,8 @@ import {
   PointerDragState,
 } from "../types";
 import { getBxmNodeByPath, safeXmlName } from "./xml";
-import { IconChevronDown, IconCode } from "../components/Icons";
+import { IconChevronDown, IconChevronRight, IconCode } from "../components/Icons";
+import { AnimatedBranch } from "../components/AnimatedBranch";
 
 export interface BxmCenterViewProps {
   nodePayload: NodeInspectPayload;
@@ -18,8 +19,6 @@ export interface BxmCenterViewProps {
   setBxmXmlDraft: (val: string) => void;
   selectedBxmPath: string;
   setSelectedBxmPath: (path: string) => void;
-  bxmExpandedPaths: Record<string, boolean>;
-  setBxmExpandedPaths: React.Dispatch<React.SetStateAction<Record<string, boolean>>>;
   pointerDrag: PointerDragState | null;
   setPointerDrag: React.Dispatch<React.SetStateAction<PointerDragState | null>>;
   updateBxmDraftTree: (nextRoot: BxmXmlNode) => void;
@@ -30,6 +29,315 @@ export interface BxmCenterViewProps {
   setStatusLeft: (msg: string) => void;
 }
 
+interface BxmFocusRequest {
+  path: string;
+  field: string;
+  seq: number;
+}
+
+interface BxmExpandChange {
+  path: string;
+  seq: number;
+}
+
+interface BxmTreeNodeProps {
+  node: BxmXmlNode;
+  pathStr: string;
+  selectedBxmPath: string;
+  bxmExpandedPaths: Record<string, boolean>;
+  lastExpandChange: BxmExpandChange | null;
+  pointerDrag: PointerDragState | null;
+  focusRequest: BxmFocusRequest | null;
+  onSelect: (pathStr: string, focusField?: string) => void;
+  onToggleExpand: (pathStr: string, currentExpanded: boolean) => void;
+  onStartDrag: (e: React.PointerEvent<HTMLDivElement>, pathStr: string, tagName: string) => void;
+  onNodeContextMenu: (e: React.MouseEvent<HTMLDivElement>, pathStr: string) => void;
+  onChangeTag: (pathStr: string, value: string) => void;
+  onBlurTag: (pathStr: string, value: string) => void;
+  onChangeAttrKey: (pathStr: string, idx: number, value: string) => void;
+  onChangeAttrVal: (pathStr: string, idx: number, value: string) => void;
+  onChangeValue: (pathStr: string, value: string) => void;
+}
+
+const isPathInSubtree = (target: string | null | undefined, rootPath: string): boolean => {
+  if (!target) return false;
+  return target === rootPath || target.startsWith(`${rootPath}.`);
+};
+
+const BxmTreeNode: React.FC<BxmTreeNodeProps> = React.memo(
+  function BxmTreeNode({
+    node,
+    pathStr,
+    selectedBxmPath,
+    bxmExpandedPaths,
+    lastExpandChange,
+    pointerDrag,
+    focusRequest,
+    onSelect,
+    onToggleExpand,
+    onStartDrag,
+    onNodeContextMenu,
+    onChangeTag,
+    onBlurTag,
+    onChangeAttrKey,
+    onChangeAttrVal,
+    onChangeValue,
+  }) {
+    const rowRef = useRef<HTMLDivElement | null>(null);
+    const isSel = selectedBxmPath === pathStr;
+    const hasChildren = node.children && node.children.length > 0;
+    const isExpanded = bxmExpandedPaths[pathStr] ?? true;
+    const isDragBefore =
+      pointerDrag?.active &&
+      pointerDrag.kind === "bxm" &&
+      pointerDrag.overId === pathStr &&
+      pointerDrag.insertPos === "before";
+    const isDragAfter =
+      pointerDrag?.active &&
+      pointerDrag.kind === "bxm" &&
+      pointerDrag.overId === pathStr &&
+      pointerDrag.insertPos === "after";
+
+    useEffect(() => {
+      if (!isSel || !focusRequest || focusRequest.path !== pathStr) return;
+      const input = rowRef.current?.querySelector<HTMLInputElement>(
+        `[data-bxm-field="${focusRequest.field}"]`
+      );
+      if (input) {
+        input.focus();
+        input.select();
+      }
+    }, [isSel, focusRequest, pathStr]);
+
+    return (
+      <div style={{ marginLeft: pathStr === "0" ? 0 : 16 }}>
+        <div
+          ref={rowRef}
+          data-bxm-path={pathStr}
+          className={`tree-row bxm-tree-row ${isSel ? "selected" : ""} ${
+            isDragBefore ? "drag-insert-before" : ""
+          } ${isDragAfter ? "drag-insert-after" : ""}`}
+          onPointerDown={(e) => onStartDrag(e, pathStr, node.name)}
+          onClick={() => onSelect(pathStr)}
+          onContextMenu={(e) => onNodeContextMenu(e, pathStr)}
+        >
+          <span
+            className={`wmb-tree-caret ${hasChildren ? "clickable" : "leaf"}`}
+            onClick={(e) => {
+              if (!hasChildren) return;
+              e.stopPropagation();
+              onToggleExpand(pathStr, isExpanded);
+            }}
+          >
+            {hasChildren ? <IconChevronRight expanded={isExpanded} /> : "·"}
+          </span>
+
+          {/* Inline Tag Name */}
+          <span className="mono" style={{ color: "var(--brush-muted)" }}>&lt;</span>
+          {isSel ? (
+            <input
+              type="text"
+              data-bxm-field="tag"
+              className="field-box mono"
+              style={{
+                width: Math.max(64, (node.name?.length || 4) * 8 + 18),
+                height: 22,
+                padding: "1px 5px",
+                fontWeight: 600,
+                fontSize: 11.5,
+                boxSizing: "border-box",
+              }}
+              value={node.name}
+              onClick={(e) => e.stopPropagation()}
+              onChange={(e) => onChangeTag(pathStr, e.target.value)}
+              onBlur={(e) => onBlurTag(pathStr, e.target.value)}
+            />
+          ) : (
+            <span
+              className="bxm-inline-chip tag mono"
+              onClick={(e) => {
+                e.stopPropagation();
+                onSelect(pathStr, "tag");
+              }}
+            >
+              {node.name}
+            </span>
+          )}
+          <span className="mono" style={{ color: "var(--brush-muted)" }}>&gt;</span>
+
+          {/* Inline Attributes */}
+          {node.attributes.map(([k, v], idx) => (
+            <span
+              key={idx}
+              style={{ display: "inline-flex", alignItems: "center", gap: 3 }}
+              onClick={(e) => e.stopPropagation()}
+            >
+              {isSel ? (
+                <input
+                  type="text"
+                  data-bxm-field={`ak-${idx}`}
+                  className="field-box mono"
+                  style={{
+                    width: Math.max(48, k.length * 7.5 + 14),
+                    height: 21,
+                    padding: "1px 4px",
+                    fontSize: 11,
+                    color: "var(--brush-muted)",
+                    boxSizing: "border-box",
+                  }}
+                  value={k}
+                  onChange={(e) => onChangeAttrKey(pathStr, idx, e.target.value)}
+                />
+              ) : (
+                <span
+                  className="bxm-inline-chip attr-key mono"
+                  onClick={() => onSelect(pathStr, `ak-${idx}`)}
+                >
+                  {k}
+                </span>
+              )}
+              <span className="mono" style={{ color: "var(--brush-muted)" }}>=</span>
+              {isSel ? (
+                <input
+                  type="text"
+                  data-bxm-field={`av-${idx}`}
+                  className="field-box mono"
+                  style={{
+                    width: Math.max(62, (v?.length || 2) * 7.5 + 16),
+                    height: 21,
+                    padding: "1px 5px",
+                    fontSize: 11,
+                    boxSizing: "border-box",
+                  }}
+                  value={v}
+                  onChange={(e) => onChangeAttrVal(pathStr, idx, e.target.value)}
+                />
+              ) : (
+                <span
+                  className="bxm-inline-chip attr-val mono"
+                  onClick={() => onSelect(pathStr, `av-${idx}`)}
+                >
+                  {v}
+                </span>
+              )}
+            </span>
+          ))}
+
+          {/* Inline Element Text Value */}
+          {isSel ? (
+            <input
+              type="text"
+              data-bxm-field="val"
+              className="field-box mono"
+              placeholder="(value)"
+              style={{
+                width: Math.max(75, ((node.value ?? "").length || 5) * 7.5 + 18),
+                height: 21,
+                padding: "1px 6px",
+                fontSize: 11.5,
+                color: "var(--brush-accent)",
+                boxSizing: "border-box",
+              }}
+              value={node.value ?? ""}
+              onClick={(e) => e.stopPropagation()}
+              onChange={(e) => onChangeValue(pathStr, e.target.value)}
+            />
+          ) : (
+            <span
+              className={`bxm-inline-chip val mono${node.value ? "" : " empty"}`}
+              onClick={(e) => {
+                e.stopPropagation();
+                onSelect(pathStr, "val");
+              }}
+            >
+              {node.value || "(value)"}
+            </span>
+          )}
+        </div>
+        {hasChildren && (
+          <AnimatedBranch expanded={isExpanded} scrollSelector="[data-bxm-scroll]">
+            {node.children.map((c, i) => (
+              <BxmTreeNode
+                key={`${pathStr}.${i}`}
+                node={c}
+                pathStr={`${pathStr}.${i}`}
+                selectedBxmPath={selectedBxmPath}
+                bxmExpandedPaths={bxmExpandedPaths}
+                lastExpandChange={lastExpandChange}
+                pointerDrag={pointerDrag}
+                focusRequest={focusRequest}
+                onSelect={onSelect}
+                onToggleExpand={onToggleExpand}
+                onStartDrag={onStartDrag}
+                onNodeContextMenu={onNodeContextMenu}
+                onChangeTag={onChangeTag}
+                onBlurTag={onBlurTag}
+                onChangeAttrKey={onChangeAttrKey}
+                onChangeAttrVal={onChangeAttrVal}
+                onChangeValue={onChangeValue}
+              />
+            ))}
+          </AnimatedBranch>
+        )}
+      </div>
+    );
+  },
+  (prev, next) => {
+    if (prev.node !== next.node || prev.pathStr !== next.pathStr) return false;
+
+    const p = next.pathStr;
+    const prevExp = prev.bxmExpandedPaths[p] ?? true;
+    const nextExp = next.bxmExpandedPaths[p] ?? true;
+    if (prevExp !== nextExp) return false;
+
+    if (prev.bxmExpandedPaths !== next.bxmExpandedPaths) {
+      if (
+        !next.lastExpandChange ||
+        isPathInSubtree(next.lastExpandChange.path, p)
+      ) {
+        return false;
+      }
+    }
+
+    if (prev.selectedBxmPath !== next.selectedBxmPath) {
+      if (
+        isPathInSubtree(prev.selectedBxmPath, p) ||
+        isPathInSubtree(next.selectedBxmPath, p)
+      ) {
+        return false;
+      }
+    }
+
+    if (prev.focusRequest !== next.focusRequest) {
+      if (
+        isPathInSubtree(prev.focusRequest?.path, p) ||
+        isPathInSubtree(next.focusRequest?.path, p)
+      ) {
+        return false;
+      }
+    }
+
+    const prevDragOver =
+      prev.pointerDrag?.active && prev.pointerDrag.kind === "bxm"
+        ? prev.pointerDrag.overId
+        : null;
+    const nextDragOver =
+      next.pointerDrag?.active && next.pointerDrag.kind === "bxm"
+        ? next.pointerDrag.overId
+        : null;
+    if (
+      prevDragOver !== nextDragOver ||
+      (nextDragOver && prev.pointerDrag?.insertPos !== next.pointerDrag?.insertPos)
+    ) {
+      if (isPathInSubtree(prevDragOver, p) || isPathInSubtree(nextDragOver, p)) {
+        return false;
+      }
+    }
+
+    return true;
+  }
+);
+
 export const BxmCenterView: React.FC<BxmCenterViewProps> = ({
   nodePayload,
   bxmViewMode,
@@ -38,8 +346,6 @@ export const BxmCenterView: React.FC<BxmCenterViewProps> = ({
   setBxmXmlDraft,
   selectedBxmPath,
   setSelectedBxmPath,
-  bxmExpandedPaths,
-  setBxmExpandedPaths,
   pointerDrag,
   setPointerDrag,
   updateBxmDraftTree,
@@ -49,15 +355,39 @@ export const BxmCenterView: React.FC<BxmCenterViewProps> = ({
   setHoverSubmenuIdx,
   setStatusLeft,
 }) => {
+  const [localExpandedPaths, setLocalExpandedPaths] = useState<Record<string, boolean>>(() => ({
+    "0": true,
+    "0.0": true,
+    "0.1": true,
+  }));
+  const [prevPayload, setPrevPayload] = useState(nodePayload);
+  const [treeResetKey, setTreeResetKey] = useState(0);
+  const [focusRequest, setFocusRequest] = useState<BxmFocusRequest | null>(null);
+  const [lastExpandChange, setLastExpandChange] = useState<BxmExpandChange | null>(null);
+  const seqRef = useRef(0);
+  const draftRef = useRef(bxmTreeDraft);
+  draftRef.current = bxmTreeDraft;
+
+  if (nodePayload !== prevPayload) {
+    setPrevPayload(nodePayload);
+    setTreeResetKey((k) => k + 1);
+    setLocalExpandedPaths({ "0": true, "0.0": true, "0.1": true });
+    setLastExpandChange(null);
+    setFocusRequest(null);
+  }
+
   function buildBxmNodeContextMenu(pathStr: string): MenuItemSpec[] {
-    if (!bxmTreeDraft) return [];
+    const root = draftRef.current;
+    if (!root) return [];
     const isRoot = pathStr === "0";
     return [
       {
         label: "+ Add Child Element",
         action: () => {
           setContextMenu(null);
-          const copy = structuredClone(bxmTreeDraft);
+          const cur = draftRef.current;
+          if (!cur) return;
+          const copy = structuredClone(cur);
           const target = getBxmNodeByPath(copy, pathStr);
           if (target) {
             target.children.push({
@@ -66,7 +396,8 @@ export const BxmCenterView: React.FC<BxmCenterViewProps> = ({
               value: null,
               children: [],
             });
-            setBxmExpandedPaths((p) => ({ ...p, [pathStr]: true }));
+            setLastExpandChange({ path: pathStr, seq: ++seqRef.current });
+            setLocalExpandedPaths((p) => ({ ...p, [pathStr]: true }));
             updateBxmDraftTree(copy);
             setSelectedBxmPath(`${pathStr}.${target.children.length - 1}`);
           }
@@ -77,10 +408,11 @@ export const BxmCenterView: React.FC<BxmCenterViewProps> = ({
         disabled: isRoot,
         action: () => {
           setContextMenu(null);
-          if (isRoot) return;
+          const cur = draftRef.current;
+          if (isRoot || !cur) return;
           const parentPath = pathStr.slice(0, pathStr.lastIndexOf("."));
           const idx = parseInt(pathStr.split(".").pop() || "0", 10);
-          const copy = structuredClone(bxmTreeDraft);
+          const copy = structuredClone(cur);
           const parent = getBxmNodeByPath(copy, parentPath);
           if (parent) {
             parent.children.splice(idx + 1, 0, {
@@ -99,10 +431,11 @@ export const BxmCenterView: React.FC<BxmCenterViewProps> = ({
         disabled: isRoot,
         action: () => {
           setContextMenu(null);
-          if (isRoot) return;
+          const cur = draftRef.current;
+          if (isRoot || !cur) return;
           const parentPath = pathStr.slice(0, pathStr.lastIndexOf("."));
           const idx = parseInt(pathStr.split(".").pop() || "0", 10);
-          const copy = structuredClone(bxmTreeDraft);
+          const copy = structuredClone(cur);
           const parent = getBxmNodeByPath(copy, parentPath);
           if (parent && parent.children[idx]) {
             parent.children.splice(idx + 1, 0, structuredClone(parent.children[idx]));
@@ -115,7 +448,9 @@ export const BxmCenterView: React.FC<BxmCenterViewProps> = ({
         label: "+ Add @Attribute",
         action: () => {
           setContextMenu(null);
-          const copy = structuredClone(bxmTreeDraft);
+          const cur = draftRef.current;
+          if (!cur) return;
+          const copy = structuredClone(cur);
           const target = getBxmNodeByPath(copy, pathStr);
           if (target) {
             target.attributes.push([`attr${target.attributes.length}`, "0"]);
@@ -129,10 +464,11 @@ export const BxmCenterView: React.FC<BxmCenterViewProps> = ({
         disabled: isRoot,
         action: () => {
           setContextMenu(null);
-          if (isRoot) return;
+          const cur = draftRef.current;
+          if (isRoot || !cur) return;
           const parentPath = pathStr.slice(0, pathStr.lastIndexOf("."));
           const idx = parseInt(pathStr.split(".").pop() || "0", 10);
-          const copy = structuredClone(bxmTreeDraft);
+          const copy = structuredClone(cur);
           const parent = getBxmNodeByPath(copy, parentPath);
           if (parent && parent.children[idx]) {
             parent.children.splice(idx, 1);
@@ -144,193 +480,139 @@ export const BxmCenterView: React.FC<BxmCenterViewProps> = ({
     ];
   }
 
-  // Interactive BXM Tree Renderer with Inline Editing + Pointer Drag-and-Drop Reordering
-  function renderBxmInteractiveTree(node: BxmXmlNode, pathStr: string) {
-    const isSel = selectedBxmPath === pathStr;
-    const hasChildren = node.children && node.children.length > 0;
-    const isExpanded = bxmExpandedPaths[pathStr] ?? true;
-    const isDragBefore =
-      pointerDrag?.active &&
-      pointerDrag.kind === "bxm" &&
-      pointerDrag.overId === pathStr &&
-      pointerDrag.insertPos === "before";
-    const isDragAfter =
-      pointerDrag?.active &&
-      pointerDrag.kind === "bxm" &&
-      pointerDrag.overId === pathStr &&
-      pointerDrag.insertPos === "after";
+  const handleSelectNode = useCallback(
+    (pathStr: string, focusField?: string) => {
+      setSelectedBxmPath(pathStr);
+      setFocusRequest(
+        focusField ? { path: pathStr, field: focusField, seq: ++seqRef.current } : null
+      );
+    },
+    [setSelectedBxmPath]
+  );
 
-    return (
-      <div key={pathStr} style={{ marginLeft: pathStr === "0" ? 0 : 16 }}>
-        <div
-          data-bxm-path={pathStr}
-          className={`tree-row ${isSel ? "selected" : ""} ${
-            isDragBefore ? "drag-insert-before" : ""
-          } ${isDragAfter ? "drag-insert-after" : ""}`}
-          style={{ flexWrap: "wrap", gap: 6, padding: "4px 6px" }}
-          onPointerDown={(e) => {
-            if (e.button !== 0 || pathStr === "0") return;
-            if ((e.target as HTMLElement).tagName === "INPUT") return;
-            setPointerDrag({
-              kind: "bxm",
-              sourceId: pathStr,
-              label: `<${node.name}>`,
-              startX: e.clientX,
-              startY: e.clientY,
-              curX: e.clientX,
-              curY: e.clientY,
-              active: false,
-              overId: null,
-              insertPos: null,
-              dragOutTriggered: false,
-            });
-          }}
-          onClick={() => setSelectedBxmPath(pathStr)}
-          onContextMenu={(e) => {
-            e.preventDefault();
-            e.stopPropagation();
-            setSelectedBxmPath(pathStr);
-            setHoverSubmenuIdx(null);
-            setContextMenu({
-              x: Math.min(e.clientX, window.innerWidth - 240),
-              y: Math.min(e.clientY, window.innerHeight - 240),
-              items: buildBxmNodeContextMenu(pathStr),
-            });
-          }}
-        >
-          <span
-            className={`tree-arrow ${isExpanded ? "expanded" : ""}`}
-            style={{ visibility: hasChildren ? "visible" : "hidden" }}
-            onClick={(e) => {
-              e.stopPropagation();
-              setBxmExpandedPaths((p) => ({ ...p, [pathStr]: !isExpanded }));
-            }}
-          >
-            <svg width="6" height="9" viewBox="0 0 6 10" fill="none" stroke="currentColor" strokeWidth="1.5">
-              <path d="M1 1L5 5L1 9" strokeLinecap="round" strokeLinejoin="round" />
-            </svg>
-          </span>
+  const handleToggleExpand = useCallback(
+    (pathStr: string, currentExpanded: boolean) => {
+      setLastExpandChange({ path: pathStr, seq: ++seqRef.current });
+      setLocalExpandedPaths((p) => ({ ...p, [pathStr]: !currentExpanded }));
+    },
+    []
+  );
 
-          {/* Inline Tag Name */}
-          <span className="mono" style={{ color: "var(--brush-muted)" }}>&lt;</span>
-          <input
-            type="text"
-            className="field-box mono"
-            style={{
-              width: Math.max(64, (node.name?.length || 4) * 8 + 18),
-              height: 22,
-              padding: "1px 5px",
-              fontWeight: 600,
-              fontSize: 11.5,
-            }}
-            value={node.name}
-            onClick={(e) => e.stopPropagation()}
-            onChange={(e) => {
-              if (!bxmTreeDraft) return;
-              const copy = structuredClone(bxmTreeDraft);
-              const target = getBxmNodeByPath(copy, pathStr);
-              if (target) {
-                target.name = e.target.value;
-                updateBxmDraftTree(copy);
-              }
-            }}
-            onBlur={(e) => {
-              if (!bxmTreeDraft) return;
-              const sanitized = safeXmlName(e.target.value, "Node");
-              if (sanitized === e.target.value) return;
-              const copy = structuredClone(bxmTreeDraft);
-              const target = getBxmNodeByPath(copy, pathStr);
-              if (target) {
-                target.name = sanitized;
-                updateBxmDraftTree(copy);
-              }
-            }}
-          />
-          <span className="mono" style={{ color: "var(--brush-muted)" }}>&gt;</span>
+  const handleStartDrag = useCallback(
+    (e: React.PointerEvent<HTMLDivElement>, pathStr: string, tagName: string) => {
+      if (e.button !== 0 || pathStr === "0") return;
+      const target = e.target as HTMLElement;
+      if (
+        target.tagName === "INPUT" ||
+        target.closest(".wmb-tree-caret") ||
+        target.closest(".bxm-inline-chip")
+      ) {
+        return;
+      }
+      setPointerDrag({
+        kind: "bxm",
+        sourceId: pathStr,
+        label: `<${tagName}>`,
+        startX: e.clientX,
+        startY: e.clientY,
+        curX: e.clientX,
+        curY: e.clientY,
+        active: false,
+        overId: null,
+        insertPos: null,
+        dragOutTriggered: false,
+      });
+    },
+    [setPointerDrag]
+  );
 
-          {/* Inline Attributes */}
-          {node.attributes.map(([k, v], idx) => (
-            <span
-              key={idx}
-              style={{ display: "inline-flex", alignItems: "center", gap: 3 }}
-              onClick={(e) => e.stopPropagation()}
-            >
-              <input
-                type="text"
-                className="field-box mono"
-                style={{
-                  width: Math.max(48, k.length * 7.5 + 14),
-                  height: 21,
-                  padding: "1px 4px",
-                  fontSize: 11,
-                  color: "var(--brush-muted)",
-                }}
-                value={k}
-                onChange={(e) => {
-                  if (!bxmTreeDraft) return;
-                  const copy = structuredClone(bxmTreeDraft);
-                  const target = getBxmNodeByPath(copy, pathStr);
-                  if (target && target.attributes[idx]) {
-                    target.attributes[idx][0] = e.target.value;
-                    updateBxmDraftTree(copy);
-                  }
-                }}
-              />
-              <span className="mono" style={{ color: "var(--brush-muted)" }}>=</span>
-              <input
-                type="text"
-                className="field-box mono"
-                style={{
-                  width: Math.max(62, (v?.length || 2) * 7.5 + 16),
-                  height: 21,
-                  padding: "1px 5px",
-                  fontSize: 11,
-                }}
-                value={v}
-                onChange={(e) => {
-                  if (!bxmTreeDraft) return;
-                  const copy = structuredClone(bxmTreeDraft);
-                  const target = getBxmNodeByPath(copy, pathStr);
-                  if (target && target.attributes[idx]) {
-                    target.attributes[idx][1] = e.target.value;
-                    updateBxmDraftTree(copy);
-                  }
-                }}
-              />
-            </span>
-          ))}
+  const handleNodeContextMenu = useCallback(
+    (e: React.MouseEvent<HTMLDivElement>, pathStr: string) => {
+      e.preventDefault();
+      e.stopPropagation();
+      setSelectedBxmPath(pathStr);
+      setFocusRequest(null);
+      setHoverSubmenuIdx(null);
+      setContextMenu({
+        x: Math.min(e.clientX, window.innerWidth - 240),
+        y: Math.min(e.clientY, window.innerHeight - 240),
+        items: buildBxmNodeContextMenu(pathStr),
+      });
+    },
+    [setContextMenu, setHoverSubmenuIdx, setSelectedBxmPath]
+  );
 
-          {/* Inline Element Text Value */}
-          <input
-            type="text"
-            className="field-box mono"
-            placeholder="(value)"
-            style={{
-              width: Math.max(75, ((node.value ?? "").length || 5) * 7.5 + 18),
-              height: 21,
-              padding: "1px 6px",
-              fontSize: 11.5,
-              color: "var(--brush-accent)",
-            }}
-            value={node.value ?? ""}
-            onClick={(e) => e.stopPropagation()}
-            onChange={(e) => {
-              if (!bxmTreeDraft) return;
-              const copy = structuredClone(bxmTreeDraft);
-              const target = getBxmNodeByPath(copy, pathStr);
-              if (target) {
-                target.value = e.target.value.length > 0 ? e.target.value : null;
-                updateBxmDraftTree(copy);
-              }
-            }}
-          />
-        </div>
-        {hasChildren && isExpanded && (
-          <div>{node.children.map((c, i) => renderBxmInteractiveTree(c, `${pathStr}.${i}`))}</div>
-        )}
-      </div>
-    );
-  }
+  const handleChangeTag = useCallback(
+    (pathStr: string, value: string) => {
+      const cur = draftRef.current;
+      if (!cur) return;
+      const copy = structuredClone(cur);
+      const target = getBxmNodeByPath(copy, pathStr);
+      if (target) {
+        target.name = value;
+        updateBxmDraftTree(copy);
+      }
+    },
+    [updateBxmDraftTree]
+  );
+
+  const handleBlurTag = useCallback(
+    (pathStr: string, value: string) => {
+      const cur = draftRef.current;
+      if (!cur) return;
+      const sanitized = safeXmlName(value, "Node");
+      if (sanitized === value) return;
+      const copy = structuredClone(cur);
+      const target = getBxmNodeByPath(copy, pathStr);
+      if (target) {
+        target.name = sanitized;
+        updateBxmDraftTree(copy);
+      }
+    },
+    [updateBxmDraftTree]
+  );
+
+  const handleChangeAttrKey = useCallback(
+    (pathStr: string, idx: number, value: string) => {
+      const cur = draftRef.current;
+      if (!cur) return;
+      const copy = structuredClone(cur);
+      const target = getBxmNodeByPath(copy, pathStr);
+      if (target && target.attributes[idx]) {
+        target.attributes[idx][0] = value;
+        updateBxmDraftTree(copy);
+      }
+    },
+    [updateBxmDraftTree]
+  );
+
+  const handleChangeAttrVal = useCallback(
+    (pathStr: string, idx: number, value: string) => {
+      const cur = draftRef.current;
+      if (!cur) return;
+      const copy = structuredClone(cur);
+      const target = getBxmNodeByPath(copy, pathStr);
+      if (target && target.attributes[idx]) {
+        target.attributes[idx][1] = value;
+        updateBxmDraftTree(copy);
+      }
+    },
+    [updateBxmDraftTree]
+  );
+
+  const handleChangeValue = useCallback(
+    (pathStr: string, value: string) => {
+      const cur = draftRef.current;
+      if (!cur) return;
+      const copy = structuredClone(cur);
+      const target = getBxmNodeByPath(copy, pathStr);
+      if (target) {
+        target.value = value.length > 0 ? value : null;
+        updateBxmDraftTree(copy);
+      }
+    },
+    [updateBxmDraftTree]
+  );
 
   // Automatic / Optional Table View for BXM / XML / GAD
   function renderBxmTableView() {
@@ -580,19 +862,21 @@ export const BxmCenterView: React.FC<BxmCenterViewProps> = ({
   return (
     <>
       {              bxmViewMode === "tree" ? (
-                <div className="struct-table-container">
+                <div style={{ flex: 1, minHeight: 0, display: "flex", flexDirection: "column" }}>
                   <div
                     style={{
                       display: "flex",
                       justifyContent: "space-between",
                       alignItems: "center",
-                      marginBottom: 10,
+                      padding: "10px 10px 8px 10px",
+                      flexShrink: 0,
+                      gap: 10,
                     }}
                   >
                     <span style={{ color: "var(--brush-muted)", fontSize: 12 }}>
                       Edit tags, @attributes, and values inline. Right-click any element to add/duplicate/delete, or drag to reorder.
                     </span>
-                    <div style={{ display: "flex", gap: 6 }}>
+                    <div style={{ display: "flex", gap: 6, flexShrink: 0 }}>
                       <button
                         className="pill-button"
                         onClick={async () => {
@@ -627,11 +911,41 @@ export const BxmCenterView: React.FC<BxmCenterViewProps> = ({
                       </button>
                     </div>
                   </div>
-                  {bxmTreeDraft ? (
-                    renderBxmInteractiveTree(bxmTreeDraft, "0")
-                  ) : (
-                    <div className="viewport-empty">Empty BXM Document</div>
-                  )}
+                  <div
+                    data-bxm-scroll="true"
+                    style={{
+                      flex: 1,
+                      minHeight: 0,
+                      overflowY: "auto",
+                      overflowX: "auto",
+                      scrollbarGutter: "stable",
+                      padding: "0 10px 10px 10px",
+                    }}
+                  >
+                    {bxmTreeDraft ? (
+                      <BxmTreeNode
+                        key={treeResetKey}
+                        node={bxmTreeDraft}
+                        pathStr="0"
+                        selectedBxmPath={selectedBxmPath}
+                        bxmExpandedPaths={localExpandedPaths}
+                        lastExpandChange={lastExpandChange}
+                        pointerDrag={pointerDrag}
+                        focusRequest={focusRequest}
+                        onSelect={handleSelectNode}
+                        onToggleExpand={handleToggleExpand}
+                        onStartDrag={handleStartDrag}
+                        onNodeContextMenu={handleNodeContextMenu}
+                        onChangeTag={handleChangeTag}
+                        onBlurTag={handleBlurTag}
+                        onChangeAttrKey={handleChangeAttrKey}
+                        onChangeAttrVal={handleChangeAttrVal}
+                        onChangeValue={handleChangeValue}
+                      />
+                    ) : (
+                      <div className="viewport-empty">Empty BXM Document</div>
+                    )}
+                  </div>
                 </div>
               ) : bxmViewMode === "table" ? (
                 <div className="struct-table-container">{renderBxmTableView()}</div>
@@ -717,8 +1031,9 @@ export const BxmInspectorView: React.FC<BxmInspectorViewProps> = ({
                       </span>
                       <IconChevronDown collapsed={!openCards.bxm_node} />
                     </button>
-                    {openCards.bxm_node && (
-                      <div className="card-body">
+                                          <div className={`collapse-grid${!!openCards.bxm_node ? " expanded" : ""}`}>
+  <div className="collapse-inner">
+    <div className="card-body">
                         <div className="inspector-row">
                           <span className="inspector-row-label">Tag Name</span>
                           <input
@@ -848,7 +1163,9 @@ export const BxmInspectorView: React.FC<BxmInspectorViewProps> = ({
                           </div>
                         ))}
                       </div>
-                    )}
+  </div>
+</div>
+                    
                   </div>
                 );
               })()}

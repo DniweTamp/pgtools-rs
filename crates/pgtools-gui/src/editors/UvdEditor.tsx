@@ -310,8 +310,9 @@ export const UvdInspectorSection: React.FC<UvdInspectorSectionProps> = ({
             </span>
             <IconChevronDown collapsed={!isOpen} />
           </button>
-          {isOpen && (
-            <div className="card-body">
+                      <div className={`collapse-grid${isOpen ? " expanded" : ""}`}>
+  <div className="collapse-inner">
+    <div className="card-body">
               <div className="inspector-row">
                 <span className="inspector-row-label">Sprite Name</span>
                 <span className="mono" style={{ fontWeight: 600, fontSize: 11.5 }}>
@@ -443,7 +444,9 @@ export const UvdInspectorSection: React.FC<UvdInspectorSectionProps> = ({
                 </button>
               </div>
             </div>
-          )}
+  </div>
+</div>
+          
         </div>
       )}
 
@@ -460,8 +463,9 @@ export const UvdInspectorSection: React.FC<UvdInspectorSectionProps> = ({
             </span>
             <IconChevronDown collapsed={!isOpen} />
           </button>
-          {isOpen && (
-            <div className="card-body">
+                      <div className={`collapse-grid${isOpen ? " expanded" : ""}`}>
+  <div className="collapse-inner">
+    <div className="card-body">
               <div className="inspector-row">
                 <span className="inspector-row-label">Group Name</span>
                 <span className="mono" style={{ fontWeight: 600, fontSize: 11.5 }}>
@@ -600,7 +604,9 @@ export const UvdInspectorSection: React.FC<UvdInspectorSectionProps> = ({
                 </div>
               )}
             </div>
-          )}
+  </div>
+</div>
+          
         </div>
       )}
 
@@ -616,8 +622,9 @@ export const UvdInspectorSection: React.FC<UvdInspectorSectionProps> = ({
           </span>
           <IconChevronDown collapsed={!isSettingsOpen} />
         </button>
-        {isSettingsOpen && (
-          <div className="card-body">
+                  <div className={`collapse-grid${isSettingsOpen ? " expanded" : ""}`}>
+  <div className="collapse-inner">
+    <div className="card-body">
             <div className="inspector-row">
               <span className="inspector-row-label">Padding (px)</span>
               <input
@@ -652,7 +659,9 @@ export const UvdInspectorSection: React.FC<UvdInspectorSectionProps> = ({
               Deterministic power-of-two rectangle packer (rectangular sheets allowed, no rotation, exact IEEE 1/W &amp; 1/H).
             </div>
           </div>
-        )}
+  </div>
+</div>
+        
       </div>
     </>
   );

@@ -974,8 +974,9 @@ export const TextureInspectorView: React.FC<TextureInspectorViewProps> = ({
           </span>
           <IconChevronDown collapsed={!openCards.hash} />
         </button>
-        {openCards.hash && (
-          <div className="card-body">
+                  <div className={`collapse-grid${!!openCards.hash ? " expanded" : ""}`}>
+  <div className="collapse-inner">
+    <div className="card-body">
             <div className="inspector-row" style={{ marginBottom: 6 }}>
               <span className="inspector-row-label">Profile</span>
               <span className="mono" style={{ fontSize: 11.5 }}>
@@ -1074,7 +1075,9 @@ export const TextureInspectorView: React.FC<TextureInspectorViewProps> = ({
               </button>
             </div>
           </div>
-        )}
+  </div>
+</div>
+        
       </div>
 
       {/* Card 2: Game-Aware Flags */}
@@ -1090,8 +1093,9 @@ export const TextureInspectorView: React.FC<TextureInspectorViewProps> = ({
           </span>
           <IconChevronDown collapsed={!openCards.flags} />
         </button>
-        {openCards.flags && (
-          <div className="card-body">
+                  <div className={`collapse-grid${!!openCards.flags ? " expanded" : ""}`}>
+  <div className="collapse-inner">
+    <div className="card-body">
             {activeTexture.has_confirmed_xt1_flags ? (
               <>
                 <div className="inspector-row">
@@ -1193,7 +1197,9 @@ export const TextureInspectorView: React.FC<TextureInspectorViewProps> = ({
               table2 = {activeTexture.table2_bytes_str}
             </div>
           </div>
-        )}
+  </div>
+</div>
+        
       </div>
 
       {/* Card 3: Custom Texture Import & Encoding */}
@@ -1205,8 +1211,9 @@ export const TextureInspectorView: React.FC<TextureInspectorViewProps> = ({
           </span>
           <IconChevronDown collapsed={!openCards.encoding} />
         </button>
-        {openCards.encoding && (
-          <div className="card-body">
+                  <div className={`collapse-grid${!!openCards.encoding ? " expanded" : ""}`}>
+  <div className="collapse-inner">
+    <div className="card-body">
             <div className="inspector-row">
               <span className="inspector-row-label">Format</span>
               <StudioSelect
@@ -1320,7 +1327,9 @@ export const TextureInspectorView: React.FC<TextureInspectorViewProps> = ({
               </button>
             </div>
           </div>
-        )}
+  </div>
+</div>
+        
       </div>
         </>
       )}

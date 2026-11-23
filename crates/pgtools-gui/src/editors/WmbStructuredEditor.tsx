@@ -22,7 +22,8 @@ import {
   rgbFloatToHex,
 } from "../utils/color";
 import { EditableNumberCell } from "../components/EditableNumberCell";
-import { IconChevronDown, IconCube } from "../components/Icons";
+import { IconChevronDown, IconChevronRight, IconCube } from "../components/Icons";
+import { AnimatedBranch } from "../components/AnimatedBranch";
 import { convertMaterialBetweenGames } from "../wmb-studio/contract";
 import {
   bankOptionsToTextureRefs,
@@ -1515,10 +1516,8 @@ export const WmbStructuredCenterView: React.FC<WmbStructuredCenterProps> = ({
                     }
                   >
                     <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
-                      <span className={`tree-arrow ${isExpanded ? "expanded" : ""}`}>
-                        <svg width="6" height="9" viewBox="0 0 6 10" fill="none" stroke="currentColor" strokeWidth="1.5">
-                          <path d="M1 1L5 5L1 9" strokeLinecap="round" strokeLinejoin="round" />
-                        </svg>
+                      <span className="wmb-tree-caret clickable">
+                        <IconChevronRight expanded={isExpanded} />
                       </span>
                       <span className="tree-badge">MESH #{mi}</span>
                       <span style={{ fontWeight: 600, color: "var(--brush-heading)" }}>
@@ -1533,7 +1532,8 @@ export const WmbStructuredCenterView: React.FC<WmbStructuredCenterProps> = ({
                     </span>
                   </div>
 
-                  {isExpanded && (
+                  <div className={`collapse-grid${isExpanded ? " expanded" : ""}`}>
+  <div className="collapse-inner">
                     <div>
                       {groupBatches.length === 0 ? (
                         <div style={{ padding: "10px 24px", color: "var(--brush-muted)", fontSize: 12 }}>
@@ -1695,7 +1695,7 @@ export const WmbStructuredCenterView: React.FC<WmbStructuredCenterProps> = ({
                               </div>
 
                               {/* Expandable WMB3 Batch Header Editor */}
-                              {hdrExpanded && (
+                              <AnimatedBranch expanded={hdrExpanded} scrollSelector=".struct-table-container">
                                 <div
                                   className="mesh-lod-subrow"
                                   style={{
@@ -1742,10 +1742,10 @@ export const WmbStructuredCenterView: React.FC<WmbStructuredCenterProps> = ({
                                     </label>
                                   ))}
                                 </div>
-                              )}
+                              </AnimatedBranch>
 
                               {/* Non-draggable LOD sub-rows under this Batch (with editable LOD BatchInfo fields) */}
-                              {lodExpanded &&
+                              <AnimatedBranch expanded={lodExpanded} scrollSelector=".struct-table-container">{
                                 rb.lodRows.map((lr) => (
                                   <div
                                     key={lr.lodIndex}
@@ -1852,13 +1852,14 @@ export const WmbStructuredCenterView: React.FC<WmbStructuredCenterProps> = ({
                                       />
                                     </label>
                                   </div>
-                                ))}
+                                ))}</AnimatedBranch>
                             </div>
                           );
                         })
                       )}
                     </div>
-                  )}
+                    </div>
+</div>
                 </div>
               );
             })}
@@ -2175,10 +2176,8 @@ export const WmbStructuredCenterView: React.FC<WmbStructuredCenterProps> = ({
                   }
                 >
                   <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
-                    <span className={`tree-arrow ${isExpanded ? "expanded" : ""}`}>
-                      <svg width="6" height="9" viewBox="0 0 6 10" fill="none" stroke="currentColor" strokeWidth="1.5">
-                        <path d="M1 1L5 5L1 9" strokeLinecap="round" strokeLinejoin="round" />
-                      </svg>
+                    <span className="wmb-tree-caret clickable">
+                      <IconChevronRight expanded={isExpanded} />
                     </span>
                     <span className="tree-badge">MESH #{mesh.id ?? mesh.header?.id ?? mi}</span>
                     <span style={{ fontWeight: 600, color: "var(--brush-heading)" }}>
@@ -2221,7 +2220,8 @@ export const WmbStructuredCenterView: React.FC<WmbStructuredCenterProps> = ({
                   </div>
                 </div>
 
-                {isExpanded && (
+                <div className={`collapse-grid${isExpanded ? " expanded" : ""}`}>
+  <div className="collapse-inner">
                   <div>
                     {batches.map((b: any, bi: number) => {
                       const hdr = b.header || {};
@@ -2388,7 +2388,7 @@ export const WmbStructuredCenterView: React.FC<WmbStructuredCenterProps> = ({
                           </div>
 
                           {/* Expandable WMB0 Batch Header Editor */}
-                          {hdrExpanded && (
+                          <AnimatedBranch expanded={hdrExpanded} scrollSelector=".struct-table-container">
                             <div
                               className="mesh-lod-subrow"
                               style={{
@@ -2465,12 +2465,13 @@ export const WmbStructuredCenterView: React.FC<WmbStructuredCenterProps> = ({
                                 />
                               </label>
                             </div>
-                          )}
+                          </AnimatedBranch>
                         </div>
                       );
                     })}
                   </div>
-                )}
+                  </div>
+</div>
               </div>
             );
           })}
@@ -2659,8 +2660,9 @@ export const WmbInspectorView: React.FC<WmbInspectorViewProps> = ({
                   </span>
                   <IconChevronDown collapsed={!openCards.wmb_props} />
                 </button>
-                {openCards.wmb_props && (
-                  <div className="card-body">
+                                  <div className={`collapse-grid${!!openCards.wmb_props ? " expanded" : ""}`}>
+  <div className="collapse-inner">
+    <div className="card-body">
                     <div className="inspector-row">
                       <span className="inspector-row-label">Format</span>
                       <span className="mono">
@@ -2774,7 +2776,9 @@ export const WmbInspectorView: React.FC<WmbInspectorViewProps> = ({
                       )}
                     </div>
                   </div>
-                )}
+  </div>
+</div>
+                
               </div>
             </div>
   );

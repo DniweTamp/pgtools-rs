@@ -1,4 +1,5 @@
 import { StudioSelect } from "../components/StudioSelect";
+import { AnimatedBranch } from "../components/AnimatedBranch";
 import React, {
   useCallback,
   useEffect,
@@ -153,11 +154,23 @@ export const Hierarchy: React.FC<HierarchyProps> = React.memo(function Hierarchy
     return new Set(["root", "sec:model"]);
   });
 
-  // Reset to collapsed-by-default when switching to a different model node
-  useEffect(() => {
+  // Reset to collapsed-by-default synchronously when switching to a different model node
+  const [prevNodeId, setPrevNodeId] = useState(manifest.nodeId);
+  const isFiltering = filterText.trim().length > 0;
+  const [prevFiltering, setPrevFiltering] = useState(isFiltering);
+  const [suppressBranchAnim, setSuppressBranchAnim] = useState(false);
+
+  if (manifest.nodeId !== prevNodeId) {
+    setPrevNodeId(manifest.nodeId);
     setExpandedKeys(new Set(["root", "sec:model"]));
     setDomainFilter("all");
-  }, [manifest.nodeId]);
+    setSuppressBranchAnim(true);
+  }
+
+  if (isFiltering !== prevFiltering) {
+    setPrevFiltering(isFiltering);
+    setSuppressBranchAnim(true);
+  }
 
   const [renamingId, setRenamingId] = useState<string | null>(null);
   const [renameDraft, setRenameDraft] = useState<string>("");
@@ -179,48 +192,56 @@ export const Hierarchy: React.FC<HierarchyProps> = React.memo(function Hierarchy
   } | null>(null);
 
   const [contextMenu, setContextMenu] = useState<ContextMenuState | null>(null);
+  const [prevContextMenu, setPrevContextMenu] =
+    useState<ContextMenuState | null>(null);
   const [closingContextMenu, setClosingContextMenu] =
     useState<ContextMenuState | null>(null);
-  const prevContextMenuRef = useRef<ContextMenuState | null>(null);
 
   const [slotDropModal, setSlotDropModal] =
     useState<TextureSlotDropModal | null>(null);
+  const [prevSlotDropModal, setPrevSlotDropModal] =
+    useState<TextureSlotDropModal | null>(null);
   const [closingSlotDropModal, setClosingSlotDropModal] =
     useState<TextureSlotDropModal | null>(null);
-  const prevSlotDropModalRef = useRef<TextureSlotDropModal | null>(null);
 
   const [matDeleteModal, setMatDeleteModal] =
     useState<MaterialDeleteModal | null>(null);
 
-  useEffect(() => {
+  if (contextMenu !== prevContextMenu) {
     if (contextMenu !== null) {
       setClosingContextMenu(null);
-      prevContextMenuRef.current = contextMenu;
-    } else if (prevContextMenuRef.current !== null) {
-      const prev = prevContextMenuRef.current;
-      prevContextMenuRef.current = null;
-      setClosingContextMenu(prev);
-      const timer = window.setTimeout(() => {
-        setClosingContextMenu((cur) => (cur === prev ? null : cur));
-      }, 115);
-      return () => window.clearTimeout(timer);
+    } else if (prevContextMenu !== null) {
+      setClosingContextMenu(prevContextMenu);
     }
-  }, [contextMenu]);
+    setPrevContextMenu(contextMenu);
+  }
 
-  useEffect(() => {
+  if (slotDropModal !== prevSlotDropModal) {
     if (slotDropModal !== null) {
       setClosingSlotDropModal(null);
-      prevSlotDropModalRef.current = slotDropModal;
-    } else if (prevSlotDropModalRef.current !== null) {
-      const prev = prevSlotDropModalRef.current;
-      prevSlotDropModalRef.current = null;
-      setClosingSlotDropModal(prev);
-      const timer = window.setTimeout(() => {
-        setClosingSlotDropModal((cur) => (cur === prev ? null : cur));
-      }, 115);
-      return () => window.clearTimeout(timer);
+    } else if (prevSlotDropModal !== null) {
+      setClosingSlotDropModal(prevSlotDropModal);
     }
-  }, [slotDropModal]);
+    setPrevSlotDropModal(slotDropModal);
+  }
+
+  useEffect(() => {
+    if (closingContextMenu === null) return;
+    const prev = closingContextMenu;
+    const timer = window.setTimeout(() => {
+      setClosingContextMenu((cur) => (cur === prev ? null : cur));
+    }, 115);
+    return () => window.clearTimeout(timer);
+  }, [closingContextMenu]);
+
+  useEffect(() => {
+    if (closingSlotDropModal === null) return;
+    const prev = closingSlotDropModal;
+    const timer = window.setTimeout(() => {
+      setClosingSlotDropModal((cur) => (cur === prev ? null : cur));
+    }, 115);
+    return () => window.clearTimeout(timer);
+  }, [closingSlotDropModal]);
 
   const activeCtxMenu = contextMenu ?? closingContextMenu;
   const isCtxMenuClosing = contextMenu === null && closingContextMenu !== null;
@@ -263,8 +284,15 @@ export const Hierarchy: React.FC<HierarchyProps> = React.memo(function Hierarchy
   }, []);
 
   const collapseAll = useCallback(() => {
+    setSuppressBranchAnim(true);
     setExpandedKeys(new Set(["root", "sec:model"]));
   }, []);
+
+  useEffect(() => {
+    if (!suppressBranchAnim) return;
+    const id = requestAnimationFrame(() => setSuppressBranchAnim(false));
+    return () => cancelAnimationFrame(id);
+  }, [suppressBranchAnim]);
 
   const selectedSet = useMemo(() => {
     const s = new Set<string>();
@@ -1085,13 +1113,11 @@ export const Hierarchy: React.FC<HierarchyProps> = React.memo(function Hierarchy
         </div>
 
         {hasKids && (
-          <div className={`collapse-grid${isExp ? " expanded" : ""}`}>
-            <div className="collapse-inner">
+          <AnimatedBranch expanded={isExp} scrollSelector=".wmb-tree-scroll" animate={!q && !suppressBranchAnim}>
               {kids.map((child) =>
                 renderBoneSubtree(child.bone, child.idx, depth + 1, nextAncestors)
               )}
-            </div>
-          </div>
+            </AnimatedBranch>
         )}
       </div>
     );
@@ -1332,7 +1358,7 @@ export const Hierarchy: React.FC<HierarchyProps> = React.memo(function Hierarchy
         </div>
       )}
 
-      <div className="wmb-tree-scroll">
+      <div key={manifest.nodeId} className="wmb-tree-scroll">
         {/* Root Node: <wmb name> */}
         <div
           className={`wmb-tree-row root-row ${
@@ -1367,8 +1393,7 @@ export const Hierarchy: React.FC<HierarchyProps> = React.memo(function Hierarchy
           </span>
         </div>
 
-        <div className={`collapse-grid${rootExpanded ? " expanded" : ""}`}>
-          <div className="collapse-inner">
+        <AnimatedBranch expanded={rootExpanded} scrollSelector=".wmb-tree-scroll" animate={!qActive && !suppressBranchAnim}>
             {/* Section 1: Textures (N) */}
             {showTexturesSection && (
               <div className="wmb-tree-node-group">
@@ -1397,8 +1422,7 @@ export const Hierarchy: React.FC<HierarchyProps> = React.memo(function Hierarchy
                   </span>
                 </div>
 
-                <div className={`collapse-grid${texExpanded ? " expanded" : ""}`}>
-                  <div className="collapse-inner">
+                <AnimatedBranch expanded={texExpanded} scrollSelector=".wmb-tree-scroll" animate={!qActive && !suppressBranchAnim}>
                     {manifest.textures.map((tex, texIdx) => {
                       const q = filterText.trim().toLowerCase();
                       const role =
@@ -1474,8 +1498,7 @@ export const Hierarchy: React.FC<HierarchyProps> = React.memo(function Hierarchy
                         </div>
                       );
                     })}
-                  </div>
-                </div>
+                  </AnimatedBranch>
               </div>
             )}
 
@@ -1518,8 +1541,7 @@ export const Hierarchy: React.FC<HierarchyProps> = React.memo(function Hierarchy
                   </button>
                 </div>
 
-                <div className={`collapse-grid${matExpanded ? " expanded" : ""}`}>
-                  <div className="collapse-inner">
+                <AnimatedBranch expanded={matExpanded} scrollSelector=".wmb-tree-scroll" animate={!qActive && !suppressBranchAnim}>
                     {manifest.materials.map((mat, matIdx) => {
                       const q = filterText.trim().toLowerCase();
                       const shLabel =
@@ -1622,8 +1644,7 @@ export const Hierarchy: React.FC<HierarchyProps> = React.memo(function Hierarchy
                         </div>
                       );
                     })}
-                  </div>
-                </div>
+                  </AnimatedBranch>
               </div>
             )}
 
@@ -1676,14 +1697,12 @@ export const Hierarchy: React.FC<HierarchyProps> = React.memo(function Hierarchy
                   </button>
                 </div>
 
-                <div className={`collapse-grid${bonesExpanded ? " expanded" : ""}`}>
-                  <div className="collapse-inner">
+                <AnimatedBranch expanded={bonesExpanded} scrollSelector=".wmb-tree-scroll" animate={!qActive && !suppressBranchAnim}>
                     {(boneChildrenMap.childrenByParentIdx.get(-1) ?? []).map(
                       (rootBone) =>
                         renderBoneSubtree(rootBone.bone, rootBone.idx, 2)
                     )}
-                  </div>
-                </div>
+                  </AnimatedBranch>
               </div>
             )}
 
@@ -1729,8 +1748,7 @@ export const Hierarchy: React.FC<HierarchyProps> = React.memo(function Hierarchy
                   </button>
                 </div>
 
-                <div className={`collapse-grid${meshesExpanded ? " expanded" : ""}`}>
-                  <div className="collapse-inner">
+                <AnimatedBranch expanded={meshesExpanded} scrollSelector=".wmb-tree-scroll" animate={!qActive && !suppressBranchAnim}>
                     {manifest.meshGroups.map((mg, mgIdx) => {
                       const isExp = expandedKeys.has(mg.id) || qActive;
                       const sel = isSelected("meshGroup", mg.id);
@@ -1844,12 +1862,7 @@ export const Hierarchy: React.FC<HierarchyProps> = React.memo(function Hierarchy
                             </button>
                           </div>
 
-                          <div
-                            className={`collapse-grid${
-                              isExp ? " expanded" : ""
-                            }`}
-                          >
-                            <div className="collapse-inner">
+                          <AnimatedBranch expanded={isExp} scrollSelector=".wmb-tree-scroll" animate={!qActive && !suppressBranchAnim}>
                               {mg.lods.length > 0
                                 ? mg.lods.map((lod) => {
                                     const lodExp =
@@ -1943,12 +1956,7 @@ export const Hierarchy: React.FC<HierarchyProps> = React.memo(function Hierarchy
                                           )}
                                         </div>
 
-                                        <div
-                                          className={`collapse-grid${
-                                            lodExp ? " expanded" : ""
-                                          }`}
-                                        >
-                                          <div className="collapse-inner">
+                                        <AnimatedBranch expanded={lodExp} scrollSelector=".wmb-tree-scroll" animate={!qActive && !suppressBranchAnim}>
                                             {lod.batchIds.map((bid, bOrder) => {
                                               const b = batchById.get(bid);
                                               return b
@@ -1960,8 +1968,7 @@ export const Hierarchy: React.FC<HierarchyProps> = React.memo(function Hierarchy
                                                   )
                                                 : null;
                                             })}
-                                          </div>
-                                        </div>
+                                          </AnimatedBranch>
                                       </div>
                                     );
                                   })
@@ -1971,17 +1978,14 @@ export const Hierarchy: React.FC<HierarchyProps> = React.memo(function Hierarchy
                                       ? renderBatchRow(b, bOrder, mg.id, 3)
                                       : null;
                                   })}
-                            </div>
-                          </div>
+                            </AnimatedBranch>
                         </div>
                       );
                     })}
-                  </div>
-                </div>
+                  </AnimatedBranch>
               </div>
             )}
-          </div>
-        </div>
+          </AnimatedBranch>
       </div>
 
       {/* Texture Drop onto Material -> Slot Picker Popover */}

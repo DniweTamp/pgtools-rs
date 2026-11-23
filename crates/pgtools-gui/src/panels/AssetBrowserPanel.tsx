@@ -3,6 +3,8 @@ import { invoke } from "@tauri-apps/api/core";
 import { AssetTreeNode, PointerDragState } from "../types";
 import { isVirtualSubNode } from "../utils/format";
 import { StudioRange } from "../components/StudioRange";
+import { AnimatedBranch } from "../components/AnimatedBranch";
+import { IconChevronRight } from "../components/Icons";
 import { decodeWtb2Batch, renderGpuSurfaceToDataUrl } from "../utils/gpuTexture";
 
 export interface AssetBrowserPanelProps {
@@ -101,6 +103,20 @@ export function AssetBrowserPanel({
   const [thumbMap, setThumbMap] = useState<Record<string, string | null>>({});
   const tileSize = ZOOM_TILE_SIZES[Math.max(0, Math.min(4, zoomLevel))] || 0;
   const filterLow = assetSearch.trim().toLowerCase();
+  const isFiltering = filterLow.length > 0;
+  const [prevFiltering, setPrevFiltering] = useState(isFiltering);
+  const [suppressAnim, setSuppressAnim] = useState(false);
+
+  if (isFiltering !== prevFiltering) {
+    setPrevFiltering(isFiltering);
+    setSuppressAnim(true);
+  }
+
+  useEffect(() => {
+    if (!suppressAnim) return;
+    const id = requestAnimationFrame(() => setSuppressAnim(false));
+    return () => cancelAnimationFrame(id);
+  }, [suppressAnim]);
 
   const gridGroups = useMemo(() => {
     if (!outline || tileSize === 0) return [];
@@ -285,23 +301,15 @@ export function AssetBrowserPanel({
             }
           >
             <span
-              className={`tree-arrow ${isExpanded ? "expanded" : ""}`}
+              className={`wmb-tree-caret ${hasChildren ? "clickable" : "leaf"}`}
               style={{ visibility: hasChildren ? "visible" : "hidden" }}
               onClick={(e) => {
+                if (!hasChildren) return;
                 e.stopPropagation();
                 onToggleExpand(node.id);
               }}
             >
-              <svg
-                width="6"
-                height="9"
-                viewBox="0 0 6 10"
-                fill="none"
-                stroke="currentColor"
-                strokeWidth="1.5"
-              >
-                <path d="M1 1L5 5L1 9" strokeLinecap="round" strokeLinejoin="round" />
-              </svg>
+              {hasChildren ? <IconChevronRight expanded={isExpanded || !!filterLow} /> : "·"}
             </span>
             <span className="tree-badge">{node.format_badge}</span>
             <span
@@ -327,8 +335,15 @@ export function AssetBrowserPanel({
               </span>
             )}
           </div>
-          {hasChildren && (isExpanded || !!filterLow) && (
-            <div className="tree-children">{renderTreeNodes(node.children)}</div>
+          {hasChildren && (
+            <AnimatedBranch
+              expanded={isExpanded || !!filterLow}
+              className="tree-children"
+              scrollSelector=".tree-scroll"
+              animate={!filterLow && !suppressAnim}
+            >
+              {renderTreeNodes(node.children)}
+            </AnimatedBranch>
           )}
         </div>
       );
@@ -382,7 +397,7 @@ export function AssetBrowserPanel({
                 type="button"
                 className="pill-button"
                 style={{ height: 22, padding: "0 6px", fontSize: 10.5 }}
-                onClick={onExpandAll}
+                onClick={() => { setSuppressAnim(true); onExpandAll(); }}
                 data-tooltip="Expand all folders in tree"
               >
                 Expand
@@ -391,7 +406,7 @@ export function AssetBrowserPanel({
                 type="button"
                 className="pill-button"
                 style={{ height: 22, padding: "0 6px", fontSize: 10.5 }}
-                onClick={onCollapseAll}
+                onClick={() => { setSuppressAnim(true); onCollapseAll(); }}
                 data-tooltip="Collapse all folders in tree"
               >
                 Collapse

@@ -196,8 +196,6 @@ export function DocumentEditors({
     setBxmXmlDraft,
     selectedBxmPath,
     setSelectedBxmPath,
-    bxmExpandedPaths,
-    setBxmExpandedPaths,
     updateBxmDraftTree,
     csvHeadersDraft,
     setCsvHeadersDraft,
@@ -388,8 +386,6 @@ export function DocumentEditors({
               setBxmXmlDraft={setBxmXmlDraft}
               selectedBxmPath={selectedBxmPath}
               setSelectedBxmPath={setSelectedBxmPath}
-              bxmExpandedPaths={bxmExpandedPaths}
-              setBxmExpandedPaths={setBxmExpandedPaths}
               pointerDrag={pointerDrag}
               setPointerDrag={setPointerDrag}
               updateBxmDraftTree={updateBxmDraftTree}

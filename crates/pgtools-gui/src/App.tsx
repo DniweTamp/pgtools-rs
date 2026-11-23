@@ -296,8 +296,6 @@ export default function App() {
     setSelectedBxmPath,
     bxmViewMode,
     setBxmViewMode,
-    bxmExpandedPaths,
-    setBxmExpandedPaths,
     updateBxmDraftTree,
     switchBxmViewMode: switchBxmViewModeInner,
     estDraft,
@@ -325,65 +323,74 @@ export default function App() {
 
   // Menus & Status (with appearing & disappearing animation transitions)
   const [activeTopMenu, setActiveTopMenu] = useState<"file" | "tools" | "help" | null>(null);
+  const [prevTopMenu, setPrevTopMenu] = useState<"file" | "tools" | "help" | null>(null);
   const [closingTopMenu, setClosingTopMenu] = useState<"file" | "tools" | "help" | null>(null);
-  const prevTopMenuRef = useRef<"file" | "tools" | "help" | null>(null);
 
   const [contextMenu, setContextMenu] = useState<ContextMenuState | null>(null);
+  const [prevContextMenu, setPrevContextMenu] = useState<ContextMenuState | null>(null);
   const [closingContextMenu, setClosingContextMenu] = useState<ContextMenuState | null>(null);
-  const prevContextMenuRef = useRef<ContextMenuState | null>(null);
 
   const [hoverSubmenuIdx, setHoverSubmenuIdx] = useState<number | null>(null);
+  const [prevSubmenuIdx, setPrevSubmenuIdx] = useState<number | null>(null);
   const [closingSubmenuIdx, setClosingSubmenuIdx] = useState<number | null>(null);
-  const prevSubmenuIdxRef = useRef<number | null>(null);
 
-  useEffect(() => {
+  if (hoverSubmenuIdx !== prevSubmenuIdx) {
     if (hoverSubmenuIdx !== null) {
       setClosingSubmenuIdx(null);
-      prevSubmenuIdxRef.current = hoverSubmenuIdx;
-    } else if (prevSubmenuIdxRef.current !== null) {
-      const prev = prevSubmenuIdxRef.current;
-      prevSubmenuIdxRef.current = null;
-      setClosingSubmenuIdx(prev);
-      const timer = window.setTimeout(() => {
-        setClosingSubmenuIdx((cur) => (cur === prev ? null : cur));
-      }, 115);
-      return () => window.clearTimeout(timer);
+    } else if (prevSubmenuIdx !== null) {
+      setClosingSubmenuIdx(prevSubmenuIdx);
     }
-  }, [hoverSubmenuIdx]);
+    setPrevSubmenuIdx(hoverSubmenuIdx);
+  }
+
+  if (activeTopMenu !== prevTopMenu) {
+    if (activeTopMenu !== null) {
+      setClosingTopMenu(null);
+      setHoverSubmenuIdx(null);
+    } else if (prevTopMenu !== null) {
+      setClosingTopMenu(prevTopMenu);
+    }
+    setPrevTopMenu(activeTopMenu);
+  }
+
+  if (contextMenu !== prevContextMenu) {
+    if (contextMenu !== null) {
+      setClosingContextMenu(null);
+    } else if (prevContextMenu !== null) {
+      setClosingContextMenu(prevContextMenu);
+    }
+    setPrevContextMenu(contextMenu);
+  }
+
+  useEffect(() => {
+    if (closingSubmenuIdx === null) return;
+    const prev = closingSubmenuIdx;
+    const timer = window.setTimeout(() => {
+      setClosingSubmenuIdx((cur) => (cur === prev ? null : cur));
+    }, 115);
+    return () => window.clearTimeout(timer);
+  }, [closingSubmenuIdx]);
+
+  useEffect(() => {
+    if (closingTopMenu === null) return;
+    const prev = closingTopMenu;
+    const timer = window.setTimeout(() => {
+      setClosingTopMenu((cur) => (cur === prev ? null : cur));
+    }, 115);
+    return () => window.clearTimeout(timer);
+  }, [closingTopMenu]);
+
+  useEffect(() => {
+    if (closingContextMenu === null) return;
+    const prev = closingContextMenu;
+    const timer = window.setTimeout(() => {
+      setClosingContextMenu((cur) => (cur === prev ? null : cur));
+    }, 115);
+    return () => window.clearTimeout(timer);
+  }, [closingContextMenu]);
 
   const displayedSubmenuIdx = hoverSubmenuIdx ?? closingSubmenuIdx;
   const isSubmenuClosing = hoverSubmenuIdx === null && closingSubmenuIdx !== null;
-
-  useEffect(() => {
-    if (activeTopMenu !== null) {
-      setClosingTopMenu(null);
-      prevTopMenuRef.current = activeTopMenu;
-      setHoverSubmenuIdx(null);
-    } else if (prevTopMenuRef.current !== null) {
-      const prev = prevTopMenuRef.current;
-      prevTopMenuRef.current = null;
-      setClosingTopMenu(prev);
-      const timer = window.setTimeout(() => {
-        setClosingTopMenu((cur) => (cur === prev ? null : cur));
-      }, 115);
-      return () => window.clearTimeout(timer);
-    }
-  }, [activeTopMenu]);
-
-  useEffect(() => {
-    if (contextMenu !== null) {
-      setClosingContextMenu(null);
-      prevContextMenuRef.current = contextMenu;
-    } else if (prevContextMenuRef.current !== null) {
-      const prev = prevContextMenuRef.current;
-      prevContextMenuRef.current = null;
-      setClosingContextMenu(prev);
-      const timer = window.setTimeout(() => {
-        setClosingContextMenu((cur) => (cur === prev ? null : cur));
-      }, 115);
-      return () => window.clearTimeout(timer);
-    }
-  }, [contextMenu]);
 
   const displayedTopMenu = activeTopMenu ?? closingTopMenu;
   const isTopMenuClosing = activeTopMenu === null && closingTopMenu !== null;

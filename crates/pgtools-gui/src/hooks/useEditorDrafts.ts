@@ -67,10 +67,6 @@ export interface EditorDraftsApi {
   setSelectedBxmPath: React.Dispatch<React.SetStateAction<string>>;
   bxmViewMode: "tree" | "table" | "xml";
   setBxmViewMode: React.Dispatch<React.SetStateAction<"tree" | "table" | "xml">>;
-  bxmExpandedPaths: Record<string, boolean>;
-  setBxmExpandedPaths: (
-    v: Record<string, boolean> | ((p: Record<string, boolean>) => Record<string, boolean>)
-  ) => void;
   updateBxmDraftTree: (nextRoot: BxmXmlNode) => void;
   /** Returns an error message if XML cannot be parsed when leaving XML mode. */
   switchBxmViewMode: (nextMode: "tree" | "table" | "xml") => string | null;
@@ -128,9 +124,6 @@ export function useEditorDrafts(): EditorDraftsApi {
   const [bxmXmlDraft, setBxmXmlDraft] = useState("");
   const [selectedBxmPath, setSelectedBxmPath] = useState("0");
   const [bxmViewMode, setBxmViewMode] = useState<"tree" | "table" | "xml">("tree");
-  const [bxmExpandedPaths, setBxmExpandedPaths] = useState<Record<string, boolean>>({
-    "0": true,
-  });
 
   const [estDraft, setEstDraft] = useState<any>(null);
   const [csvHeadersDraft, setCsvHeadersDraft] = useState<string[]>([]);
@@ -223,7 +216,6 @@ export function useEditorDrafts(): EditorDraftsApi {
           (clonedRoot ? bxmTreeToXmlDocument(clonedRoot) : "")
       );
       setSelectedBxmPath("0");
-      setBxmExpandedPaths({ "0": true, "0.0": true, "0.1": true });
       if (detectBxmTabular(clonedRoot)) {
         setBxmViewMode("table");
       } else {
@@ -301,8 +293,6 @@ export function useEditorDrafts(): EditorDraftsApi {
     setSelectedBxmPath,
     bxmViewMode,
     setBxmViewMode,
-    bxmExpandedPaths,
-    setBxmExpandedPaths,
     updateBxmDraftTree,
     switchBxmViewMode,
     estDraft,

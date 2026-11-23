@@ -2540,8 +2540,9 @@ export const ClothInspectorView: React.FC<ClothInspectorViewProps> = ({
                     </span>
                     <IconChevronDown collapsed={!openCards.cloth_header} />
                   </button>
-                  {openCards.cloth_header && (
-                    <div className="card-body">
+                                      <div className={`collapse-grid${!!openCards.cloth_header ? " expanded" : ""}`}>
+  <div className="collapse-inner">
+    <div className="card-body">
                       {(
                         [
                           ["limit_spring_rate", "Spring Rate"],
@@ -2621,7 +2622,9 @@ export const ClothInspectorView: React.FC<ClothInspectorViewProps> = ({
                         <span>Apply Header Parameters</span>
                       </button>
                     </div>
-                  )}
+  </div>
+</div>
+                  
                 </div>
               )}
             </div>
