@@ -25,6 +25,7 @@ use std::process::Command;
 use std::time::UNIX_EPOCH;
 use tauri::State;
 
+#[cfg(target_os = "windows")]
 mod win_drag {
     use std::ffi::c_void;
     use std::os::windows::ffi::OsStrExt;
@@ -279,6 +280,7 @@ pub fn reveal_in_explorer(path: String) -> Result<(), String> {
             raw.display()
         )
     })?;
+    #[cfg(any(target_os = "windows", target_os = "macos"))]
     let display = clean_win_verbatim_path(p.to_string_lossy().into_owned());
     #[cfg(target_os = "windows")]
     {
